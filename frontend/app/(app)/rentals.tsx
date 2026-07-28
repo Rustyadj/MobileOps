@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, Modal, ScrollView, TouchableOpacity, Alert, Platform } from "react-native";
+import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
@@ -236,7 +236,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           ))}
 
           <SectionLabel>Add equipment</SectionLabel>
-          <ScrollView style={{ maxHeight: 240, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="add-eq-list">
+          <View style={{ borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="add-eq-list">
             {equipment.map((e) => (
               <TouchableOpacity key={e.id} onPress={() => addLine(e)} style={styles.eqRow} testID={`add-eq-${e.sku}`}>
                 <View style={{ flex: 1 }}>
@@ -246,7 +246,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <Ionicons name="add-circle" size={26} color={colors.orange} />
               </TouchableOpacity>
             ))}
-          </ScrollView>
+          </View>
 
           <Button title="Save Rental" onPress={save} testID="save-rental-btn" />
         </Screen>

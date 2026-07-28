@@ -1,0 +1,26 @@
+{
+  "summary": "Frontend-only regression testing for rentals scroll bug fix on 390x844 mobile viewport. Verified the New Rental modal's 'Add equipment' section is now a plain View (no nested ScrollView), enabling single continuous outer scroll on mobile. All target flows PASSED: modal opens, single scrollable ancestor (outer ScrollView, sh=1793/ch=774), inner add-eq-list is overflow:visible with maxHeight:none. Tapping an equipment row adds a line item, qty +/- works, Save Rental reached via scroll and POST /api/rentals returned 201. Regressions passed: Delivery PDF button present, partial return POST /api/rentals/{id}/return returned 200, DELETE returned 200. No console errors, no ReferenceError for ScrollView (import removed cleanly). NOTE: The 6 SKUs mentioned in the review request (SB-001, EX-001, CU-001) do NOT exist in current seed data; actual seeded SKUs are SB-2001, TB-001, WB-001, HR-001, NeXT-002, WBY-002, SB-1601, SB-1201, RSB-1601, RSB-1201, G2TB, G2TBY, RCTB, RCTB02, RCTBFT, HR-002, EXT, EXT-001, EXT-002 (19 items total, all visible via one continuous scroll).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_2.json"],
+  "action_items": [
+    "OPTIONAL: Review request mentions SKUs SB-001, EX-001, CU-001 that don't match seed data (actual: SB-2001, EXT-001/002). Confirm this is intentional or update seed data / review description.",
+    "MINOR (pre-existing, not part of this fix): Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents' is emitted on load. Not blocking, but worth cleaning up in a follow-up."
+  ],
+  "critical_code_review_comments": [
+    "rentals.tsx line 2 imports are clean — ScrollView correctly removed, no ReferenceError at runtime.",
+    "add-eq-list container is now `View` with borderWidth/border only (line 239) — parent Screen ScrollView handles all touch scrolling as a single continuous scroll, which is the correct RN mobile pattern."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (frontend-only)", "frontend": "100%" },
+  "seed_data_creation": "Created and cleaned up one TEST rental (customer 'TEST Scroll Customer', TB-001 x1) during verification. Cleanup verified via DELETE 200.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Rentals scroll bug fix is verified on mobile viewport 390x844. Available equipment SKUs in seed data are: SB-2001, TB-001, WB-001, HR-001, NeXT-002, WBY-002, SB-1601, SB-1201, RSB-1601, RSB-1201, G2TB, G2TBY, RCTB, RCTB02, RCTBFT, HR-002, EXT, EXT-001, EXT-002. Use TB-001 for line-item tests since it has qty-plus/qty-minus testIDs confirmed. Login testIDs: login-email-input, login-password-input, login-submit-button. Nav path: MORE tab → more-rentals → new-rental-btn.",
+  "rca_of_issue": "Original bug: inner ScrollView (maxHeight:240) inside Screen's outer ScrollView caused nested-scroll gesture conflict on mobile web/touch — parent captured touch, inner list unusable. Fix (already applied by main agent): replaced inner ScrollView with plain View so the outer ScrollView handles all scrolling as one continuous scroll. Verified: only one scrollable element exists in the modal DOM (sh=1793, ch=774) and add-eq-list computed style is overflowY:visible, maxHeight:none. Save Rental reachable, no dead zones."
+}
