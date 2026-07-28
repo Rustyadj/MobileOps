@@ -14,7 +14,8 @@
         "NSPhotoLibraryUsageDescription": "Upload your company logo for delivery tickets",
         "NSCameraUsageDescription": "Photograph equipment damage during service",
         "NSDocumentsFolderUsageDescription": "Save delivery ticket PDFs"
-      }
+      },
+      "bundleIdentifier": "com.emergent.icftools.i7hhav"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,7 +28,8 @@
         "WRITE_EXTERNAL_STORAGE",
         "POST_NOTIFICATIONS"
       ],
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "package": "com.emergent.icftools.i7hhav"
     },
     "web": {
       "bundler": "metro",
