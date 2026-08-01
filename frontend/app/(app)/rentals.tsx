@@ -42,7 +42,7 @@ export default function RentalsScreen() {
 
   const newRental = () => {
     const now = new Date();
-    const due = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
+    const due = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
     setDraft({
       customer_name: "", customer_phone: "", customer_email: "", job_site: "",
       start_date: now.toISOString(), due_date: due.toISOString(),
@@ -209,14 +209,18 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <View style={{ flex: 1 }}><Input label="Email" value={draft?.customer_email || ""} onChangeText={(t) => setDraft({ ...draft, customer_email: t })} keyboardType="email-address" autoCapitalize="none" testID="cust-email" /></View>
           </Row>
           <Input label="Job Site" value={draft?.job_site || ""} onChangeText={(t) => setDraft({ ...draft, job_site: t })} testID="cust-site" />
-          <Row style={{ gap: spacing.md }}>
-            <View style={{ flex: 1 }}>
-              <Input label="Start (yyyy-mm-dd)" value={draft?.start_date?.slice(0,10) || ""} onChangeText={(t) => setDraft({ ...draft, start_date: new Date(t).toISOString() })} mono autoCapitalize="none" testID="start-date" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Input label="Due (yyyy-mm-dd)" value={draft?.due_date?.slice(0,10) || ""} onChangeText={(t) => setDraft({ ...draft, due_date: new Date(t).toISOString() })} mono autoCapitalize="none" testID="due-date" />
-            </View>
-          </Row>
+          <Input
+            label="Start (yyyy-mm-dd)"
+            value={draft?.start_date?.slice(0, 10) || ""}
+            onChangeText={(t) => {
+              const start = new Date(t);
+              const due = new Date(start.getTime() + 30 * 86400000);
+              setDraft({ ...draft, start_date: start.toISOString(), due_date: due.toISOString() });
+            }}
+            mono
+            autoCapitalize="none"
+            testID="start-date"
+          />
           <Input label="Deposit ($)" value={String(draft?.deposit ?? 0)} onChangeText={(t) => setDraft({ ...draft, deposit: Number(t) || 0 })} keyboardType="decimal-pad" mono testID="deposit" />
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(t) => setDraft({ ...draft, notes: t })} testID="notes" />
 
