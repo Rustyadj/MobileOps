@@ -1,15 +1,15 @@
-import { View, Text, StyleSheet, TouchableOpacity, Image } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card, Button, SectionLabel } from "@/src/components/ui";
 import { useAuth } from "@/src/context/AuthContext";
-import { colors, spacing, type as typo } from "@/src/theme";
+import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
-  { label: "Rentals", sub: "Multi-SKU + delivery tickets", route: "/(app)/rentals", icon: "receipt-outline", testID: "more-rentals" },
-  { label: "Bookings", sub: "Tentative pipeline · capacity", route: "/(app)/bookings", icon: "calendar-outline", testID: "more-bookings" },
-  { label: "Maintenance", sub: "Service log & repairs", route: "/(app)/maintenance", icon: "build-outline", testID: "more-maintenance" },
+  { label: "Rentals", sub: "Multi-SKU rentals with delivery tickets", route: "/(app)/rentals", icon: "receipt-outline", testID: "more-rentals" },
+  { label: "Bookings", sub: "Tentative pipeline & capacity", route: "/(app)/bookings", icon: "calendar-outline", testID: "more-bookings" },
+  { label: "Maintenance", sub: "Equipment service & repairs", route: "/(app)/maintenance", icon: "build-outline", testID: "more-maintenance" },
   { label: "Vendors", sub: "ICF block supplier directory", route: "/(app)/vendors", icon: "business-outline", testID: "more-vendors" },
   { label: "Site Admin", sub: "Brand, content, logo", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];
@@ -17,43 +17,83 @@ const ITEMS: { label: string; sub: string; route: string; icon: any; testID: str
 export default function MoreScreen() {
   const router = useRouter();
   const { user, logout } = useAuth();
+
+  const initials = (user?.name || user?.email || "?")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase() || "")
+    .join("") || "?";
+
   return (
-    <Screen title="More" subtitle={`Signed in as ${user?.name}`} testID="more-screen">
+    <Screen title="More" subtitle="Modules & settings" testID="more-screen">
       <View style={styles.userCard}>
-        <Image
-          source={{ uri: "https://images.unsplash.com/photo-1690473768476-44b5cebb7d80?crop=entropy&cs=srgb&fm=jpg&w=600&q=80" }}
-          style={styles.avatar}
-        />
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{initials}</Text>
+        </View>
         <View style={{ flex: 1 }}>
-          <Text style={[typo.h2, { color: "#FFF", fontSize: 18 }]}>{user?.name}</Text>
-          <Text style={[typo.label, { color: "#FFF", opacity: 0.6 }]}>{user?.role} · {user?.email}</Text>
+          <Text style={styles.userName}>{user?.name}</Text>
+          <Text style={styles.userMeta}>{user?.email}</Text>
+          <View style={styles.roleTag}>
+            <Text style={styles.roleText}>{user?.role}</Text>
+          </View>
         </View>
       </View>
 
       <SectionLabel>Modules</SectionLabel>
       {ITEMS.map((it) => (
-        <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.7} testID={it.testID}>
+        <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>
             <View style={styles.iconBox}>
-              <Ionicons name={it.icon} size={22} color={colors.ink} />
+              <Ionicons name={it.icon} size={20} color={colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[typo.h3, { fontSize: 16 }]}>{it.label}</Text>
-              <Text style={[typo.body, { color: colors.inkSecondary, fontSize: 13 }]}>{it.sub}</Text>
+              <Text style={[typo.h3]}>{it.label}</Text>
+              <Text style={[typo.bodySmall, { marginTop: 2 }]}>{it.sub}</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={colors.inkMuted} />
+            <Ionicons name="chevron-forward" size={20} color={colors.inkMuted} />
           </Card>
         </TouchableOpacity>
       ))}
 
       <View style={{ height: spacing.lg }} />
-      <Button title="Sign Out" onPress={logout} variant="outline" testID="logout-btn" />
+      <Button title="Sign out" onPress={logout} variant="outline" testID="logout-btn" />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  userCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.ink, padding: spacing.md, gap: 12, marginBottom: spacing.lg },
-  avatar: { width: 56, height: 56, backgroundColor: colors.bgMuted },
-  iconBox: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, marginRight: spacing.md },
+  userCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    padding: spacing.md,
+    gap: 14,
+    marginBottom: spacing.lg,
+    borderRadius: radii.lg,
+  },
+  avatar: {
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.25)",
+  },
+  avatarText: { color: "#FFF", fontSize: 18, fontWeight: "600" },
+  userName: { color: "#FFF", fontSize: 16, fontWeight: "600" },
+  userMeta: { color: "rgba(255,255,255,0.75)", fontSize: 12, marginTop: 2 },
+  roleTag: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255,255,255,0.15)",
+    paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: radii.sm,
+    marginTop: 6,
+  },
+  roleText: { color: "#FFF", fontSize: 10, fontWeight: "600", letterSpacing: 0.5, textTransform: "uppercase" },
+  iconBox: {
+    width: 40, height: 40,
+    borderRadius: radii.md,
+    backgroundColor: colors.primarySoft,
+    alignItems: "center", justifyContent: "center",
+    marginRight: spacing.md,
+  },
 });

@@ -1,0 +1,41 @@
+{
+  "summary": "Full backend + frontend regression for (a) due_date removal across data model, UI and PDF and (b) corporate navy theme refresh. Backend pytest: 22/23 passed. The 1 failure is a PRE-EXISTING seed data mismatch (test asserts SB-001 present; actual seed uses SB-2001) and is unrelated to this iteration's changes. All due_date behaviour verified: POST /api/rentals without due_date returns 201 with due_date=null; GET /api/dashboard/stats no longer includes upcoming_returns / upcoming_count and now returns utilization/total_quantity/total_available/active_rentals/open_maintenance/vendors_count/activity; GET /api/bookings/capacity commits inventory for active rentals regardless of target_date (verified against a date 5 years in the future). Frontend on 390x844: login works, dashboard shows only Utilization/Active Rentals/Open Service/Vendors tiles (no 'Returns \u22647d', no 'Upcoming returns' section), rentals list shows 'Start' with no 'Due', new-rental modal has only START DATE input (no due-date field), corporate navy #1E3A8A applied to header, primary buttons, active tile, active tab and brand mark. No lingering orange (#FF6A00) rendered on the DOM (0 elements). PDF generation button ('Delivery PDF') present on rental cards.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "seed data / TestEquipment.test_list_seeded", "issue": "Test still asserts SB-001/EX-001/CU-001 SKUs but actual seed uses SB-2001/EXT-001 etc. Pre-existing mismatch flagged in iteration_2. Test needs updating OR seed data reset. Not caused by this iteration."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-notifications (push token listener on web)", "issue": "Console warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Non-blocking on web preview; will work on native builds. Reference: frontend push registration flow."},
+      {"component": "props.pointerEvents deprecation", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Coming from a 3rd-party RN dep; carried over from iteration_2, non-blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Fix TestEquipment.test_list_seeded assertion list to match current seed SKUs (SB-2001, TB-001, WB-001/WB-002, HR-001/HR-002, EXT/EXT-001/EXT-002) OR restore the earlier SB-001/EX-001/CU-001 seeds. Not this iteration's regression \u2014 pre-existing.",
+    "OPTIONAL cleanup: chase down the props.pointerEvents deprecation warning (probably from an older gesture-handler / RN library) in a follow-up."
+  ],
+  "critical_code_review_comments": [
+    "Backend RentalCreate no longer requires due_date; Rental keeps due_date as Optional[datetime]=None to remain backwards-compatible with legacy records \u2014 correct decision.",
+    "capacity_check() no longer uses due_date; commits inventory for all active/partially_returned rentals which is a semantic change but matches the requested product behaviour. Confirmed via test_capacity_commits_active_rentals_no_due_date.",
+    "colors.orange aliased to primary navy (#1E3A8A) in theme.ts is a safe shim; long term any residual references should be renamed to colors.primary for clarity.",
+    "type.caption still uses textTransform: 'uppercase' \u2014 that's what renders 'UTILIZATION'/'ACTIVE RENTALS' on the dashboard in uppercase. This is intentional per typography scale and only applies to caption labels, not general text. If the request meant NO uppercase anywhere, the caption style also needs adjustment; otherwise fine."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_concrete_form_api.py (updated test_rental_lifecycle to omit due_date & assert null; updated test_stats to reflect new dashboard shape; added test_capacity_commits_active_rentals_no_due_date)"
+  ],
+  "success_rate": {"backend": "95.6% (22/23 \u2014 the 1 failure is pre-existing seed data mismatch, not this change)", "frontend": "100% of due_date/theme flows verified"},
+  "seed_data_creation": "Created transient TEST_CapCust and TEST_Customer rentals via API; both cleaned up in-test via DELETE. No residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com. Login: admin@concreteform.com / ChangeMe123!. Actual seeded equipment SKUs are SB-2001, TB-001, WB-001, WB-002, HR-001, HR-002, EXT, EXT-001, EXT-002, SB-1201, SB-1601, RSB-1201, RSB-1601, NeXT-002, WBY-002, G2TB, G2TBY, RCTB, RCTB02, RCTBFT, CU-001, CUTB, 10RCSB, 10RCSBBD (not the original 6 sample SKUs). New rentals must NOT include due_date. Dashboard response keys: utilization, total_quantity, total_available, active_rentals, open_maintenance, vendors_count, activity. Capacity checker uses only active-rental status (not date range) for rental commitments. Theme is navy #1E3A8A; colors.orange is aliased to navy so any legacy reference still renders navy.",
+  "rca_of_issue": "N/A \u2014 no failing feature. Only the pre-existing seed-SKU test mismatch remains."
+}

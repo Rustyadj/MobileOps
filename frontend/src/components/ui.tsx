@@ -1,17 +1,17 @@
-// Reusable Swiss/high-contrast UI primitives.
+// Corporate UI primitives — soft borders, rounded corners, restrained typography.
 import React from "react";
 import {
   View, Text, TouchableOpacity, TextInput, StyleSheet,
   ViewStyle, TextStyle, StyleProp, TextInputProps, ActivityIndicator,
 } from "react-native";
-import { colors, type as typo, spacing } from "@/src/theme";
+import { colors, type as typo, spacing, radii, shadows } from "@/src/theme";
 
 export const Card: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewStyle>; testID?: string }> = ({ children, style, testID }) => (
   <View testID={testID} style={[styles.card, style]}>{children}</View>
 );
 
 export const SectionLabel: React.FC<{ children: string; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
-  <Text style={[typo.label, { marginBottom: spacing.xs }, style]}>{children}</Text>
+  <Text style={[typo.caption, { marginBottom: spacing.sm }, style]}>{children}</Text>
 );
 
 export const H1: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
@@ -45,7 +45,7 @@ export const Button: React.FC<ButtonProps> = ({ title, onPress, variant = "prima
       testID={testID}
       onPress={onPress}
       disabled={disabled || loading}
-      activeOpacity={0.8}
+      activeOpacity={0.85}
       style={[styles.btnBase, v.bg, fullWidth && { alignSelf: "stretch" }, disabled && { opacity: 0.5 }, style]}
     >
       {loading ? (
@@ -64,14 +64,14 @@ export const Input: React.FC<TextInputProps & { label?: string; mono?: boolean; 
       testID={testID}
       placeholderTextColor={colors.inkMuted}
       {...rest}
-      style={[styles.input, mono && { fontFamily: "monospace", fontSize: 17 }, style]}
+      style={[styles.input, mono && { fontFamily: "monospace", fontSize: 15 }, style]}
     />
   </View>
 );
 
-export const Pill: React.FC<{ children: string; color?: string; bg?: string; testID?: string }> = ({ children, color = colors.ink, bg = colors.bgMuted, testID }) => (
-  <View testID={testID} style={[styles.pill, { backgroundColor: bg, borderColor: color }]}>
-    <Text style={{ color, fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 }}>{children}</Text>
+export const Pill: React.FC<{ children: string; color?: string; bg?: string; testID?: string }> = ({ children, color = colors.inkSecondary, bg = colors.bgTint, testID }) => (
+  <View testID={testID} style={[styles.pill, { backgroundColor: bg, borderColor: "transparent" }]}>
+    <Text style={{ color, fontSize: 11, fontWeight: "600", letterSpacing: 0.3 }}>{children}</Text>
   </View>
 );
 
@@ -84,17 +84,45 @@ export const Row: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewSt
 );
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, padding: spacing.md },
-  btnBase: { height: 52, paddingHorizontal: 20, alignItems: "center", justifyContent: "center", borderWidth: 2 },
-  btnText: { fontSize: 14, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase" },
-  input: { height: 52, borderWidth: 2, borderColor: colors.border, paddingHorizontal: 14, fontSize: 16, color: colors.ink, backgroundColor: colors.bg },
-  pill: { paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, alignSelf: "flex-start" },
+  card: {
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    ...shadows.card,
+  },
+  btnBase: {
+    height: 48,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: radii.md,
+  },
+  btnText: { fontSize: 14, fontWeight: "600", letterSpacing: 0.2 },
+  input: {
+    height: 48,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: colors.ink,
+    backgroundColor: colors.bg,
+  },
+  pill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radii.sm,
+    alignSelf: "flex-start",
+  },
 });
 
 const btnStyles = {
-  primary: { bg: { backgroundColor: colors.orange, borderColor: colors.orange }, fg: { color: "#FFF" } },
+  primary: { bg: { backgroundColor: colors.primary, borderColor: colors.primary }, fg: { color: "#FFF" } },
   secondary: { bg: { backgroundColor: colors.ink, borderColor: colors.ink }, fg: { color: "#FFF" } },
-  outline: { bg: { backgroundColor: "transparent", borderColor: colors.ink }, fg: { color: colors.ink } },
-  ghost: { bg: { backgroundColor: "transparent", borderColor: "transparent" }, fg: { color: colors.ink } },
+  outline: { bg: { backgroundColor: colors.bg, borderColor: colors.borderStrong }, fg: { color: colors.ink } },
+  ghost: { bg: { backgroundColor: "transparent", borderColor: "transparent" }, fg: { color: colors.primary } },
   danger: { bg: { backgroundColor: colors.error, borderColor: colors.error }, fg: { color: "#FFF" } },
 } as const;

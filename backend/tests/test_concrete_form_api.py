@@ -213,10 +213,10 @@ class TestRentals:
         before_avail = target["available"]
 
         start = datetime.now(timezone.utc).isoformat()
-        due = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        # NOTE: due_date deliberately omitted — should still succeed (201)
         body = {
             "customer_name": "TEST_Customer", "job_site": "123 Job",
-            "start_date": start, "due_date": due, "deposit": 100.0,
+            "start_date": start, "deposit": 100.0,
             "lines": [{"equipment_id": target["id"], "sku": target["sku"], "name": target["name"],
                        "qty": 2, "daily_rate": target["daily_rate"]}],
         }
@@ -224,6 +224,8 @@ class TestRentals:
         assert r.status_code == 201, r.text
         rental = r.json()
         rid = rental["id"]
+        # new rentals should have due_date=null (field may be present but null)
+        assert rental.get("due_date") is None, f"expected due_date=null, got {rental.get('due_date')}"
 
         # available decremented
         after = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
@@ -255,6 +257,34 @@ class TestRentals:
         r = api_client.get(f"{BASE_URL}/api/rentals", headers=auth_headers)
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+    def test_capacity_commits_active_rentals_no_due_date(self, api_client, auth_headers):
+        """Capacity endpoint must commit inventory for active rentals regardless of date range (no due_date used)."""
+        eq = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
+        target = next((e for e in eq if e["available"] >= 1), None)
+        assert target is not None
+        start = datetime.now(timezone.utc).isoformat()
+        body = {
+            "customer_name": "TEST_CapCust", "job_site": "S",
+            "start_date": start, "deposit": 0,
+            "lines": [{"equipment_id": target["id"], "sku": target["sku"], "name": target["name"],
+                       "qty": 1, "daily_rate": 0}],
+        }
+        r = api_client.post(f"{BASE_URL}/api/rentals", headers=auth_headers, json=body)
+        assert r.status_code == 201, r.text
+        rid = r.json()["id"]
+
+        # Query capacity for a date 5 years in the future — the active rental should STILL be committed
+        far_future = (datetime.now(timezone.utc) + timedelta(days=1825)).isoformat()
+        cap = api_client.get(f"{BASE_URL}/api/bookings/capacity",
+                             params={"target_date": far_future}, headers=auth_headers)
+        assert cap.status_code == 200
+        row = next((r for r in cap.json()["rows"] if r["equipment_id"] == target["id"]), None)
+        assert row is not None
+        assert row["committed"] >= 1, f"active rental not committed on far-future date: {row}"
+
+        # cleanup
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
 
 
 # ---------- 5. Bookings ----------
@@ -349,7 +379,10 @@ class TestDashboard:
         r = api_client.get(f"{BASE_URL}/api/dashboard/stats", headers=auth_headers)
         assert r.status_code == 200, r.text
         d = r.json()
-        for key in ["utilization", "active_rentals", "upcoming_returns",
+        # New shape (due_date removed): no upcoming_returns / upcoming_count
+        for key in ["utilization", "total_quantity", "total_available", "active_rentals",
                     "open_maintenance", "vendors_count", "activity"]:
             assert key in d, f"missing {key}"
-        assert isinstance(d["upcoming_returns"], list)
+        assert "upcoming_returns" not in d, "upcoming_returns should be removed"
+        assert "upcoming_count" not in d, "upcoming_count should be removed"
+        assert isinstance(d["activity"], list)

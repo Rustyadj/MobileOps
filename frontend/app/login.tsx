@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Image } from "react-native";
+import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/src/context/AuthContext";
-import { Button, Input, H1, H3 } from "@/src/components/ui";
-import { colors, spacing, type as typo } from "@/src/theme";
+import { Button, Input, H1 } from "@/src/components/ui";
+import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 export default function LoginScreen() {
   const { login } = useAuth();
@@ -26,32 +26,20 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.heroWrap}>
-            <Image
-              source={{ uri: "https://images.unsplash.com/photo-1669170930713-f7c778496177?crop=entropy&cs=srgb&fm=jpg&w=1200&q=80" }}
-              style={styles.hero}
-              resizeMode="cover"
-            />
-            <View style={styles.heroOverlay} />
-            <View style={styles.brandRow}>
-              <View style={styles.brandTile} />
-              <Text style={styles.brand}>CONCRETE FORM</Text>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <View style={styles.brandBlock}>
+            <View style={styles.brandMark}>
+              <Text style={styles.brandLetter}>C</Text>
             </View>
-            <Text style={styles.tagline}>ICF Field Tools</Text>
+            <Text style={styles.brandName}>Concrete Form</Text>
+            <Text style={styles.brandTagline}>Field operations for ICF contractors</Text>
           </View>
 
           <View style={styles.form}>
-            <H1>SIGN IN</H1>
-            <Text style={[typo.body, { color: colors.inkSecondary, marginTop: 4, marginBottom: spacing.lg }]}>
-              Built for the field. Built for gloves.
+            <H1 style={{ marginBottom: spacing.xs }}>Sign in</H1>
+            <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>
+              Use your team credentials to continue.
             </Text>
 
             <Input
@@ -74,16 +62,16 @@ export default function LoginScreen() {
 
             {err ? (
               <View style={styles.errBox} testID="login-error">
-                <Text style={{ color: colors.error, fontWeight: "700" }}>{err}</Text>
+                <Text style={{ color: colors.error, fontWeight: "600", fontSize: 13 }}>{err}</Text>
               </View>
             ) : null}
 
-            <Button title="Sign In" onPress={onSubmit} loading={busy} testID="login-submit-button" />
+            <Button title="Sign in" onPress={onSubmit} loading={busy} testID="login-submit-button" />
 
             <View style={styles.hintBox}>
-              <H3 style={{ fontSize: 11 }}>SEEDED ADMIN</H3>
-              <Text style={[typo.mono, { fontSize: 12, color: colors.inkSecondary }]}>admin@concreteform.com</Text>
-              <Text style={[typo.mono, { fontSize: 12, color: colors.inkSecondary }]}>ChangeMe123!</Text>
+              <Text style={typo.caption}>Demo access</Text>
+              <Text style={[typo.mono, { fontSize: 13, color: colors.inkSecondary, marginTop: 4 }]}>admin@concreteform.com</Text>
+              <Text style={[typo.mono, { fontSize: 13, color: colors.inkSecondary }]}>ChangeMe123!</Text>
             </View>
           </View>
         </ScrollView>
@@ -94,15 +82,19 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { flexGrow: 1 },
-  heroWrap: { height: 220, position: "relative", backgroundColor: colors.ink },
-  hero: { ...StyleSheet.absoluteFillObject, opacity: 0.55 },
-  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(9,9,11,0.45)" },
-  brandRow: { position: "absolute", left: spacing.lg, bottom: 48, flexDirection: "row", alignItems: "center" },
-  brandTile: { width: 14, height: 28, backgroundColor: colors.orange, marginRight: 10 },
-  brand: { color: "#FFF", fontSize: 22, fontWeight: "900", letterSpacing: 1, textTransform: "uppercase" },
-  tagline: { position: "absolute", left: spacing.lg, bottom: 24, color: "#FFF", fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.85 },
-  form: { padding: spacing.lg, paddingTop: spacing.xl },
-  errBox: { borderWidth: 2, borderColor: colors.error, backgroundColor: "#FEF2F2", padding: spacing.md, marginBottom: spacing.md },
-  hintBox: { marginTop: spacing.xl, padding: spacing.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bgMuted },
+  scroll: { flexGrow: 1, padding: spacing.lg },
+  brandBlock: { alignItems: "center", marginTop: spacing.xl, marginBottom: spacing.xl },
+  brandMark: {
+    width: 64, height: 64,
+    borderRadius: radii.lg,
+    backgroundColor: colors.primary,
+    alignItems: "center", justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  brandLetter: { color: "#FFF", fontSize: 32, fontWeight: "700" },
+  brandName: { fontSize: 22, fontWeight: "700", color: colors.ink, letterSpacing: -0.3 },
+  brandTagline: { marginTop: 4, fontSize: 13, color: colors.inkSecondary },
+  form: { paddingTop: spacing.md },
+  errBox: { borderWidth: 1, borderColor: colors.error, backgroundColor: colors.errorSoft, padding: spacing.md, marginBottom: spacing.md, borderRadius: radii.md },
+  hintBox: { marginTop: spacing.xl, padding: spacing.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bgMuted, borderRadius: radii.md },
 });

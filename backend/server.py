@@ -200,11 +200,11 @@ class Rental(BaseModel):
     customer_email: str = ""
     job_site: str = ""
     start_date: datetime
-    due_date: datetime
+    due_date: Optional[datetime] = None  # legacy — kept optional for backward-compat with old records
     deposit: float = 0.0
     notes: str = ""
     lines: List[RentalLine] = []
-    status: str = "active"  # active, partially_returned, returned, overdue
+    status: str = "active"  # active, partially_returned, returned
     delivered_by: str = ""
     received_by: str = ""
     created_at: datetime = Field(default_factory=now_utc)
@@ -216,7 +216,6 @@ class RentalCreate(BaseModel):
     customer_email: str = ""
     job_site: str = ""
     start_date: datetime
-    due_date: datetime
     deposit: float = 0.0
     notes: str = ""
     lines: List[RentalLine]
@@ -628,13 +627,11 @@ async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_u
     rentals = await db.rentals.find({"status": {"$in": ["active", "partially_returned"]}}, {"_id": 0}).to_list(1000)
     bookings = await db.bookings.find({"status": {"$in": ["tentative", "confirmed"]}}, {"_id": 0}).to_list(1000)
     usage: dict[str, int] = {}
+    # Active rentals commit inventory until returned (no due_date used).
     for r in rentals:
-        sd, dd = r["start_date"], r["due_date"]
-        if isinstance(sd, str): sd = datetime.fromisoformat(sd.replace("Z","+00:00"))
-        if isinstance(dd, str): dd = datetime.fromisoformat(dd.replace("Z","+00:00"))
-        if sd.date() <= d.date() <= dd.date():
-            for line in r.get("lines", []):
-                rem = line["qty"] - line.get("returned_qty", 0)
+        for line in r.get("lines", []):
+            rem = line["qty"] - line.get("returned_qty", 0)
+            if rem > 0:
                 usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
     for b in bookings:
         sd, ed = b["start_date"], b["end_date"]
@@ -772,23 +769,6 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
 
     active_rentals = await db.rentals.count_documents({"status": {"$in": ["active", "partially_returned"]}})
 
-    upcoming_cutoff = now_utc() + timedelta(days=7)
-    upcoming_docs = await db.rentals.find(
-        {"status": {"$in": ["active", "partially_returned"]}},
-        {"_id": 0},
-    ).to_list(1000)
-    upcoming = []
-    for r in upcoming_docs:
-        dd = r["due_date"]
-        if isinstance(dd, str):
-            dd = datetime.fromisoformat(dd.replace("Z","+00:00"))
-        if dd.replace(tzinfo=timezone.utc) if dd.tzinfo is None else dd <= upcoming_cutoff:
-            upcoming.append({
-                "id": r["id"], "customer": r["customer_name"],
-                "due_date": (dd.isoformat() if hasattr(dd, "isoformat") else str(dd)),
-            })
-    upcoming.sort(key=lambda x: x["due_date"])
-
     open_maintenance = await db.maintenance.count_documents({"status": {"$in": ["open", "in_progress"]}})
     vendors_count = await db.vendors.count_documents({})
 
@@ -809,8 +789,6 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
         "total_quantity": total_qty,
         "total_available": total_avail,
         "active_rentals": active_rentals,
-        "upcoming_returns": upcoming[:8],
-        "upcoming_count": len(upcoming),
         "open_maintenance": open_maintenance,
         "vendors_count": vendors_count,
         "activity": activity[:8],

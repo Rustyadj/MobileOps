@@ -9,23 +9,23 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: colors.orange,
+        tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.inkMuted,
-        tabBarLabelStyle: { fontSize: 10, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.8 },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: "600", letterSpacing: 0.1 },
         tabBarStyle: {
           backgroundColor: colors.bg,
           borderTopWidth: 1,
           borderTopColor: colors.border,
-          height: 56 + insets.bottom,
+          height: 60 + insets.bottom,
           paddingBottom: insets.bottom,
-          paddingTop: 6,
+          paddingTop: 8,
         },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: "Dash",
+          title: "Dashboard",
           tabBarIcon: ({ color, size }) => <Ionicons name="grid-outline" size={size} color={color} />,
         }}
       />
@@ -39,14 +39,14 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="calculator"
         options={{
-          title: "Calc",
+          title: "Calculator",
           tabBarIcon: ({ color, size }) => <Ionicons name="calculator-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="equipment"
         options={{
-          title: "Equip",
+          title: "Equipment",
           tabBarIcon: ({ color, size }) => <Ionicons name="cube-outline" size={size} color={color} />,
         }}
       />

@@ -12,7 +12,7 @@ type Eq = { id: string; sku: string; name: string; daily_rate: number; available
 type Line = { equipment_id: string; sku: string; name: string; qty: number; daily_rate: number; returned_qty: number };
 type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
-  job_site: string; start_date: string; due_date: string; deposit: number; notes: string;
+  job_site: string; start_date: string; deposit: number; notes: string;
   lines: Line[]; status: string; delivered_by: string; received_by: string;
 };
 type Site = { brand_name: string; tagline: string; company_address: string; company_phone: string; company_email: string };
@@ -42,10 +42,9 @@ export default function RentalsScreen() {
 
   const newRental = () => {
     const now = new Date();
-    const due = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
     setDraft({
       customer_name: "", customer_phone: "", customer_email: "", job_site: "",
-      start_date: now.toISOString(), due_date: due.toISOString(),
+      start_date: now.toISOString(),
       deposit: 0, notes: "", lines: [],
     });
     setCreating(true);
@@ -92,7 +91,6 @@ export default function RentalsScreen() {
   };
 
   const generatePDF = async (r: Rental) => {
-    const totalDays = Math.max(1, Math.ceil((+new Date(r.due_date) - +new Date(r.start_date)) / 86400000));
     const lineRows = r.lines.map((l) =>
       `<tr><td>${l.sku}</td><td>${l.name}</td><td style="text-align:right">${l.qty}</td></tr>`
     ).join("");
@@ -103,36 +101,37 @@ export default function RentalsScreen() {
 
     const html = `
 <!doctype html><html><head><meta charset="utf-8"/><style>
-body { font-family: -apple-system, Helvetica, Arial; color:#09090B; padding: 32px; }
-.brand { display:flex; align-items:center; border-bottom: 2px solid #09090B; padding-bottom: 16px; margin-bottom: 24px; }
-.tile { width:10px; height:36px; background:#FF6A00; margin-right:12px; }
-h1 { margin:0; font-size:24px; letter-spacing:1px; text-transform:uppercase; }
-.label { font-size:10px; text-transform:uppercase; letter-spacing:1.2px; color:#52525B; font-weight:700; }
-.box { border:1px solid #E4E4E7; padding:14px; margin-bottom:12px; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial; color:#0F172A; padding: 40px; }
+.brand { display:flex; align-items:center; border-bottom: 1px solid #E2E8F0; padding-bottom: 20px; margin-bottom: 28px; }
+.tile { width:6px; height:40px; background:#1E3A8A; margin-right:14px; border-radius:2px; }
+h1 { margin:0; font-size:22px; letter-spacing:-0.3px; font-weight:600; color:#0F172A; }
+.label { font-size:10px; text-transform:uppercase; letter-spacing:0.8px; color:#94A3B8; font-weight:600; }
+.box { border:1px solid #E2E8F0; padding:16px; margin-bottom:12px; border-radius:6px; background:#FFFFFF; }
 table { width:100%; border-collapse:collapse; margin-top:8px; }
-th, td { padding:10px 8px; border-bottom:1px solid #E4E4E7; font-size:13px; }
-th { background:#F4F4F5; text-transform:uppercase; font-size:10px; letter-spacing:1px; text-align:left; }
-.sig { margin-top:48px; display:flex; gap:24px; }
-.sig div { flex:1; border-top: 1px solid #09090B; padding-top:6px; font-size:11px; text-transform:uppercase; letter-spacing:1px; }
+th, td { padding:12px 10px; border-bottom:1px solid #E2E8F0; font-size:13px; }
+th { background:#F8FAFC; text-transform:uppercase; font-size:10px; letter-spacing:0.6px; text-align:left; color:#475569; font-weight:600; }
+.sig { margin-top:56px; display:flex; gap:32px; }
+.sig div { flex:1; border-top: 1px solid #0F172A; padding-top:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.6px; color:#475569; font-weight:600; }
+.footer { margin-top:36px; font-size:11px; color:#94A3B8; }
 </style></head><body>
-<div class="brand">${logoHtml}<div><h1>${site?.brand_name || "Concrete Form"} — Delivery Ticket</h1><div class="label">${site?.tagline || ""}</div></div></div>
+<div class="brand">${logoHtml}<div><h1>${site?.brand_name || "Concrete Form"}</h1><div class="label" style="margin-top:4px">Delivery Ticket${site?.tagline ? " · " + site.tagline : ""}</div></div></div>
 <div class="box">
   <div class="label">Customer</div>
-  <div style="font-size:18px;font-weight:800;margin-top:4px">${r.customer_name}</div>
-  <div>${r.customer_phone || ""} ${r.customer_email ? " · " + r.customer_email : ""}</div>
-  <div>${r.job_site || ""}</div>
+  <div style="font-size:17px;font-weight:600;margin-top:4px">${r.customer_name}</div>
+  <div style="font-size:13px;color:#475569;margin-top:2px">${r.customer_phone || ""} ${r.customer_email ? " · " + r.customer_email : ""}</div>
+  <div style="font-size:13px;color:#475569">${r.job_site || ""}</div>
 </div>
 <div class="box">
-  <div class="label">Dates</div>
-  <div>Start: ${new Date(r.start_date).toLocaleDateString()} · Due: ${new Date(r.due_date).toLocaleDateString()} · ${totalDays} day${totalDays>1?"s":""}</div>
+  <div class="label">Start date</div>
+  <div style="font-size:14px;margin-top:4px">${new Date(r.start_date).toLocaleDateString()}</div>
 </div>
 <table>
   <thead><tr><th>SKU</th><th>Description</th><th style="text-align:right">Qty</th></tr></thead>
   <tbody>${lineRows}</tbody>
 </table>
-${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</div><div>${r.notes}</div></div>` : ""}
+${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</div><div style="font-size:13px;margin-top:4px">${r.notes}</div></div>` : ""}
 <div class="sig"><div>Delivered by</div><div>Received by (signature)</div></div>
-<div style="margin-top:32px;font-size:10px;color:#A1A1AA">${site?.company_address || ""} · ${site?.company_phone || ""} · ${site?.company_email || ""}</div>
+<div class="footer">${site?.company_address || ""}${site?.company_phone ? " · " + site.company_phone : ""}${site?.company_email ? " · " + site.company_email : ""}</div>
 </body></html>`;
 
     try {
@@ -168,15 +167,15 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
               <View style={{ flex: 1 }}>
                 <H3>{r.customer_name}</H3>
-                <Text style={[typo.label, { marginTop: 2 }]}>{r.job_site || "—"}</Text>
+                <Text style={[typo.bodySmall, { marginTop: 2 }]}>{r.job_site || "—"}</Text>
               </View>
-              <Pill color={r.status === "returned" ? colors.success : r.status === "active" ? colors.orange : colors.warning}
-                    bg={r.status === "returned" ? "#DCFCE7" : r.status === "active" ? "#FFEDD5" : "#FEF3C7"}>
+              <Pill color={r.status === "returned" ? colors.success : r.status === "active" ? colors.primary : colors.warning}
+                    bg={r.status === "returned" ? colors.successSoft : r.status === "active" ? colors.primarySoft : colors.warningSoft}>
                 {r.status}
               </Pill>
             </Row>
             <Row style={{ marginTop: spacing.sm, gap: spacing.md }}>
-              <Text style={typo.label}>Due <Mono style={{ fontSize: 13 }}>{new Date(r.due_date).toLocaleDateString()}</Mono></Text>
+              <Text style={typo.label}>Start <Mono style={{ fontSize: 13 }}>{new Date(r.start_date).toLocaleDateString()}</Mono></Text>
               <Text style={typo.label}>Items <Mono style={{ fontSize: 13 }}>{returnedQty}/{totalQty}</Mono></Text>
             </Row>
             {r.lines.map((l) => (
@@ -210,12 +209,11 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </Row>
           <Input label="Job Site" value={draft?.job_site || ""} onChangeText={(t) => setDraft({ ...draft, job_site: t })} testID="cust-site" />
           <Input
-            label="Start (yyyy-mm-dd)"
+            label="Start date (yyyy-mm-dd)"
             value={draft?.start_date?.slice(0, 10) || ""}
             onChangeText={(t) => {
               const start = new Date(t);
-              const due = new Date(start.getTime() + 30 * 86400000);
-              setDraft({ ...draft, start_date: start.toISOString(), due_date: due.toISOString() });
+              setDraft({ ...draft, start_date: start.toISOString() });
             }}
             mono
             autoCapitalize="none"

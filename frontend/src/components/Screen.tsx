@@ -1,4 +1,4 @@
-// Standard screen scaffold with sticky header.
+// Corporate screen scaffold with clean header.
 import React from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -22,20 +22,19 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const Header = (
-    <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-      <View style={styles.brandTile} />
-      <View style={{ flex: 1 }}>
-        <Text style={styles.title}>{title.toUpperCase()}</Text>
-        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
-      </View>
+    <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
       {back ? (
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} testID="header-back">
-          <Ionicons name="chevron-back" size={24} color={colors.ink} />
+          <Ionicons name="chevron-back" size={22} color={colors.ink} />
         </TouchableOpacity>
       ) : null}
+      <View style={{ flex: 1 }}>
+        <Text style={styles.title}>{title}</Text>
+        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+      </View>
       {rightAction ? (
         <TouchableOpacity onPress={rightAction.onPress} style={styles.iconBtn} testID={rightAction.testID}>
-          <Ionicons name={rightAction.icon} size={24} color={colors.ink} />
+          <Ionicons name={rightAction.icon} size={22} color={colors.ink} />
         </TouchableOpacity>
       ) : null}
     </View>
@@ -47,7 +46,7 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
         <ScrollView
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
-          refreshControl={onRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={onRefresh} tintColor={colors.orange} /> : undefined}
+          refreshControl={onRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={onRefresh} tintColor={colors.primary} /> : undefined}
         >
           {children}
         </ScrollView>
@@ -65,13 +64,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
-    borderBottomWidth: 2,
-    borderBottomColor: colors.ink,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
     backgroundColor: colors.bg,
+    gap: spacing.sm,
   },
-  brandTile: { width: 8, height: 28, backgroundColor: colors.orange, marginRight: 10 },
-  title: { ...typo.h2, fontSize: 20, letterSpacing: 0.5, color: colors.ink },
-  subtitle: { ...typo.label, marginTop: 2 },
-  iconBtn: { padding: 8, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  title: { ...typo.h2, fontSize: 18, color: colors.ink },
+  subtitle: { ...typo.bodySmall, marginTop: 2, fontSize: 12 },
+  iconBtn: { padding: 8, minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" },
   scroll: { padding: spacing.lg, paddingBottom: 80 },
 });
