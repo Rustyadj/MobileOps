@@ -207,6 +207,8 @@ class Rental(BaseModel):
     status: str = "active"  # active, partially_returned, returned
     delivered_by: str = ""
     received_by: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -219,6 +221,13 @@ class RentalCreate(BaseModel):
     deposit: float = 0.0
     notes: str = ""
     lines: List[RentalLine]
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+
+class LocationUpdate(BaseModel):
+    lat: float
+    lng: float
 
 
 class ReturnLine(BaseModel):
@@ -580,6 +589,16 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
     rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
     await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
     return rental
+
+
+@api.patch("/rentals/{rental_id}/location", response_model=Rental)
+async def update_rental_location(rental_id: str, body: LocationUpdate, _: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+    await db.rentals.update_one({"id": rental_id}, {"$set": {"lat": body.lat, "lng": body.lng}})
+    new_doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    return Rental(**new_doc)
 
 
 @api.delete("/rentals/{rental_id}")

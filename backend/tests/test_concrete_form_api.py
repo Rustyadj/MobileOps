@@ -287,6 +287,87 @@ class TestRentals:
         api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
 
 
+# ---------- 4b. Rental Location (map feature) ----------
+class TestRentalLocation:
+    """New feature: lat/lng on Rental + PATCH /api/rentals/{id}/location."""
+
+    def _create_rental(self, api_client, auth_headers, lat=None, lng=None):
+        eq = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
+        target = next((e for e in eq if e["available"] >= 1), None)
+        assert target is not None
+        body = {
+            "customer_name": "TEST_LocCust",
+            "job_site": "999 Map Ave",
+            "start_date": datetime.now(timezone.utc).isoformat(),
+            "deposit": 0.0,
+            "lines": [{"equipment_id": target["id"], "sku": target["sku"], "name": target["name"],
+                       "qty": 1, "daily_rate": target["daily_rate"]}],
+        }
+        if lat is not None:
+            body["lat"] = lat
+        if lng is not None:
+            body["lng"] = lng
+        r = api_client.post(f"{BASE_URL}/api/rentals", headers=auth_headers, json=body)
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_create_rental_without_latlng_returns_null(self, api_client, auth_headers):
+        rental = self._create_rental(api_client, auth_headers)
+        assert "lat" in rental and rental["lat"] is None
+        assert "lng" in rental and rental["lng"] is None
+        api_client.delete(f"{BASE_URL}/api/rentals/{rental['id']}", headers=auth_headers)
+
+    def test_create_rental_with_latlng(self, api_client, auth_headers):
+        rental = self._create_rental(api_client, auth_headers, lat=44.9778, lng=-93.2650)
+        assert rental["lat"] == pytest.approx(44.9778)
+        assert rental["lng"] == pytest.approx(-93.2650)
+        # verify persisted via GET list
+        lst = api_client.get(f"{BASE_URL}/api/rentals", headers=auth_headers).json()
+        got = next((x for x in lst if x["id"] == rental["id"]), None)
+        assert got is not None
+        assert got["lat"] == pytest.approx(44.9778)
+        assert got["lng"] == pytest.approx(-93.2650)
+        api_client.delete(f"{BASE_URL}/api/rentals/{rental['id']}", headers=auth_headers)
+
+    def test_patch_location_updates_coords(self, api_client, auth_headers):
+        rental = self._create_rental(api_client, auth_headers)
+        rid = rental["id"]
+        # PATCH lat/lng
+        r = api_client.patch(
+            f"{BASE_URL}/api/rentals/{rid}/location",
+            headers=auth_headers,
+            json={"lat": 40.7128, "lng": -74.0060},
+        )
+        assert r.status_code == 200, r.text
+        updated = r.json()
+        assert updated["lat"] == pytest.approx(40.7128)
+        assert updated["lng"] == pytest.approx(-74.0060)
+        assert updated["id"] == rid
+        # returns full Rental with lines
+        assert "lines" in updated and isinstance(updated["lines"], list)
+        # verify via GET
+        lst = api_client.get(f"{BASE_URL}/api/rentals", headers=auth_headers).json()
+        got = next(x for x in lst if x["id"] == rid)
+        assert got["lat"] == pytest.approx(40.7128)
+        assert got["lng"] == pytest.approx(-74.0060)
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
+
+    def test_patch_location_unknown_id_returns_404(self, api_client, auth_headers):
+        r = api_client.patch(
+            f"{BASE_URL}/api/rentals/does-not-exist-{uuid.uuid4().hex[:8]}/location",
+            headers=auth_headers,
+            json={"lat": 1.0, "lng": 2.0},
+        )
+        assert r.status_code == 404, r.text
+
+    def test_patch_location_requires_auth(self, api_client):
+        r = api_client.patch(
+            f"{BASE_URL}/api/rentals/whatever/location",
+            json={"lat": 1.0, "lng": 2.0},
+        )
+        assert r.status_code == 401
+
+
 # ---------- 5. Bookings ----------
 class TestBookings:
     def test_create_and_capacity(self, api_client, auth_headers):

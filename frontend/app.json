@@ -13,20 +13,23 @@
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Upload your company logo for delivery tickets",
         "NSCameraUsageDescription": "Photograph equipment damage during service",
-        "NSDocumentsFolderUsageDescription": "Save delivery ticket PDFs"
+        "NSDocumentsFolderUsageDescription": "Save delivery ticket PDFs",
+        "NSLocationWhenInUseUsageDescription": "Pin rental sites on the map from your current location"
       },
       "bundleIdentifier": "com.emergent.icftools.i7hhav"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#FF6A00"
+        "backgroundColor": "#1E3A8A"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
       ],
       "googleServicesFile": "./google-services.json",
       "package": "com.emergent.icftools.i7hhav"
@@ -53,6 +56,12 @@
         "expo-image-picker",
         {
           "photosPermission": "Upload your company logo for delivery tickets"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Pin rental sites on the map from your current location"
         }
       ]
     ],

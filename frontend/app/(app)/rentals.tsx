@@ -4,6 +4,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
+import { LocationPicker, geocodeString } from "@/src/components/MapCanvas";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
@@ -14,6 +15,7 @@ type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
   job_site: string; start_date: string; deposit: number; notes: string;
   lines: Line[]; status: string; delivered_by: string; received_by: string;
+  lat?: number | null; lng?: number | null;
 };
 type Site = { brand_name: string; tagline: string; company_address: string; company_phone: string; company_email: string };
 
@@ -25,6 +27,7 @@ export default function RentalsScreen() {
   const [draft, setDraft] = useState<any>(null);
   const [returning, setReturning] = useState<Rental | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
 
   const load = useCallback(async () => {
     try {
@@ -39,6 +42,37 @@ export default function RentalsScreen() {
   useEffect(() => { load(); }, [load]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+
+  const draftGeocode = async () => {
+    if (!draft?.job_site?.trim()) {
+      Alert.alert("No address", "Enter a Job Site address first, then tap Geocode.");
+      return;
+    }
+    const coords = await geocodeString(draft.job_site);
+    if (coords) {
+      setDraft({ ...draft, lat: coords.lat, lng: coords.lng });
+    } else {
+      Alert.alert("Geocode failed", "Couldn't resolve that address. Try 'Pick on map' or 'Use current location'.");
+    }
+  };
+
+  const saveLocation = async (coords: { lat: number; lng: number }) => {
+    if (!pickerFor) return;
+    if (pickerFor.mode === "draft") {
+      setDraft((d: any) => ({ ...d, lat: coords.lat, lng: coords.lng }));
+    } else {
+      try {
+        await api(`/rentals/${pickerFor.id}/location`, {
+          method: "PATCH",
+          body: JSON.stringify(coords),
+        });
+        load();
+      } catch (e: any) {
+        Alert.alert("Save failed", e.message);
+      }
+    }
+    setPickerFor(null);
+  };
 
   const newRental = () => {
     const now = new Date();
@@ -174,9 +208,20 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 {r.status}
               </Pill>
             </Row>
-            <Row style={{ marginTop: spacing.sm, gap: spacing.md }}>
+            <Row style={{ marginTop: spacing.sm, gap: spacing.md, flexWrap: "wrap" }}>
               <Text style={typo.label}>Start <Mono style={{ fontSize: 13 }}>{new Date(r.start_date).toLocaleDateString()}</Mono></Text>
               <Text style={typo.label}>Items <Mono style={{ fontSize: 13 }}>{returnedQty}/{totalQty}</Mono></Text>
+              {r.lat != null && r.lng != null ? (
+                <Row style={{ gap: 4 }}>
+                  <Ionicons name="location" size={12} color={colors.primary} />
+                  <Mono style={{ fontSize: 11 }}>{r.lat.toFixed(3)}, {r.lng.toFixed(3)}</Mono>
+                </Row>
+              ) : (
+                <Row style={{ gap: 4 }}>
+                  <Ionicons name="location-outline" size={12} color={colors.inkMuted} />
+                  <Text style={[typo.caption, { textTransform: "none", letterSpacing: 0 }]}>No location</Text>
+                </Row>
+              )}
             </Row>
             {r.lines.map((l) => (
               <Row key={l.equipment_id} style={styles.lineRow}>
@@ -193,9 +238,18 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               </Row>
             ))}
             <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <Button
+                  title={r.lat != null ? "Update location" : "Set location"}
+                  onPress={() => setPickerFor({ mode: "existing", id: r.id, initial: r.lat != null && r.lng != null ? { lat: r.lat, lng: r.lng } : null })}
+                  variant="outline"
+                  testID={`set-location-${r.id}`}
+                />
+              </View>
               <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(r)} variant="outline" testID={`pdf-${r.id}`} /></View>
-              <View style={{ flex: 1 }}><Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} /></View>
             </Row>
+            <View style={{ height: spacing.sm }} />
+            <Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} />
           </Card>
         );
       })}
@@ -221,6 +275,28 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           />
           <Input label="Deposit ($)" value={String(draft?.deposit ?? 0)} onChangeText={(t) => setDraft({ ...draft, deposit: Number(t) || 0 })} keyboardType="decimal-pad" mono testID="deposit" />
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(t) => setDraft({ ...draft, notes: t })} testID="notes" />
+
+          <SectionLabel>Job site location</SectionLabel>
+          <Card style={{ marginBottom: spacing.md }}>
+            {draft?.lat != null && draft?.lng != null ? (
+              <Row style={{ gap: 6, marginBottom: spacing.sm }}>
+                <Ionicons name="location" size={14} color={colors.primary} />
+                <Mono style={{ fontSize: 13 }}>{Number(draft.lat).toFixed(5)}, {Number(draft.lng).toFixed(5)}</Mono>
+              </Row>
+            ) : (
+              <Text style={[typo.bodySmall, { marginBottom: spacing.sm }]}>
+                No location set. Add one so this rental appears on the Map.
+              </Text>
+            )}
+            <Row style={{ gap: spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <Button title="Pick on map" onPress={() => setPickerFor({ mode: "draft" })} variant="outline" testID="draft-pick-map" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Button title="Geocode address" onPress={draftGeocode} variant="outline" testID="draft-geocode" />
+              </View>
+            </Row>
+          </Card>
 
           <SectionLabel>Line items ({(draft?.lines || []).length})</SectionLabel>
           {(draft?.lines || []).map((l: Line) => (
@@ -253,6 +329,19 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           <Button title="Save Rental" onPress={save} testID="save-rental-btn" />
         </Screen>
       </Modal>
+
+      <LocationPicker
+        visible={!!pickerFor}
+        initial={
+          pickerFor?.mode === "draft"
+            ? (draft?.lat != null && draft?.lng != null ? { lat: draft.lat, lng: draft.lng } : null)
+            : pickerFor?.mode === "existing"
+              ? (pickerFor.initial ?? null)
+              : null
+        }
+        onClose={() => setPickerFor(null)}
+        onSave={saveLocation}
+      />
     </Screen>
   );
 }

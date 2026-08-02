@@ -7,6 +7,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
+  { label: "Rental Map", sub: "Live map of pinned rentals & equipment", route: "/(app)/map", icon: "map-outline", testID: "more-map" },
   { label: "Rentals", sub: "Multi-SKU rentals with delivery tickets", route: "/(app)/rentals", icon: "receipt-outline", testID: "more-rentals" },
   { label: "Bookings", sub: "Tentative pipeline & capacity", route: "/(app)/bookings", icon: "calendar-outline", testID: "more-bookings" },
   { label: "Maintenance", sub: "Equipment service & repairs", route: "/(app)/maintenance", icon: "build-outline", testID: "more-maintenance" },

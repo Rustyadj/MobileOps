@@ -1,0 +1,43 @@
+{
+  "summary": "Full backend + frontend regression for the new Live Rental Map feature. Backend pytest: 27/28 passed. The one failure (TestEquipment.test_list_seeded — asserting SB-001 seed) is a PRE-EXISTING seed-data mismatch flagged in iteration_2/3 and unrelated to this iteration. Added 5 new backend tests under TestRentalLocation covering: (a) POST /api/rentals without lat/lng returns 201 with lat=null,lng=null; (b) POST /api/rentals with lat/lng persists and appears in GET /api/rentals; (c) PATCH /api/rentals/{id}/location updates coordinates and returns full Rental; (d) unknown id returns 404; (e) unauthenticated PATCH returns 401. All 5 pass. Frontend (390x844 web preview) verified end-to-end: login works with testIDs login-email-input/login-password-input/login-submit-button; Dashboard shows 'Map' as the first Quick Action tile (action-map); Map screen loads with graceful web fallback ('Map available on device') because react-native-maps is native-only — no native-only import errors in web bundle. Rentals list shows 'No location' text and 'Set location' outline button on unpinned rentals and lat/lng badge on pinned. Location picker modal (loc-lat-input/loc-lng-input/loc-save-btn) accepts numeric coords and PATCHes /rentals/{id}/location. New Rental modal Job-site-location card renders both 'Pick on map' (draft-pick-map) and 'Geocode address' (draft-geocode) buttons. After saving coords on one rental, the Map screen fallback correctly listed 1 pin (Dedman @ 44.978,-93.265) and tapping it opened the bottom sheet with customer/job site/coords/status pill/Equipment on site rows (4 SKUs shown with 'on site' remaining count) + Open-in-Maps and Delivery-PDF buttons (sheet-open-maps, sheet-pdf). More menu order verified: [more-map, more-rentals, more-bookings, more-maintenance, more-vendors, more-site-admin] — 'Rental Map' is first as required. No red-screen or bundler errors observed; two carried-over console warnings only (expo-notifications push token listener on web + props.pointerEvents deprecation from a 3rd-party RN dep) — both non-blocking and pre-existing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "seed data / TestEquipment.test_list_seeded", "issue": "Pre-existing seed-SKU assertion (SB-001) doesn't match current seed (SB-2001). Not this iteration; flagged again for main agent to align test or seed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-notifications (web)", "issue": "Console warning on web: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Non-blocking; behaves correctly on native builds. Reference: frontend/app/(app)/(tabs)/index.tsx push registration effect."},
+      {"component": "props.pointerEvents deprecation", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents' emitted from a 3rd-party RN dependency. Non-blocking, carried over from iteration_2/3."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Reconcile TestEquipment.test_list_seeded assertions with current seed SKUs (SB-2001 etc.) OR restore original sample SKUs in server.py seed(). Pre-existing.",
+    "OPTIONAL: Chase the props.pointerEvents deprecation warning to its source dep in a follow-up upgrade."
+  ],
+  "critical_code_review_comments": [
+    "Backend PATCH /api/rentals/{id}/location correctly requires foreman+ via require_role(Role.foreman); returns full Rental model and 404 on unknown id.",
+    "Rental & RentalCreate models expose lat/lng as Optional[float] with defaults None — POST without them succeeds and returns nulls as intended.",
+    "Frontend MapCanvas.web.tsx is a proper platform-specific stub so Metro's web bundler never resolves react-native-maps; verified no 'Importing native-only module' error at runtime. Uses LocationPicker modal with manual coord entry, which matches the agent-note contract for web.",
+    "map.tsx pin filtering excludes returned rentals (r.status !== 'returned') — reasonable default; confirm with product if returned rentals should also appear (e.g., historical view).",
+    "rentals.tsx correctly PATCHes /rentals/{id}/location with JSON body and reloads the list on save; saveLocation swallows response body but re-fetches, which is fine.",
+    "Bottom sheet in map.tsx dismisses on backdrop tap and stops propagation on inner TouchableOpacity — good UX; sheet items render 'remaining' (qty - returned_qty) which is the correct 'on site' count."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_concrete_form_api.py (added TestRentalLocation class with 5 tests for lat/lng POST behavior and PATCH /api/rentals/{id}/location including 404 and 401 cases)"
+  ],
+  "success_rate": {"backend": "96.4% (27/28 — the 1 failure is pre-existing seed-SKU mismatch, not this change)", "frontend": "100% of new map/location flows verified end-to-end on web fallback"},
+  "seed_data_creation": "Created transient TEST_LocCust rentals via API during tests; each is DELETE'd in-test. On the UI, coords (44.9778, -93.2650) were saved to one existing rental to verify the web pin list — this data persists in DB until the main agent chooses to clean it up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com. Login testIDs: login-email-input / login-password-input / login-submit-button. Admin: admin@concreteform.com / ChangeMe123!. Map testIDs: action-map (dashboard), more-map (more list), map-screen, pin-list-<id>, sheet-lines, sheet-open-maps, sheet-pdf. Rentals testIDs: rentals-screen, new-rental-btn, set-location-<id>, draft-pick-map, draft-geocode, loc-lat-input, loc-lng-input, loc-save-btn, loc-close, close-new-rental. Backend: PATCH /api/rentals/{id}/location {lat,lng} needs foreman+ auth; returns full Rental; 404 on unknown id, 401 without auth. RentalCreate accepts optional lat/lng; GET /api/rentals always includes lat/lng (null when unset). Existing seeded equipment SKUs are SB-2001, TB-001, WB-001/002, HR-001/002, EXT/EXT-001/002, SB-1201, SB-1601, RSB-1201, RSB-1601, NeXT-002, WBY-002, G2TB, G2TBY, RCTB, RCTB02, RCTBFT, CU-001, CUTB, 10RCSB, 10RCSBBD.",
+  "rca_of_issue": "N/A — the new feature is functioning as designed on both backend and frontend web-fallback. Only unrelated pre-existing seed-SKU test mismatch remains."
+}
