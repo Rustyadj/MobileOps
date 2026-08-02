@@ -1,0 +1,43 @@
+{
+  "summary": "Full backend + frontend validation of the new 'Edit Rentals' capability (PUT /api/rentals/{id} + Edit button/modal in rentals.tsx). Backend pytest 34/35 passed. The single failure is the pre-existing SB-001 vs SB-2001 seed mismatch flagged in prior iterations and explicitly noted to ignore. All 7 new TestRentalEdit cases pass, covering: delta-based inventory rebalancing on qty increase/decrease (2->5 then 5->2), adding a new line + removing a line, returned_qty preservation and clamp-down when new qty < previously returned (also flipping status to 'returned'), status recomputation to 'active' with lat/lng preserved, 404 for unknown id, 401 without auth, 403 for crew role. created_at and id are preserved through PUT (verified against Mongo-truncated microsecond format). Frontend (390x844 mobile web preview, admin login via testIDs): the Rentals list card now renders 'Edit' outline button with testID `edit-rental-<id>` alongside Set location / Delivery PDF / Delete; tapping opens the New Rental modal titled 'Edit Rental' with every field pre-filled (customer_name=TEST_EditCust, phone=555-9999, email=edit@test.com, job_site=Edit Site, deposit=50, notes=orig, line items with correct qty, and prior 'No location set' hint retained); the save button reads 'Save Changes' in edit mode; the close X clears the draft and dismisses; the fresh New Rental modal correctly shows title 'New Rental' and button 'Save Rental'. Console warnings observed are the same two carried-over items (expo-notifications push token listener on web, props.pointerEvents deprecation from a 3rd-party dep) — non-blocking and pre-existing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "TestEquipment.test_list_seeded", "issue": "Pre-existing SB-001 vs SB-2001 seed-SKU mismatch; unrelated to this iteration and explicitly ignored per review request."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-notifications (web)", "issue": "Console warning on web: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Non-blocking; works on native builds. Reference: frontend push register effect."},
+      {"component": "props.pointerEvents deprecation", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents' from a 3rd-party RN dep; carried over from iteration_2/3/4."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Align TestEquipment.test_list_seeded with current seed SKUs (SB-2001 etc.) OR restore original SB-001 sample in server.py seed(). Pre-existing.",
+    "OPTIONAL: Chase the props.pointerEvents deprecation to its 3rd-party source dep in a future upgrade."
+  ],
+  "critical_code_review_comments": [
+    "PUT /api/rentals/{rental_id} in server.py:604 correctly computes per-equipment delta from outstanding (qty - returned_qty) OLD vs qty NEW, then applies a single $inc per equipment_id — this handles same-equipment lines and prevents double-counting.",
+    "returned_qty is preserved per equipment_id and clamped to min(old_returned, new_qty). Status recompute mirrors partial-return logic (returned / partially_returned / active). Edge case: if lines is empty, status defaults to 'active'.",
+    "id, created_at, and legacy due_date are preserved through PUT. created_at is stored in Mongo without 'Z' and with millisecond truncation; consumers comparing timestamps must parse via ISO — flagged in the test suite so future contributors don't hit it.",
+    "Auth: PUT uses require_role(Role.foreman); crew 403 and unauthenticated 401 confirmed. Unknown rental_id returns 404.",
+    "Frontend rentals.tsx: save() branches on draft.id (PUT vs POST) at line 139; Edit button emits testID `edit-rental-<id>` (line 278); modal title & save button labels flip on draft?.id (lines 299, 370). Confirmed the New Rental modal reuses the same component so all fields prefill automatically from the draft state.",
+    "Consideration: after a PUT that changes lines, the frontend re-fetches /rentals via load(); no equipment refresh is triggered on that screen (equipment.available shown elsewhere). Not a bug for this screen but callers of /equipment should refresh separately when appropriate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_concrete_form_api.py (added TestRentalEdit class with 7 tests covering the new PUT /api/rentals/{id} endpoint end-to-end)"
+  ],
+  "success_rate": {"backend": "97.1% (34/35 — the 1 failure is the pre-existing SB-001 seed mismatch explicitly ignored)", "frontend": "100% of edit-rental flow verified on web preview (Edit button, modal title/save-label swap, prefilled fields, close/discard, regression on new-rental flow)"},
+  "seed_data_creation": "Tests create transient TEST_EditCust and TEST_crew_edit_* users/rentals via API and DELETE them in-test. During UI verification, one existing rental card was opened in edit mode but not saved; no persistent data changes from frontend testing.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com. Admin: admin@concreteform.com / ChangeMe123!. Edit-rental testIDs: edit-rental-<rental_id> (list), close-new-rental (X in modal), save-rental-btn (bottom of modal). Modal reuses New Rental screen; title & save label are the only visible mode indicators. Backend PUT /api/rentals/{id} accepts a full RentalCreate body, requires foreman+, and rebalances equipment.available by delta = new_committed - old_outstanding per equipment_id. returned_qty is preserved and clamped to new qty; status is recomputed. id, created_at, and legacy due_date are preserved (created_at persists without 'Z' and truncated to ms after Mongo round-trip — parse before comparing). 404 on unknown id, 401 without auth, 403 for crew. Ignore the SB-001 seed mismatch failure in TestEquipment.test_list_seeded.",
+  "rca_of_issue": "N/A — feature works as designed on backend and frontend. Only pre-existing seed-SKU test mismatch remains and is out of scope."
+}

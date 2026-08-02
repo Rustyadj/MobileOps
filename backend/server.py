@@ -601,6 +601,52 @@ async def update_rental_location(rental_id: str, body: LocationUpdate, _: UserPu
     return Rental(**new_doc)
 
 
+@api.put("/rentals/{rental_id}", response_model=Rental)
+async def update_rental(rental_id: str, body: RentalCreate, _: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+
+    # Compute per-equipment outstanding quantities (old vs new) to rebalance inventory.
+    old_by_eq: dict[str, int] = {}
+    for line in doc.get("lines", []):
+        remaining = line["qty"] - line.get("returned_qty", 0)
+        old_by_eq[line["equipment_id"]] = old_by_eq.get(line["equipment_id"], 0) + remaining
+
+    new_by_eq: dict[str, int] = {}
+    for line in body.lines:
+        new_by_eq[line.equipment_id] = new_by_eq.get(line.equipment_id, 0) + line.qty
+
+    for eq_id in set(old_by_eq) | set(new_by_eq):
+        delta = new_by_eq.get(eq_id, 0) - old_by_eq.get(eq_id, 0)  # +ve means MORE committed
+        if delta != 0:
+            await db.equipment.update_one({"id": eq_id}, {"$inc": {"available": -delta}})
+
+    # Preserve returned_qty per equipment_id (clamped to new qty).
+    old_returned: dict[str, int] = {l["equipment_id"]: l.get("returned_qty", 0) for l in doc.get("lines", [])}
+    upd = body.model_dump()
+    for line in upd["lines"]:
+        line["returned_qty"] = min(old_returned.get(line["equipment_id"], 0), line["qty"])
+
+    # Recompute status.
+    if not upd["lines"]:
+        upd["status"] = "active"
+    else:
+        all_ret = all(l["returned_qty"] >= l["qty"] for l in upd["lines"])
+        any_ret = any(l["returned_qty"] > 0 for l in upd["lines"])
+        upd["status"] = "returned" if all_ret else ("partially_returned" if any_ret else "active")
+
+    # Preserve id, created_at, and legacy due_date.
+    upd["id"] = rental_id
+    upd["created_at"] = doc.get("created_at", now_utc())
+    if "due_date" in doc and doc["due_date"] is not None:
+        upd["due_date"] = doc["due_date"]
+
+    await db.rentals.update_one({"id": rental_id}, {"$set": upd})
+    new_doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    return Rental(**new_doc)
+
+
 @api.delete("/rentals/{rental_id}")
 async def delete_rental(rental_id: str, _: UserPublic = Depends(require_role(Role.admin))):
     doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})

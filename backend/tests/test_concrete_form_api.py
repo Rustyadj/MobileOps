@@ -368,6 +368,198 @@ class TestRentalLocation:
         assert r.status_code == 401
 
 
+# ---------- 4c. Rental Edit (PUT /api/rentals/{id}) ----------
+class TestRentalEdit:
+    """PUT /api/rentals/{id} — full-body edit with delta-based inventory rebalancing."""
+
+    def _pick_two_eq(self, api_client, auth_headers, min_a=10, min_b=5):
+        eq = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
+        a = next((e for e in eq if e["available"] >= min_a), None)
+        b = next((e for e in eq if e["available"] >= min_b and e["id"] != (a or {}).get("id")), None)
+        assert a and b, "need two equipment items with sufficient availability"
+        return a, b
+
+    def _get_avail(self, api_client, auth_headers, eq_id):
+        eq = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
+        return next(e for e in eq if e["id"] == eq_id)["available"]
+
+    def _create(self, api_client, auth_headers, lines, lat=None, lng=None):
+        body = {
+            "customer_name": "TEST_EditCust",
+            "customer_phone": "555-9999",
+            "customer_email": "edit@test.com",
+            "job_site": "Edit Site",
+            "start_date": datetime.now(timezone.utc).isoformat(),
+            "deposit": 50.0,
+            "notes": "orig",
+            "lines": lines,
+            "lat": lat, "lng": lng,
+        }
+        r = api_client.post(f"{BASE_URL}/api/rentals", headers=auth_headers, json=body)
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_put_qty_increase_decrements_available_by_delta(self, api_client, auth_headers):
+        a, _ = self._pick_two_eq(self, api_client, auth_headers) if False else self._pick_two_eq(api_client, auth_headers)
+        before = self._get_avail(api_client, auth_headers, a["id"])
+        rental = self._create(api_client, auth_headers, [
+            {"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 2, "daily_rate": a["daily_rate"]}
+        ])
+        rid = rental["id"]
+        assert self._get_avail(api_client, auth_headers, a["id"]) == before - 2
+
+        # qty 2 -> 5 : available should drop by 3
+        put_body = {
+            "customer_name": rental["customer_name"], "customer_phone": rental["customer_phone"],
+            "customer_email": rental["customer_email"], "job_site": rental["job_site"],
+            "start_date": rental["start_date"], "deposit": rental["deposit"], "notes": rental["notes"],
+            "lines": [{"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 5, "daily_rate": a["daily_rate"]}],
+            "lat": rental.get("lat"), "lng": rental.get("lng"),
+        }
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200, r.text
+        upd = r.json()
+        assert upd["id"] == rid
+        # created_at preserved (compare as datetimes; Mongo strips 'Z' and may truncate μs)
+        def _dt(s):
+            s = s.replace("Z", "+00:00")
+            d = datetime.fromisoformat(s)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return d
+        assert abs((_dt(upd["created_at"]) - _dt(rental["created_at"])).total_seconds()) < 0.01, \
+            f"created_at must be preserved: {upd['created_at']} vs {rental['created_at']}"
+        assert upd["lines"][0]["qty"] == 5
+        assert self._get_avail(api_client, auth_headers, a["id"]) == before - 5
+
+        # qty 5 -> 2 : available should rise by 3
+        put_body["lines"][0]["qty"] = 2
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200
+        assert self._get_avail(api_client, auth_headers, a["id"]) == before - 2
+
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
+
+    def test_put_add_and_remove_lines(self, api_client, auth_headers):
+        a, b = self._pick_two_eq(api_client, auth_headers)
+        a_before = self._get_avail(api_client, auth_headers, a["id"])
+        b_before = self._get_avail(api_client, auth_headers, b["id"])
+        rental = self._create(api_client, auth_headers, [
+            {"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 3, "daily_rate": a["daily_rate"]}
+        ])
+        rid = rental["id"]
+        assert self._get_avail(api_client, auth_headers, a["id"]) == a_before - 3
+
+        # Add a NEW line for b (qty 4)
+        put_body = {
+            "customer_name": rental["customer_name"], "customer_phone": "", "customer_email": "",
+            "job_site": "", "start_date": rental["start_date"], "deposit": 0.0, "notes": "",
+            "lines": [
+                {"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 3, "daily_rate": a["daily_rate"]},
+                {"equipment_id": b["id"], "sku": b["sku"], "name": b["name"], "qty": 4, "daily_rate": b["daily_rate"]},
+            ],
+            "lat": None, "lng": None,
+        }
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200, r.text
+        assert self._get_avail(api_client, auth_headers, a["id"]) == a_before - 3
+        assert self._get_avail(api_client, auth_headers, b["id"]) == b_before - 4
+
+        # Remove line a entirely => a restored
+        put_body["lines"] = [
+            {"equipment_id": b["id"], "sku": b["sku"], "name": b["name"], "qty": 4, "daily_rate": b["daily_rate"]},
+        ]
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200
+        assert self._get_avail(api_client, auth_headers, a["id"]) == a_before
+        assert self._get_avail(api_client, auth_headers, b["id"]) == b_before - 4
+
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
+
+    def test_put_returned_qty_preserved_and_clamped(self, api_client, auth_headers):
+        a, _ = self._pick_two_eq(api_client, auth_headers)
+        rental = self._create(api_client, auth_headers, [
+            {"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 5, "daily_rate": a["daily_rate"]}
+        ])
+        rid = rental["id"]
+        # Return 3 of 5
+        rr = api_client.post(f"{BASE_URL}/api/rentals/{rid}/return", headers=auth_headers,
+                             json=[{"equipment_id": a["id"], "qty": 3}])
+        assert rr.status_code == 200
+        assert rr.json()["status"] == "partially_returned"
+
+        # PUT with qty=5 again (no change) — returned_qty must remain 3
+        put_body = {
+            "customer_name": rental["customer_name"], "customer_phone": "", "customer_email": "",
+            "job_site": "", "start_date": rental["start_date"], "deposit": 0.0, "notes": "",
+            "lines": [{"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 5, "daily_rate": a["daily_rate"]}],
+            "lat": None, "lng": None,
+        }
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200
+        assert r.json()["lines"][0]["returned_qty"] == 3
+        assert r.json()["status"] == "partially_returned"
+
+        # PUT with qty=2 (< returned 3) — should clamp returned_qty to 2 and mark returned
+        put_body["lines"][0]["qty"] = 2
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["lines"][0]["returned_qty"] == 2, f"expected clamp to 2, got {j['lines'][0]['returned_qty']}"
+        assert j["status"] == "returned"
+
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
+
+    def test_put_status_recompute_active(self, api_client, auth_headers):
+        a, _ = self._pick_two_eq(api_client, auth_headers)
+        rental = self._create(api_client, auth_headers, [
+            {"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 2, "daily_rate": a["daily_rate"]}
+        ])
+        rid = rental["id"]
+        put_body = {
+            "customer_name": "X", "customer_phone": "", "customer_email": "", "job_site": "",
+            "start_date": rental["start_date"], "deposit": 0.0, "notes": "",
+            "lines": [{"equipment_id": a["id"], "sku": a["sku"], "name": a["name"], "qty": 3, "daily_rate": 0.0}],
+            "lat": 12.34, "lng": 56.78,
+        }
+        r = api_client.put(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers, json=put_body)
+        assert r.status_code == 200
+        j = r.json()
+        assert j["status"] == "active"
+        assert j["lat"] == pytest.approx(12.34) and j["lng"] == pytest.approx(56.78)
+        assert j["customer_name"] == "X"
+        api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
+
+    def test_put_404_unknown_id(self, api_client, auth_headers):
+        put_body = {
+            "customer_name": "X", "start_date": datetime.now(timezone.utc).isoformat(),
+            "lines": [], "deposit": 0.0,
+        }
+        r = api_client.put(f"{BASE_URL}/api/rentals/does-not-exist-{uuid.uuid4().hex[:8]}",
+                           headers=auth_headers, json=put_body)
+        assert r.status_code == 404, r.text
+
+    def test_put_requires_auth(self, api_client):
+        r = api_client.put(f"{BASE_URL}/api/rentals/whatever",
+                           json={"customer_name": "X", "start_date": datetime.now(timezone.utc).isoformat(),
+                                 "lines": [], "deposit": 0.0})
+        assert r.status_code == 401
+
+    def test_put_forbidden_for_crew(self, api_client, auth_headers):
+        # create a throwaway crew user, login, and try PUT
+        em = f"TEST_crew_edit_{uuid.uuid4().hex[:6]}@example.com"
+        pw = "CrewPass1!"
+        rr = api_client.post(f"{BASE_URL}/api/auth/register", headers=auth_headers,
+                             json={"email": em, "password": pw, "name": "C", "role": "crew"})
+        assert rr.status_code == 201
+        lg = api_client.post(f"{BASE_URL}/api/auth/login", json={"email": em, "password": pw})
+        crew_h = {"Authorization": f"Bearer {lg.json()['access_token']}"}
+        r = api_client.put(f"{BASE_URL}/api/rentals/whatever", headers=crew_h,
+                           json={"customer_name": "X", "start_date": datetime.now(timezone.utc).isoformat(),
+                                 "lines": [], "deposit": 0.0})
+        assert r.status_code == 403, r.text
+
+
 # ---------- 5. Bookings ----------
 class TestBookings:
     def test_create_and_capacity(self, api_client, auth_headers):

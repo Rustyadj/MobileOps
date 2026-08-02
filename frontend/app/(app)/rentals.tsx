@@ -84,6 +84,23 @@ export default function RentalsScreen() {
     setCreating(true);
   };
 
+  const editRental = (r: Rental) => {
+    setDraft({
+      id: r.id,
+      customer_name: r.customer_name,
+      customer_phone: r.customer_phone,
+      customer_email: r.customer_email,
+      job_site: r.job_site,
+      start_date: r.start_date,
+      deposit: r.deposit,
+      notes: r.notes,
+      lines: r.lines.map((l) => ({ ...l })),
+      lat: r.lat,
+      lng: r.lng,
+    });
+    setCreating(true);
+  };
+
   const addLine = (eq: Eq) => {
     setDraft((d: any) => {
       const existing = d.lines.find((l: Line) => l.equipment_id === eq.id);
@@ -104,7 +121,26 @@ export default function RentalsScreen() {
       return;
     }
     try {
-      await api("/rentals", { method: "POST", body: JSON.stringify(draft) });
+      const body = {
+        customer_name: draft.customer_name,
+        customer_phone: draft.customer_phone || "",
+        customer_email: draft.customer_email || "",
+        job_site: draft.job_site || "",
+        start_date: draft.start_date,
+        deposit: Number(draft.deposit) || 0,
+        notes: draft.notes || "",
+        lines: draft.lines.map((l: Line) => ({
+          equipment_id: l.equipment_id, sku: l.sku, name: l.name,
+          qty: l.qty, daily_rate: l.daily_rate, returned_qty: l.returned_qty || 0,
+        })),
+        lat: draft.lat ?? null,
+        lng: draft.lng ?? null,
+      };
+      if (draft.id) {
+        await api(`/rentals/${draft.id}`, { method: "PUT", body: JSON.stringify(body) });
+      } else {
+        await api("/rentals", { method: "POST", body: JSON.stringify(body) });
+      }
       setCreating(false); setDraft(null); load();
     } catch (e: any) { Alert.alert("Save failed", e.message); }
   };
@@ -239,6 +275,9 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             ))}
             <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
               <View style={{ flex: 1 }}>
+                <Button title="Edit" onPress={() => editRental(r)} variant="outline" testID={`edit-rental-${r.id}`} />
+              </View>
+              <View style={{ flex: 1 }}>
                 <Button
                   title={r.lat != null ? "Update location" : "Set location"}
                   onPress={() => setPickerFor({ mode: "existing", id: r.id, initial: r.lat != null && r.lng != null ? { lat: r.lat, lng: r.lng } : null })}
@@ -246,16 +285,18 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                   testID={`set-location-${r.id}`}
                 />
               </View>
-              <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(r)} variant="outline" testID={`pdf-${r.id}`} /></View>
             </Row>
             <View style={{ height: spacing.sm }} />
-            <Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} />
+            <Row style={{ gap: spacing.sm }}>
+              <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(r)} variant="outline" testID={`pdf-${r.id}`} /></View>
+              <View style={{ flex: 1 }}><Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} /></View>
+            </Row>
           </Card>
         );
       })}
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
-        <Screen title="New Rental" back rightAction={{ icon: "close", onPress: () => setCreating(false), testID: "close-new-rental" }}>
+        <Screen title={draft?.id ? "Edit Rental" : "New Rental"} back rightAction={{ icon: "close", onPress: () => { setCreating(false); setDraft(null); }, testID: "close-new-rental" }}>
           <Input label="Customer Name" value={draft?.customer_name || ""} onChangeText={(t) => setDraft({ ...draft, customer_name: t })} testID="cust-name" />
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input label="Phone" value={draft?.customer_phone || ""} onChangeText={(t) => setDraft({ ...draft, customer_phone: t })} keyboardType="phone-pad" mono testID="cust-phone" /></View>
@@ -326,7 +367,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             ))}
           </View>
 
-          <Button title="Save Rental" onPress={save} testID="save-rental-btn" />
+          <Button title={draft?.id ? "Save Changes" : "Save Rental"} onPress={save} testID="save-rental-btn" />
         </Screen>
       </Modal>
 
