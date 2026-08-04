@@ -1,0 +1,36 @@
+{
+  "summary": "Config-only fix verification (google-services.json package_name alignment for Emergent Android deployment gate). Verified (a) /app/frontend/google-services.json client[0].client_info.android_client_info.package_name == 'com.emergent.icftools.i7hhav' matches /app/frontend/app.json expo.android.package == 'com.emergent.icftools.i7hhav' (also same as ios.bundleIdentifier), so the V3MobileConfigInvalid mismatch on 'com.anonymous.frontend' is resolved. (b) Regression: 38/39 backend pytest cases pass — the sole failure is the pre-existing SB-001 vs SB-2001 seed-SKU mismatch in TestEquipment.test_list_seeded, explicitly ignored per the review request; all other endpoints (auth login/refresh/me/lock, /dashboard/stats, /equipment CRUD + CSV, /bracing/calculate, /rentals lifecycle + list + capacity, /rentals PUT edit + PATCH /location, /bookings + /bookings/capacity, /maintenance, /vendors, /site, /geocode) return the expected shapes. (c) Frontend Metro web bundle serves HTTP 200 at https://icf-tools.preview.emergentagent.com/ and the mobile-viewport (390x844) login screen renders. Login as admin@concreteform.com / ChangeMe123! successfully lands on the Dashboard (Welcome Admin, Utilization 1.4%, Active rentals 0, Vendors 1, quick actions Map/Bracing/Calculator/Equipment/Rentals, bottom tab bar). No red screen, no new console errors introduced by the change. No runtime code paths altered — dependency-free JSON edit only.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "TestEquipment.test_list_seeded", "issue": "Pre-existing SB-001 vs SB-2001 seed-SKU mismatch; unrelated to this iteration and explicitly ignored per review."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (carry-over): Align TestEquipment.test_list_seeded with current seed SKUs (SB-2001 etc.) OR restore original SB-001 sample in server.py seed(). Pre-existing; safe to defer.",
+    "REMINDER for release owner: The current google-services.json is still a placeholder (project_number 000000000000, api_key PLACEHOLDER_API_KEY). It only unblocks the Emergent android.package validation gate — real Firebase push/analytics require replacing this file with the actual Firebase-issued google-services.json for package com.emergent.icftools.i7hhav. This is documented behavior, not a bug."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/google-services.json:12 package_name now 'com.emergent.icftools.i7hhav' — matches /app/frontend/app.json:35 android.package and :19 ios.bundleIdentifier. The Emergent V3MobileConfigInvalid check will now pass.",
+    "google-services.json remains a placeholder (project_number, mobilesdk_app_id, api_key are all zeroes/placeholder). Fine for a build-config validation gate; real FCM push token issuance on production APK will fail until replaced with a real Firebase config. Not blocking preview/web.",
+    "No source/server changes required or made in this iteration — pure config JSON edit; backend + expo services untouched.",
+    "Consider adding a short README note near google-services.json explaining that the file is a placeholder and must be replaced with the real Firebase config (matching the same android.package) before production Android release."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "97.4% (38/39; the 1 failure is the pre-existing SB-001 seed mismatch explicitly ignored per review)", "frontend": "100% for the config-fix scope (Metro bundle serves HTTP 200; login → dashboard verified end-to-end on 390x844 mobile web preview)"},
+  "seed_data_creation": "None. No writes performed in this iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com/api. Admin: admin@concreteform.com / ChangeMe123!. Login input testIDs are NOT present on the login screen — use input.nth(0)/input.nth(1) or placeholder/label matching; only the Sign in button/dashboard testIDs exist consistently. Ignore the SB-001 seed mismatch failure in TestEquipment.test_list_seeded. google-services.json is a placeholder aligned to the Emergent-issued package com.emergent.icftools.i7hhav — do not revert.",
+  "rca_of_issue": "Root cause of the original V3MobileConfigInvalid deploy failure: the shipped google-services.json placeholder still declared package_name 'com.anonymous.frontend' (the Expo default) while app.json android.package had been auto-reassigned by Emergent to a project-unique id 'com.emergent.icftools.i7hhav'. Fix (applied by main agent): update google-services.json client[0].client_info.android_client_info.package_name to match app.json. Verification: JSON file inspected line-by-line, matches app.json exactly; regression pytest suite 38/39 (only pre-existing seed mismatch fails); frontend Metro bundle still serves 200 and login → dashboard flow still works on mobile web preview."
+}
