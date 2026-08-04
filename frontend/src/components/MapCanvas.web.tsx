@@ -109,9 +109,22 @@ export const LocationPicker: React.FC<{
   );
 };
 
-export async function geocodeString(_addr: string): Promise<{ lat: number; lng: number } | null> {
-  // Web has no built-in geocoder. Callers should offer manual entry or ask user to open on device.
-  return null;
+import { api } from "@/src/api/client";
+
+export type GeocodeResult = { lat: number; lng: number; display_name: string };
+
+export async function geocodeAddress(addr: string): Promise<GeocodeResult[]> {
+  if (!addr?.trim()) return [];
+  try {
+    return await api<GeocodeResult[]>(`/geocode?q=${encodeURIComponent(addr.trim())}`);
+  } catch {
+    return [];
+  }
+}
+
+export async function geocodeString(addr: string): Promise<{ lat: number; lng: number } | null> {
+  const results = await geocodeAddress(addr);
+  return results[0] ? { lat: results[0].lat, lng: results[0].lng } : null;
 }
 
 const styles = StyleSheet.create({

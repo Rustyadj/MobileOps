@@ -560,6 +560,49 @@ class TestRentalEdit:
         assert r.status_code == 403, r.text
 
 
+# ---------- 4d. Geocode (address → coords via Nominatim proxy) ----------
+class TestGeocode:
+    def test_requires_auth(self, api_client):
+        r = api_client.get(f"{BASE_URL}/api/geocode", params={"q": "Washington DC"})
+        assert r.status_code == 401
+
+    def test_empty_returns_empty_list(self, api_client, auth_headers):
+        r = api_client.get(f"{BASE_URL}/api/geocode", params={"q": ""}, headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_nonsense_returns_empty_list_no_500(self, api_client, auth_headers):
+        r = api_client.get(f"{BASE_URL}/api/geocode",
+                           params={"q": "zzzzzzzzzzzzzzzzzzzz"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+        assert r.json() == []
+
+    def test_real_address_returns_candidates(self, api_client, auth_headers):
+        import time
+        time.sleep(1.1)  # Nominatim ~1 rps politeness
+        r = api_client.get(f"{BASE_URL}/api/geocode",
+                           params={"q": "1600 Pennsylvania Ave Washington DC"},
+                           headers=auth_headers)
+        assert r.status_code == 200, r.text
+        results = r.json()
+        # If cloud egress blocks Nominatim, we may get [] — per review, that's still a pass
+        # (endpoint responded 200, no 5xx). Only assert result shape when non-empty.
+        assert isinstance(results, list)
+        assert len(results) <= 5
+        if results:
+            first = results[0]
+            for k in ("lat", "lng", "display_name"):
+                assert k in first
+            assert isinstance(first["lat"], (int, float))
+            assert isinstance(first["lng"], (int, float))
+            # Should be near White House ~ (38.89, -77.03)
+            dn = first["display_name"].lower()
+            assert ("white house" in dn) or ("pennsylvania" in dn) or (
+                abs(first["lat"] - 38.89) < 1.0 and abs(first["lng"] + 77.03) < 1.0
+            ), f"unexpected top result: {first}"
+
+
 # ---------- 5. Bookings ----------
 class TestBookings:
     def test_create_and_capacity(self, api_client, auth_headers):

@@ -252,15 +252,24 @@ export const LocationPicker: React.FC<{
 };
 
 // Named export used by callers that want to geocode a job-site string.
-export async function geocodeString(addr: string): Promise<{ lat: number; lng: number } | null> {
-  if (!Location || !addr?.trim()) return null;
+// Calls the backend proxy (Nominatim) so this works on web AND native.
+import { api } from "@/src/api/client";
+
+export type GeocodeResult = { lat: number; lng: number; display_name: string };
+
+export async function geocodeAddress(addr: string): Promise<GeocodeResult[]> {
+  if (!addr?.trim()) return [];
   try {
-    const perm = await Location.requestForegroundPermissionsAsync();
-    if (perm.status !== "granted") return null;
-    const res = await Location.geocodeAsync(addr);
-    if (res && res[0]) return { lat: res[0].latitude, lng: res[0].longitude };
-  } catch {}
-  return null;
+    return await api<GeocodeResult[]>(`/geocode?q=${encodeURIComponent(addr.trim())}`);
+  } catch {
+    return [];
+  }
+}
+
+// Back-compat single-result helper (used by older callers).
+export async function geocodeString(addr: string): Promise<{ lat: number; lng: number } | null> {
+  const results = await geocodeAddress(addr);
+  return results[0] ? { lat: results[0].lat, lng: results[0].lng } : null;
 }
 
 const styles = StyleSheet.create({

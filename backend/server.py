@@ -230,6 +230,12 @@ class LocationUpdate(BaseModel):
     lng: float
 
 
+class GeocodeResult(BaseModel):
+    lat: float
+    lng: float
+    display_name: str
+
+
 class ReturnLine(BaseModel):
     equipment_id: str
     qty: int
@@ -862,6 +868,46 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
 
 # ----------------------------- Push relay ---------------------------------
 _push_client: Optional[httpx.AsyncClient] = None
+_geo_client: Optional[httpx.AsyncClient] = None
+
+
+def geo_client() -> httpx.AsyncClient:
+    global _geo_client
+    if _geo_client is None:
+        _geo_client = httpx.AsyncClient(
+            base_url="https://nominatim.openstreetmap.org",
+            headers={"User-Agent": "ConcreteForm/1.0 (contractor field app)"},
+            timeout=10.0,
+        )
+    return _geo_client
+
+
+@api.get("/geocode", response_model=List[GeocodeResult])
+async def geocode_address(q: str, _: UserPublic = Depends(get_current_user)):
+    """Free-form address → up to 5 candidate coordinates. Uses OpenStreetMap Nominatim."""
+    query = (q or "").strip()
+    if not query:
+        return []
+    try:
+        resp = await geo_client().get("/search", params={"q": query, "format": "json", "limit": 5, "addressdetails": 0})
+        if resp.status_code != 200:
+            logger.warning("nominatim %s: %s", resp.status_code, resp.text[:200])
+            return []
+        results = resp.json() or []
+    except Exception as e:
+        logger.warning("geocode failed: %s", e)
+        return []
+    out: List[GeocodeResult] = []
+    for r in results:
+        try:
+            out.append(GeocodeResult(
+                lat=float(r["lat"]), lng=float(r["lon"]),
+                display_name=str(r.get("display_name", "")),
+            ))
+        except Exception:
+            continue
+    return out
+
 
 
 def push_client() -> httpx.AsyncClient:
@@ -954,9 +1000,11 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    global _push_client
+    global _push_client, _geo_client
     if _push_client is not None:
         await _push_client.aclose()
+    if _geo_client is not None:
+        await _geo_client.aclose()
     client.close()
 
 

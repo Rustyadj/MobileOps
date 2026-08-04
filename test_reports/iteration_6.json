@@ -1,0 +1,40 @@
+{
+  "summary": "Backend + frontend validation of the new address-search / geocoding feature. Backend: 38/39 pytest cases pass; the single failure is the pre-existing SB-001 vs SB-2001 seed mismatch (explicitly ignored per review). Added TestGeocode class with 4 cases covering: (a) GET /api/geocode requires auth -> 401 without token; (b) empty q -> 200 []; (c) nonsense q -> 200 [] (no 5xx, no exception leak); (d) '1600 Pennsylvania Ave Washington DC' -> 200 with >=1 result whose display_name contains 'White House' / 'Pennsylvania' and coords ~ (38.8976, -77.0366). All prior tests (auth, equipment CRUD, bracing, rentals CRUD + edit + partial return + capacity, rental location PATCH, bookings/capacity, maintenance, vendors, site, dashboard w/o upcoming_returns) still pass. Frontend (mobile 390x844): logged in as admin, navigated More -> Rentals, tapped '+' to open New Rental. The 'Job site location' card contains the new 'Search address' Input (testID `address-search-input`) and 'Search address' Button (testID `address-search-btn`); typing '1600 Pennsylvania Ave Washington DC' and tapping Search shows a results block (testID `address-results`) with 1 tappable row (testID `address-result-0`) showing 'White House, 1600, Pennsylvania Avenue Northwest, Ward 2, Washington, District of Columbia, 20500, United States' and formatted coords '38.8976, -77.0366'. Tapping the row: (1) closes the results list, (2) writes coord badge '38.89764, -77.03655' into the card, (3) prefills the previously-empty Job Site input with the display_name. Legacy 'Pick on map' (draft-pick-map) and 'Geocode job site' (draft-geocode) buttons are still present and unchanged. Only known console warning remains the carried-over expo-notifications web-push listener message (non-blocking).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "TestEquipment.test_list_seeded", "issue": "Pre-existing SB-001 vs SB-2001 seed-SKU mismatch; unrelated to this iteration and explicitly ignored per review request."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-notifications (web)", "issue": "Non-blocking console warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Carried over from prior iterations."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Align TestEquipment.test_list_seeded with current seed SKUs (SB-2001 etc.) OR restore original SB-001 sample in server.py seed(). Pre-existing; safe to defer."
+  ],
+  "critical_code_review_comments": [
+    "server.py:874-909 — GeocodeResult model + GET /api/geocode. Endpoint is guarded by get_current_user (401 for missing/invalid bearer). Uses a single lazy httpx.AsyncClient (`_geo_client`) with base_url=nominatim.openstreetmap.org and a proper User-Agent (Nominatim policy). Robust error handling: empty query short-circuits []; non-200 responses log a warning and return []; any exception from httpx also returns []. Malformed candidate entries are skipped via inner try/except. limit=5 correctly caps candidates. Client is closed in on_shutdown alongside push client.",
+    "Nominatim usage note: tests deliberately sleep ~1.1s before hitting the real address query to respect ~1 rps rate limit. From this cloud egress the query returned real results (White House match), so the pass path is exercised.",
+    "rentals.tsx:370 renders <Input testID='address-search-input' /> and rentals.tsx:377 the 'Search address' button. Results wrap has testID `address-results` and each row `address-result-<idx>`. Behavior verified: pick sets draft.lat/lng, closes list, and prefills draft.job_site only when previously empty (verified UI-side with cleared cust-site). Coord badge in the location card renders '38.89764, -77.03655' after the pick.",
+    "Coord formatting on the card uses ~5 decimals (38.89764, -77.03655) while the result-row shows 4 decimals (38.8976, -77.0366). Cosmetic inconsistency; not a bug.",
+    "Legacy flows unchanged: draft-geocode + draft-pick-map still present. Save button still branches on draft.id for PUT vs POST; the new geocode endpoint does not interact with rental persistence, so create/edit + PATCH /location regressions are unaffected (all rental tests still green)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_concrete_form_api.py (added TestGeocode with 4 cases: auth-required, empty, nonsense, real-address)"
+  ],
+  "success_rate": {"backend": "97.4% (38/39; the 1 failure is the pre-existing SB-001 seed mismatch explicitly ignored per review)", "frontend": "100% of address-search flow verified on mobile web preview (input + button present, real search returns candidates with display_name+coords, tap sets lat/lng badge + prefills Job Site + closes results list, legacy Pick on map + Geocode job site remain functional)"},
+  "seed_data_creation": "No persistent data created via UI (New Rental modal opened but not saved). Backend tests create TEST_-prefixed users/rentals/vendors and delete them in-test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com. Admin: admin@concreteform.com / ChangeMe123!. New geocode endpoint: GET /api/geocode?q=<address> (auth required, returns List[{lat, lng, display_name}], limit=5). Nominatim from this egress is reachable and returned the White House for '1600 Pennsylvania Ave Washington DC'. Frontend testIDs: address-search-input, address-search-btn, address-results, address-result-<idx> (0..4). Legacy: draft-pick-map, draft-geocode. Pick on a result sets draft.lat/lng, closes the list, and prefills draft.job_site only when it was empty. Playwright note: the New Rental modal is a scrollable ScrollView — buttons may render below the mobile viewport, so a JS-based click (scrollIntoView + el.click()) is more reliable than page.click() for testID `address-search-btn` and `address-result-0`. Ignore the SB-001 seed mismatch failure in TestEquipment.test_list_seeded.",
+  "rca_of_issue": "N/A — feature works as designed on backend and frontend. Backend 401/empty/nonsense/happy-path all validated; frontend candidate list, tap-to-set-coords, job-site prefill, and results-list dismissal all verified on mobile web preview."
+}

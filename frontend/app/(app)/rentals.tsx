@@ -4,7 +4,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
-import { LocationPicker, geocodeString } from "@/src/components/MapCanvas";
+import { LocationPicker, geocodeString, geocodeAddress, GeocodeResult } from "@/src/components/MapCanvas";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
@@ -28,6 +28,9 @@ export default function RentalsScreen() {
   const [returning, setReturning] = useState<Rental | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
+  const [addressQuery, setAddressQuery] = useState("");
+  const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
+  const [addressBusy, setAddressBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -52,8 +55,34 @@ export default function RentalsScreen() {
     if (coords) {
       setDraft({ ...draft, lat: coords.lat, lng: coords.lng });
     } else {
-      Alert.alert("Geocode failed", "Couldn't resolve that address. Try 'Pick on map' or 'Use current location'.");
+      Alert.alert("Geocode failed", "Couldn't resolve that address. Try 'Pick on map' or search a different address.");
     }
+  };
+
+  const searchAddress = async () => {
+    const q = addressQuery.trim();
+    if (!q) return;
+    setAddressBusy(true);
+    try {
+      const results = await geocodeAddress(q);
+      setAddressResults(results);
+      if (results.length === 0) {
+        Alert.alert("No matches", "Try a more specific address (street, city, state).");
+      }
+    } finally {
+      setAddressBusy(false);
+    }
+  };
+
+  const pickAddress = (r: GeocodeResult) => {
+    setDraft((d: any) => ({
+      ...d,
+      lat: r.lat,
+      lng: r.lng,
+      job_site: d?.job_site?.trim() ? d.job_site : r.display_name,
+    }));
+    setAddressResults([]);
+    setAddressQuery("");
   };
 
   const saveLocation = async (coords: { lat: number; lng: number }) => {
@@ -326,15 +355,54 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               </Row>
             ) : (
               <Text style={[typo.bodySmall, { marginBottom: spacing.sm }]}>
-                No location set. Add one so this rental appears on the Map.
+                No location set. Search an address, use the Job Site field, or pick on map.
               </Text>
             )}
+
+            <Input
+              label="Search address"
+              value={addressQuery}
+              onChangeText={setAddressQuery}
+              placeholder="123 Main St, Springfield, IL"
+              autoCapitalize="words"
+              returnKeyType="search"
+              onSubmitEditing={searchAddress}
+              testID="address-search-input"
+            />
+            <Button
+              title={addressBusy ? "Searching…" : "Search address"}
+              onPress={searchAddress}
+              variant="outline"
+              loading={addressBusy}
+              testID="address-search-btn"
+            />
+
+            {addressResults.length > 0 ? (
+              <View style={styles.resultsWrap} testID="address-results">
+                {addressResults.map((r, idx) => (
+                  <TouchableOpacity
+                    key={`${r.lat}-${r.lng}-${idx}`}
+                    onPress={() => pickAddress(r)}
+                    style={styles.resultRow}
+                    testID={`address-result-${idx}`}
+                  >
+                    <Ionicons name="location-outline" size={16} color={colors.primary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[typo.body, { fontSize: 13 }]} numberOfLines={2}>{r.display_name}</Text>
+                      <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{r.lat.toFixed(4)}, {r.lng.toFixed(4)}</Mono>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
+            <View style={{ height: spacing.sm }} />
             <Row style={{ gap: spacing.sm }}>
               <View style={{ flex: 1 }}>
                 <Button title="Pick on map" onPress={() => setPickerFor({ mode: "draft" })} variant="outline" testID="draft-pick-map" />
               </View>
               <View style={{ flex: 1 }}>
-                <Button title="Geocode address" onPress={draftGeocode} variant="outline" testID="draft-geocode" />
+                <Button title="Geocode job site" onPress={draftGeocode} variant="outline" testID="draft-geocode" />
               </View>
             </Row>
           </Card>
@@ -394,4 +462,6 @@ const styles = StyleSheet.create({
   qtyBtn: { width: 36, height: 36, borderWidth: 1, borderColor: colors.ink, alignItems: "center", justifyContent: "center" },
   qtyText: { fontSize: 20, fontWeight: "800", color: colors.ink },
   eqRow: { flexDirection: "row", alignItems: "center", padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
+  resultsWrap: { marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, overflow: "hidden" },
+  resultRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bgMuted },
 });
