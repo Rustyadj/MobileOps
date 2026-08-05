@@ -7,8 +7,8 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 export default function LoginScreen() {
   const { login } = useAuth();
-  const [email, setEmail] = useState("admin@concreteform.com");
-  const [password, setPassword] = useState("ChangeMe123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -67,12 +67,6 @@ export default function LoginScreen() {
             ) : null}
 
             <Button title="Sign in" onPress={onSubmit} loading={busy} testID="login-submit-button" />
-
-            <View style={styles.hintBox}>
-              <Text style={typo.caption}>Demo access</Text>
-              <Text style={[typo.mono, { fontSize: 13, color: colors.inkSecondary, marginTop: 4 }]}>admin@concreteform.com</Text>
-              <Text style={[typo.mono, { fontSize: 13, color: colors.inkSecondary }]}>ChangeMe123!</Text>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -96,5 +90,4 @@ const styles = StyleSheet.create({
   brandTagline: { marginTop: 4, fontSize: 13, color: colors.inkSecondary },
   form: { paddingTop: spacing.md },
   errBox: { borderWidth: 1, borderColor: colors.error, backgroundColor: colors.errorSoft, padding: spacing.md, marginBottom: spacing.md, borderRadius: radii.md },
-  hintBox: { marginTop: spacing.xl, padding: spacing.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bgMuted, borderRadius: radii.md },
 });
