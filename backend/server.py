@@ -400,8 +400,20 @@ app.add_middleware(
 )
 
 
+# Root health endpoints — Kubernetes liveness/readiness probes hit these at "/".
+# Without them the pod gets restarted every N probes → restart loop in prod.
+@app.get("/")
+async def liveness():
+    return {"status": "ok", "service": "concrete-form"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @api.get("/")
-async def root():
+async def api_root():
     return {"service": "Concrete Form API", "version": "1.0.0"}
 
 
@@ -923,20 +935,21 @@ def push_client() -> httpx.AsyncClient:
 
 @api.post("/register-push", status_code=201)
 async def register_push(body: RegisterPushBody):
+    # Non-blocking: never let a push provider hiccup break the app.
+    # Frontend calls this on every login/token refresh, so a 5xx here would
+    # spam users with error toasts.
     try:
         resp = await push_client().post("/api/v1/push/users/register", json=body.model_dump())
+        if resp.status_code == 201 or resp.status_code == 200:
+            return {"status": "registered"}
         if resp.status_code == 401:
-            raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
-        if resp.status_code >= 500:
-            raise HTTPException(502, "Push provider unavailable")
-        resp.raise_for_status()
-    except HTTPException:
-        raise
+            logger.warning("push register: EMERGENT_PUSH_KEY missing or invalid")
+            return {"status": "skipped", "reason": "push_key_missing"}
+        logger.warning("push register unexpected status %s: %s", resp.status_code, resp.text[:200])
+        return {"status": "skipped", "reason": f"upstream_{resp.status_code}"}
     except Exception as e:
         logger.warning("push register failed: %s", e)
-        # don't break login flow if push fails in preview
-        return {"status": "skipped"}
-    return {"status": "registered"}
+        return {"status": "skipped", "reason": "upstream_unreachable"}
 
 
 async def send_push(recipients: List[str], data: dict) -> None:

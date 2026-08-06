@@ -1,0 +1,40 @@
+{
+  "summary": "Verified the two production hotfixes: (1) K8s liveness/readiness probe fix on port 8001 — GET / returns 200 {\"status\":\"ok\",\"service\":\"concrete-form\"}, GET /health returns 200 {\"status\":\"ok\"}, and GET /api/ still returns 200 {\"service\":\"Concrete Form API\",...} for backward-compat. Confirmed against the INTERNAL backend (http://localhost:8001) which is exactly what the K8s probes hit; the public ingress correctly routes non-/api paths to Metro/Expo so probes must be — and are — validated on the backend port directly. (2) POST /api/register-push refactor — no longer raises 5xx: (a) upstream 401 caused by placeholder EMERGENT_PUSH_KEY in preview yields HTTP 201 {\"status\":\"skipped\",\"reason\":\"push_key_missing\"}, (b) no Authorization header required (endpoint has no auth dependency), (c) malformed body returns 422 (Pydantic), never 500, (d) auth-header + valid body also returns 201. Full regression 46/47 pass — the sole failure is the pre-existing TestEquipment.test_list_seeded SB-001 vs SB-2001 mismatch that the review request explicitly asked to ignore. Frontend login→dashboard flow verified on mobile viewport 390x844 at https://icf-tools.preview.emergentagent.com: admin@concreteform.com signs in successfully, lands on Dashboard (Welcome Admin, Utilization 2.2%, Active Rentals 1, Vendors 1, Quick Actions Map/Bracing/Calculator/Equipment/Rentals, bottom tab bar), and NO red toast about push registration failure appears. Network trace shows POST /api/auth/login 200 and GET /api/dashboard/stats 200; only console warnings are the benign expo-notifications-on-web deprecation notes and a react-native pointerEvents deprecation — pre-existing, unrelated. No red screen.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "TestEquipment.test_list_seeded", "issue": "Pre-existing SB-001 vs SB-2001 seed-SKU mismatch — explicitly ignored per review request."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_probes_and_push.py",
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (carry-over): align TestEquipment.test_list_seeded expected SKUs (SB-001…) with actual seed SKUs (SB-2001…) OR revert server.py seed() to the older sample SKUs. Pre-existing; safe to defer.",
+    "REMINDER for release owner: replace placeholder EMERGENT_PUSH_KEY with a real key so /api/register-push returns {status:'registered'} instead of {status:'skipped',reason:'push_key_missing'} in production. Current behavior is intentionally non-blocking, so users are unaffected either way."
+  ],
+  "critical_code_review_comments": [
+    "server.py:405–412 — @app.get('/') and @app.get('/health') correctly registered at the top-level FastAPI app (not on the /api router), so K8s probes hitting `/` and `/health` on port 8001 get 200 JSON responses. Root-cause of the restart loop is addressed.",
+    "server.py:415–417 — @api.get('/') kept for backward-compat as required by the review; verified 200 with service/version payload.",
+    "server.py:936–952 — /api/register-push try/except wraps push_client().post; 201/200 → registered, 401 → skipped/push_key_missing, other → skipped/upstream_{code}, exception → skipped/upstream_unreachable. All paths return HTTP 201 body — endpoint literally cannot 5xx unless FastAPI itself is broken. No auth dependency declared, matching the requirement (frontend calls this right after login/refresh).",
+    "Note: /api/register-push accepts any authenticated OR unauthenticated caller. Given it just relays a device_token/user_id upstream and is idempotent, this is acceptable. If stricter binding of user_id to the JWT subject is desired in the future, wrap with an optional-auth dep and compare body.user_id to token.sub, but that's out of scope of this hotfix.",
+    "logging.warning is used (not exception) for the placeholder-key path, avoiding log-spam noise while still leaving a breadcrumb — good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_probes_and_push.py (new)"
+  ],
+  "success_rate": {"backend": "97.9% (46/47 total; 8/8 for the new probe+push suite; the 1 failure is the pre-existing SB-001 seed mismatch explicitly ignored per review)", "frontend": "100% for the scope of this review (login→dashboard succeeds on mobile 390x844, no push-related red toast, no red screen, no new console errors)"},
+  "seed_data_creation": "None. Tests only used the seeded admin (admin@concreteform.com / ChangeMe123!) and self-cleaning TEST_ prefixed records that the existing regression suite already tears down.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL: https://icf-tools.preview.emergentagent.com (public /api/*) and http://localhost:8001 (internal, for K8s-probe paths / and /health). Admin: admin@concreteform.com / ChangeMe123!. Login inputs have NO testIDs — use `input` locator .nth(0)/.nth(1); the 'Sign in' text appears TWICE on the login screen (heading + button) so use .last() to click the button. In preview EMERGENT_PUSH_KEY='placeholder' so /api/register-push returns 201 {status:'skipped',reason:'push_key_missing'} — this is intended, not a bug. Ignore the pre-existing TestEquipment.test_list_seeded SB-001 vs SB-2001 mismatch as instructed by the review.",
+  "rca_of_issue": "Original prod-loop RCA: FastAPI only exposed routes under /api/*, so K8s liveness/readiness probes hitting `GET /` on the pod's port 8001 kept getting 404. After N consecutive probe failures Kubernetes killed the pod → 'Waiting for backend to start...' → restart loop. Fix (already applied by main agent in server.py:405–412): add top-level `@app.get('/')` returning {status:'ok',service:'concrete-form'} and `@app.get('/health')` returning {status:'ok'}, both bound to the FastAPI app (not the /api router). Verified: curl http://localhost:8001/ and /health both return HTTP 200 with the expected JSON. Secondary RCA: /api/register-push used to raise HTTPException on upstream 401 (which happens whenever EMERGENT_PUSH_KEY is a placeholder), turning normal login flows into 500-toast spam for the user. Fix (server.py:936–952): wrap the httpx call in try/except and always return HTTP 201 with a {status:'registered'} or {status:'skipped',reason:...} body — verified via 4 dedicated tests (unauth, auth, junk body 5xx-check, missing-field 422 check). Mitigation for the placeholder-key state is transparent to the user; replacing the key in prod will flip status from 'skipped' to 'registered' with no client-side changes required."
+}
