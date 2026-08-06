@@ -1,0 +1,42 @@
+{
+  "summary": "Verified Emergent Google Sign-in integration end-to-end (contract + dual-auth + UI + regressions). Backend: 55/56 tests pass (the 1 failure is the pre-existing TestEquipment.test_list_seeded SB-001 vs SB-2001 mismatch, explicitly ignored per review). New file /app/backend/tests/test_google_session_auth.py (9 tests, 9/9 pass) covers: (1) POST /api/auth/session with bogus session_id → 401; (2) sending session_token instead of session_id → 422 (Pydantic rejects — the endpoint accepts ONLY {session_id}); (3) empty body → 422; (4) extra/other fields → 422; (5) get_current_user accepts a synthetic user_sessions row via Bearer → GET /api/auth/me returns the admin user (SESSION-TOKEN path); (6) GET /api/auth/me with JWT still works (JWT regression); (7) an expired synthetic session_token is rejected → 401; (8) missing bearer → 401; (9) MongoDB indexes exist as required: users.email unique, equipment.sku unique, user_sessions.session_token unique, user_sessions.user_id, user_sessions.expires_at with expireAfterSeconds=0 (TTL). Existing JWT flow regressions all green: /api/auth/login, /auth/me, /auth/refresh, register RBAC, account lockout, equipment CRUD+CSV, rentals lifecycle+PUT+PATCH location, bookings+capacity, maintenance, vendors, site, bracing, geocode, dashboard/stats. /api/register-push and root/health probes suite (8/8) also green. Frontend (mobile 390x844 at https://icf-tools.preview.emergentagent.com): login screen renders 'Continue with Google' button (testID google-signin-button) at y=307 ABOVE email input at y=435 with a visible 'OR SIGN IN WITH EMAIL' divider between them; the demo credentials hint box has been removed (no 'admin@concreteform.com', 'ChangeMe', or 'demo' text on the login screen). Clicking the Google button triggers window.location redirect to https://auth.emergentagent.com/?redirect=https%3A%2F%2Ficf-tools.preview.emergentagent.com%2F — confirmed via request interception and final URL ending up on accounts.google.com (Emergent's OAuth relay works). Email/password login still succeeds via testIDs login-email-input / login-password-input / login-submit-button — admin@concreteform.com / ChangeMe123! → Dashboard (Welcome Admin, Utilization 2.3%, Active Rentals 1, Vendors 1). No red screen; the only console noise is pre-existing (expo-notifications-on-web deprecation warnings and react-native props.pointerEvents deprecation) — not related to Google sign-in. The 'API key not found' pageerror observed during the click test came from Google's own accounts page after redirect, NOT from our app code path.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "TestEquipment.test_list_seeded", "issue": "Pre-existing SB-001 vs SB-2001 seed-SKU mismatch — explicitly ignored per review request."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_google_session_auth.py",
+    "/app/backend/tests/test_concrete_form_api.py",
+    "/app/backend/tests/test_probes_and_push.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (carry-over): reconcile TestEquipment.test_list_seeded expected SKUs (SB-001…) with actual seed SKUs (SB-2001…) OR restore the older seed sample SKUs in server.py::seed(). Pre-existing, safe to defer per review."
+  ],
+  "critical_code_review_comments": [
+    "server.py:239-241 — SessionExchangeBody has ONLY {session_id: str}; Pydantic enforces 422 on any other field name, satisfying the 'must NEVER accept session_token' requirement. Verified.",
+    "server.py:512-571 — /api/auth/session correctly (a) calls Emergent oauth/session-data with X-Session-ID header, (b) 401s on non-200 upstream (verified with bogus id), (c) upserts user by email and REUSES existing id/role for the JWT admin — this is the requested cross-auth continuity, (d) writes a user_sessions row with session_token + expires_at (+7d) + user_id + provider='emergent_google', (e) uses idempotent upsert on session_token so replay of the same session_id is safe.",
+    "server.py:368-407 — get_current_user checks the session_token path FIRST, JWT SECOND. Verified with a synthetic user_sessions insert that GET /api/auth/me works with Bearer <session_token>. Expiry check handles both tz-aware and naive datetimes.",
+    "server.py:1096-1104 — on_startup creates all required indexes: users.email unique, equipment.sku unique, user_sessions.session_token unique, user_sessions.user_id, user_sessions.expires_at TTL (expireAfterSeconds=0). Verified via db.<coll>.index_information().",
+    "AuthContext.tsx:33-42 — extractSessionId + web hash/search parsing + cleanup follows the playbook exactly (Rule #3: process URL BEFORE anything else, then strip session_id from history).",
+    "AuthContext.tsx:155-188 — loginWithGoogle on web sets window.location.href (verified redirect); mobile branch uses openAuthSessionAsync + Linking listener + getInitialURL fallback (Android relaunch guard) — matches the playbook triple-fallback.",
+    "login.tsx:64-81 — Google button ABOVE the divider ABOVE the email/password inputs. testID='google-signin-button'. Divider text 'or sign in with email' present. Demo hint box removed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_google_session_auth.py (new — 9 tests covering session endpoint contract, dual-auth, expired sessions, and required Mongo indexes)"
+  ],
+  "success_rate": {"backend": "98.2% (55/56 — the sole failure is the pre-existing SB-001 seed mismatch that the review explicitly asked to ignore; new Google-auth suite is 9/9)", "frontend": "100% for scope: Google button present w/ testID, positioned above email/password, divider present, demo hint removed, Google click redirects to auth.emergentagent.com, JWT email/password login still works and reaches Dashboard, no red screen, no new console errors."},
+  "seed_data_creation": "Tests seed and self-clean synthetic user_sessions rows (session_token prefixed TEST_sess_ / TEST_expired_) directly via Motor; no persistent data left behind.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend: https://icf-tools.preview.emergentagent.com/api. Frontend: https://icf-tools.preview.emergentagent.com. Admin JWT creds: admin@concreteform.com / ChangeMe123!. Google Sign-in cannot be fully E2E-tested by an agent (real Google OAuth), but the endpoint contract (401 on bad id, only {session_id} accepted) and the dual-auth get_current_user path (session_token OR JWT) are covered by /app/backend/tests/test_google_session_auth.py — reuse it. Login UI testIDs: google-signin-button, login-email-input, login-password-input, login-submit-button. Ignore the pre-existing TestEquipment.test_list_seeded SB-001 vs SB-2001 mismatch as instructed.",
+  "rca_of_issue": "N/A — no bugs found. Full Google auth integration matches the playbook and the review checklist."
+}

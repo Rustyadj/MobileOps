@@ -236,6 +236,10 @@ class GeocodeResult(BaseModel):
     display_name: str
 
 
+class SessionExchangeBody(BaseModel):
+    session_id: str
+
+
 class ReturnLine(BaseModel):
     equipment_id: str
     qty: int
@@ -361,11 +365,35 @@ class RegisterPushBody(BaseModel):
 
 
 # ----------------------------- Auth Deps ----------------------------------
+async def _user_from_session_token(token: str) -> Optional[dict]:
+    sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not sess:
+        return None
+    exp = sess.get("expires_at")
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except Exception:
+            exp = None
+    if isinstance(exp, datetime):
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < now_utc():
+            return None
+    user = await db.users.find_one({"id": sess["user_id"]}, {"_id": 0, "password_hash": 0})
+    return user
+
+
 async def get_current_user(request: Request) -> UserPublic:
     auth = request.headers.get("Authorization") or ""
     if not auth.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     token = auth.split(" ", 1)[1]
+    # 1) Try Emergent Google session token
+    user = await _user_from_session_token(token)
+    if user:
+        return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
+    # 2) Fall back to JWT
     try:
         payload = decode_token(token, refresh=False)
     except JWTError:
@@ -479,6 +507,68 @@ async def refresh_token(body: RefreshReq):
 @api.get("/auth/me", response_model=UserPublic)
 async def me(user: UserPublic = Depends(get_current_user)):
     return user
+
+
+@api.post("/auth/session", response_model=TokenPair)
+async def exchange_emergent_session(body: SessionExchangeBody):
+    """Emergent Google Auth: exchange one-time session_id for a 7-day session_token
+    and upsert the user by email. NEVER accept a session_token here."""
+    async with httpx.AsyncClient(timeout=10.0) as hc:
+        try:
+            resp = await hc.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": body.session_id},
+            )
+        except Exception as e:
+            logger.warning("emergent session exchange failed: %s", e)
+            raise HTTPException(401, "Session exchange failed")
+    if resp.status_code != 200:
+        raise HTTPException(401, "Invalid or expired session")
+    data = resp.json() or {}
+    email = (data.get("email") or "").strip().lower()
+    name = data.get("name") or email.split("@")[0] or "User"
+    session_token = data.get("session_token")
+    if not email or not session_token:
+        raise HTTPException(401, "Session data incomplete")
+
+    # Upsert user by email — reuse existing id if known (so JWT admins can also log in via Google)
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        user_id = existing["id"]
+        role = existing.get("role", Role.crew.value)
+    else:
+        user_id = gen_id()
+        role = Role.crew.value
+        await db.users.insert_one({
+            "id": user_id,
+            "email": email,
+            "name": name,
+            "password_hash": "",  # Google-only account
+            "role": role,
+            "failed_attempts": 0,
+            "lock_until": None,
+            "created_at": now_utc(),
+        })
+
+    # Persist session (upsert on session_token so a repeated session_id is idempotent)
+    expires_at = now_utc() + timedelta(days=7)
+    await db.user_sessions.update_one(
+        {"session_token": session_token},
+        {"$set": {
+            "session_token": session_token,
+            "user_id": user_id,
+            "expires_at": expires_at,
+            "created_at": now_utc(),
+            "provider": "emergent_google",
+        }},
+        upsert=True,
+    )
+
+    pub = UserPublic(id=user_id, email=email, name=name, role=Role(role))
+    # Reuse TokenPair shape so the frontend has a single response model.
+    # `access_token` is the session_token; refresh_token is set to the same value
+    # (Emergent sessions don't need refresh — they last 7 days).
+    return TokenPair(access_token=session_token, refresh_token=session_token, user=pub)
 
 
 @api.get("/auth/users", response_model=List[UserPublic])
@@ -1007,6 +1097,9 @@ async def seed():
 async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.equipment.create_index("sku", unique=True)
+    await db.user_sessions.create_index("session_token", unique=True)
+    await db.user_sessions.create_index("user_id")
+    await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await seed()
     logger.info("Concrete Form API ready")
 
