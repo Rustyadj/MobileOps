@@ -31,6 +31,7 @@ export default function RentalsScreen() {
   const [addressQuery, setAddressQuery] = useState("");
   const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
   const [addressBusy, setAddressBusy] = useState(false);
+  const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -131,13 +132,38 @@ export default function RentalsScreen() {
   };
 
   const addLine = (eq: Eq) => {
+    // Open a quantity prompt so the foreman can type the exact qty.
+    // Prefills with the current line qty if already added, else 1.
+    const existing = draft?.lines?.find((l: Line) => l.equipment_id === eq.id);
+    setQtyPrompt({ eq, qty: existing ? String(existing.qty) : "1" });
+  };
+
+  const confirmQty = () => {
+    if (!qtyPrompt) return;
+    const parsed = parseInt(qtyPrompt.qty, 10);
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      Alert.alert("Invalid quantity", "Enter a positive whole number.");
+      return;
+    }
+    const eq = qtyPrompt.eq;
+    const currentOnLine = draft?.lines?.find((l: Line) => l.equipment_id === eq.id)?.qty || 0;
+    // The extra qty we're about to commit beyond what's already on this draft line.
+    const extra = parsed - currentOnLine;
+    if (extra > eq.available) {
+      Alert.alert(
+        "Not enough on hand",
+        `Only ${eq.available} of ${eq.name} available. Reduce the quantity or free up inventory first.`,
+      );
+      return;
+    }
     setDraft((d: any) => {
-      const existing = d.lines.find((l: Line) => l.equipment_id === eq.id);
-      if (existing) {
-        return { ...d, lines: d.lines.map((l: Line) => l.equipment_id === eq.id ? { ...l, qty: l.qty + 1 } : l) };
+      const existingLine = d.lines.find((l: Line) => l.equipment_id === eq.id);
+      if (existingLine) {
+        return { ...d, lines: d.lines.map((l: Line) => l.equipment_id === eq.id ? { ...l, qty: parsed } : l) };
       }
-      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, name: eq.name, qty: 1, daily_rate: eq.daily_rate, returned_qty: 0 }] };
+      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, name: eq.name, qty: parsed, daily_rate: eq.daily_rate, returned_qty: 0 }] };
     });
+    setQtyPrompt(null);
   };
 
   const updateQty = (id: string, qty: number) => {
@@ -451,6 +477,49 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
         onClose={() => setPickerFor(null)}
         onSave={saveLocation}
       />
+
+      <Modal
+        visible={!!qtyPrompt}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setQtyPrompt(null)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setQtyPrompt(null)}
+          style={styles.qtyBackdrop}
+        >
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.qtyDialog} testID="qty-dialog">
+            {qtyPrompt ? (
+              <>
+                <H3>{qtyPrompt.eq.name}</H3>
+                <Text style={[typo.bodySmall, { marginTop: 4, marginBottom: spacing.md }]}>
+                  {qtyPrompt.eq.sku} · {qtyPrompt.eq.available} available
+                </Text>
+                <Input
+                  label="Quantity"
+                  value={qtyPrompt.qty}
+                  onChangeText={(t) => setQtyPrompt({ ...qtyPrompt, qty: t.replace(/[^0-9]/g, "") })}
+                  keyboardType="number-pad"
+                  autoFocus
+                  mono
+                  returnKeyType="done"
+                  onSubmitEditing={confirmQty}
+                  testID="qty-dialog-input"
+                />
+                <Row style={{ gap: spacing.sm }}>
+                  <View style={{ flex: 1 }}>
+                    <Button title="Cancel" onPress={() => setQtyPrompt(null)} variant="outline" testID="qty-dialog-cancel" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Button title="Add" onPress={confirmQty} testID="qty-dialog-confirm" />
+                  </View>
+                </Row>
+              </>
+            ) : null}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </Screen>
   );
 }
@@ -464,4 +533,6 @@ const styles = StyleSheet.create({
   eqRow: { flexDirection: "row", alignItems: "center", padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
   resultsWrap: { marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, overflow: "hidden" },
   resultRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bgMuted },
+  qtyBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", alignItems: "center", justifyContent: "center", padding: 24 },
+  qtyDialog: { backgroundColor: colors.bg, borderRadius: 8, padding: 20, width: "100%", maxWidth: 360 },
 });
