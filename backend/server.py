@@ -189,11 +189,25 @@ class RefreshReq(BaseModel):
 
 
 # Inventory ledger buckets. Every unit of an equipment SKU sits in exactly
-# one bucket at a time; `quantity` (owned) always equals the sum of all six.
-# Movements between buckets are the unit of truth (see LedgerEntry) —
+# one bucket at a time; `quantity` (owned) always equals the sum of all of
+# them. Movements between buckets are the unit of truth (see LedgerEntry) —
 # available/reserved/etc. on the Equipment doc are a maintained cache of the
 # ledger, not the source of it.
-BUCKET_FIELDS = ["available", "reserved", "on_rental", "in_transit", "pending_inspection", "in_maintenance", "missing"]
+#
+# staged/outbound/inbound are direction-specific job-dispatch buckets (see
+# Dispatch below): staged = pulled for an outbound job but still on-site;
+# outbound = loaded and left the yard, not yet delivered; inbound = picked
+# up from the job, en route back, not yet checked in.
+#
+# in_transit is kept separately and ONLY for Inventory > Transfers
+# (yard-to-yard relocation of stock, unrelated to a customer job) — it is
+# deliberately never used to represent outbound/inbound job movement, so a
+# unit's current bucket always answers "what job-relevant state is this in"
+# unambiguously.
+BUCKET_FIELDS = [
+    "available", "reserved", "staged", "outbound", "on_rental", "inbound",
+    "pending_inspection", "in_maintenance", "missing", "in_transit",
+]
 
 
 class Equipment(BaseModel):
@@ -207,8 +221,11 @@ class Equipment(BaseModel):
     quantity: int = 1  # owned
     available: int = 1
     reserved: int = 0
+    staged: int = 0  # pulled for an outbound delivery, still at the yard
+    outbound: int = 0  # loaded and left the yard, not yet delivered
     on_rental: int = 0
-    in_transit: int = 0
+    inbound: int = 0  # picked up from the job, en route back, not yet checked in
+    in_transit: int = 0  # yard-to-yard Transfers only — see BUCKET_FIELDS note above
     pending_inspection: int = 0  # returned, awaiting inspection before going back to available
     in_maintenance: int = 0  # confirmed damaged / open maintenance ticket
     missing: int = 0  # unaccounted for at last physical count
@@ -314,6 +331,106 @@ class TransferCreate(BaseModel):
     qty: int
     to_location: str
     note: str = ""
+
+
+# ----------------------------- Dispatch / Movements -------------------------
+# A Dispatch is a scheduled physical movement of equipment: OUTBOUND
+# (shop/yard -> job) or INBOUND (job -> shop/yard). It drives the equipment
+# ledger through direction-specific bucket stages as it progresses, and is
+# the single sanctioned path between a booking's reservation and an active
+# rental (outbound), and between an active rental and inspection (inbound).
+#
+# Status flows (validated per direction — see DISPATCH_FLOWS):
+#   outbound: scheduled -> staging -> ready -> loaded -> dispatched -> arrived -> completed
+#   inbound:  scheduled -> dispatched -> arrived -> loaded -> returning -> at_yard -> completed
+# "cancelled" is reachable from any non-terminal status in either flow.
+#
+# Each status maps to the bucket its lines' units currently sit in (see
+# dispatch_bucket_for_status). A status transition moves qty from the old
+# bucket to the new one in one ledger entry — so cancelling from any point
+# in either flow always resolves to a single correct ledger move back to
+# the flow's starting bucket, not a special-cased rollback per stage.
+DISPATCH_FLOWS = {
+    "outbound": ["scheduled", "staging", "ready", "loaded", "dispatched", "arrived", "completed"],
+    "inbound": ["scheduled", "dispatched", "arrived", "loaded", "returning", "at_yard", "completed"],
+}
+
+
+def dispatch_bucket_for_status(direction: str, status: str) -> str:
+    if direction == "outbound":
+        return {
+            "scheduled": "reserved", "staging": "reserved",
+            "ready": "staged", "loaded": "staged",
+            "dispatched": "outbound", "arrived": "outbound",
+            "completed": "on_rental",
+        }[status]
+    return {
+        "scheduled": "on_rental", "dispatched": "on_rental", "arrived": "on_rental",
+        "loaded": "inbound", "returning": "inbound", "at_yard": "inbound",
+        "completed": "pending_inspection",
+    }[status]
+
+
+class DispatchLine(BaseModel):
+    equipment_id: str
+    sku: str
+    name: str
+    qty: int
+
+
+class Dispatch(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    direction: str  # "outbound" | "inbound"
+    status: str = "scheduled"
+    scheduled_date: Optional[datetime] = None
+    customer_name: str
+    job_site: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    rental_id: Optional[str] = None
+    booking_id: Optional[str] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    lines: List[DispatchLine] = []
+    notes: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+    started_at: Optional[datetime] = None
+    arrived_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class DispatchCreate(BaseModel):
+    direction: str
+    scheduled_date: Optional[datetime] = None
+    customer_name: str
+    job_site: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    rental_id: Optional[str] = None
+    booking_id: Optional[str] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    lines: List[DispatchLine] = []
+    notes: str = ""
+
+
+class DispatchStatusUpdate(BaseModel):
+    status: str
+
+
+class DispatchAssignUpdate(BaseModel):
+    driver_name: Optional[str] = None
+    truck: Optional[str] = None
+    trailer: Optional[str] = None
+    crew: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+    notes: Optional[str] = None
 
 
 class RentalLine(BaseModel):
@@ -1130,6 +1247,134 @@ async def receive_transfer(transfer_id: str, user: UserPublic = Depends(require_
     )
     new_doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
     return Transfer(**new_doc)
+
+
+# ----------------------------- Dispatch / Movements --------------------------
+async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> dict:
+    """Apply one status transition (including 'cancelled') to a dispatch doc:
+    moves its lines' qty between the buckets dispatch_bucket_for_status maps
+    the old and new status to, stamps the relevant timestamp, and — for an
+    outbound dispatch completing without an existing rental — creates the
+    Rental and marks any linked booking dispatched. Persists the change and
+    returns the updated doc (mutates `doc` in place too, so callers fast-
+    forwarding through several stages can just keep passing it back in)."""
+    direction = doc["direction"]
+    flow = DISPATCH_FLOWS[direction]
+    current = doc["status"]
+    old_bucket = dispatch_bucket_for_status(direction, current)
+    new_bucket = dispatch_bucket_for_status(direction, flow[0]) if new_status == "cancelled" else dispatch_bucket_for_status(direction, new_status)
+
+    now = now_utc()
+    upd: dict = {"status": new_status, "updated_at": now}
+    if new_status == "dispatched" and not doc.get("started_at"):
+        upd["started_at"] = now
+    if new_status == "arrived" and not doc.get("arrived_at"):
+        upd["arrived_at"] = now
+    if new_status in ("completed", "cancelled"):
+        upd["completed_at"] = now
+
+    if old_bucket != new_bucket:
+        for line in doc["lines"]:
+            await apply_ledger_entry(
+                line["equipment_id"], line["qty"], old_bucket, new_bucket,
+                f"dispatch_{direction}_{new_status}", location=doc.get("job_site", ""),
+                rental_id=doc.get("rental_id"), booking_id=doc.get("booking_id"), created_by=user.name,
+            )
+
+    if direction == "outbound" and new_status == "completed" and not doc.get("rental_id"):
+        rental = Rental(
+            customer_name=doc["customer_name"], job_site=doc.get("job_site", ""),
+            start_date=doc.get("scheduled_date") or now_utc(), notes=doc.get("notes", ""),
+            lines=[RentalLine(equipment_id=l["equipment_id"], sku=l["sku"], name=l["name"], qty=l["qty"], daily_rate=0) for l in doc["lines"]],
+        )
+        await db.rentals.insert_one(rental.model_dump())
+        upd["rental_id"] = rental.id
+        if doc.get("booking_id"):
+            await db.bookings.update_one({"id": doc["booking_id"]}, {"$set": {"status": "dispatched", "dispatched_rental_id": rental.id}})
+
+    await db.dispatches.update_one({"id": doc["id"]}, {"$set": upd})
+    doc.update(upd)
+    return doc
+
+
+@api.get("/dispatches", response_model=List[Dispatch])
+async def list_dispatches(_: UserPublic = Depends(get_current_user)):
+    docs = await db.dispatches.find({}, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
+    return [Dispatch(**d) for d in docs]
+
+
+@api.get("/dispatches/{d_id}", response_model=Dispatch)
+async def get_dispatch(d_id: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    return Dispatch(**doc)
+
+
+@api.post("/dispatches", response_model=Dispatch, status_code=201)
+async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    if body.direction not in DISPATCH_FLOWS:
+        raise HTTPException(400, "direction must be 'outbound' or 'inbound'")
+    if not body.lines:
+        raise HTTPException(400, "Dispatch needs at least one equipment line")
+    if body.direction == "inbound" and not body.rental_id:
+        raise HTTPException(400, "Inbound dispatch requires rental_id — it can only pick up units already on that rental")
+
+    dispatch = Dispatch(**body.model_dump(), created_by=user.name)
+    starting_bucket = dispatch_bucket_for_status(dispatch.direction, dispatch.status)
+
+    if dispatch.direction == "outbound" and not dispatch.booking_id:
+        # No booking behind this dispatch to have already reserved the units
+        # — reserve them from available right now, so the dispatch's own
+        # bucket (starting_bucket == "reserved") is actually backed by stock.
+        for line in dispatch.lines:
+            eq = await db.equipment.find_one({"id": line.equipment_id}, {"_id": 0})
+            if not eq or eq.get("available", 0) < line.qty:
+                raise HTTPException(400, f"Not enough available {line.name} to schedule this dispatch")
+        for line in dispatch.lines:
+            await apply_ledger_entry(
+                line.equipment_id, line.qty, "available", starting_bucket, "dispatch_scheduled",
+                location=dispatch.job_site, booking_id=dispatch.booking_id, created_by=user.name,
+            )
+
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch
+
+
+@api.patch("/dispatches/{d_id}/assign", response_model=Dispatch)
+async def assign_dispatch(d_id: str, body: DispatchAssignUpdate, _: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_utc()
+        await db.dispatches.update_one({"id": d_id}, {"$set": upd})
+    new_doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    return Dispatch(**new_doc)
+
+
+@api.patch("/dispatches/{d_id}/status", response_model=Dispatch)
+async def update_dispatch_status(d_id: str, body: DispatchStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    current = doc["status"]
+    if current in ("completed", "cancelled"):
+        raise HTTPException(400, f"Dispatch already {current}")
+
+    flow = DISPATCH_FLOWS[doc["direction"]]
+    new_status = body.status
+    if new_status != "cancelled":
+        if new_status not in flow:
+            raise HTTPException(400, f"Invalid status for a {doc['direction']} dispatch")
+        cur_idx = flow.index(current)
+        new_idx = flow.index(new_status)
+        if new_idx != cur_idx + 1:
+            raise HTTPException(400, f"Cannot jump from '{current}' to '{new_status}' — next step is '{flow[cur_idx + 1]}'")
+
+    updated = await _set_dispatch_status(doc, new_status, user)
+    return Dispatch(**updated)
 
 
 # ----------------------------- Serialized units -----------------------------
