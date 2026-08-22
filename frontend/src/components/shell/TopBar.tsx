@@ -1,6 +1,6 @@
-// Top application bar — breadcrumb, global search, + New, attention
-// indicator, and the user/profile menu. Rendered above the routed Stack on
-// tablet/desktop widths (AppShell decides when to mount it).
+// Top application bar — hamburger/sidebar toggle, breadcrumb, global search,
+// + New, notifications, help, and the user/profile menu. Rendered above the
+// routed Stack on tablet/desktop widths (AppShell decides when to mount it).
 import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { usePathname, useRouter } from "expo-router";
@@ -9,41 +9,55 @@ import { colors, spacing, radii, type as typo } from "@/src/theme";
 import { useAuth } from "@/src/context/AuthContext";
 import { useCommandMenu } from "@/src/context/CommandMenuContext";
 import { useNeedsAttention } from "@/src/hooks/use-needs-attention";
+import { useSidebarCollapsed } from "@/src/hooks/use-sidebar-collapsed";
 import { breadcrumbForPath } from "./nav-config";
 
 export const TOPBAR_HEIGHT = 56;
+
+const ROLE_LABEL: Record<string, string> = {
+  admin: "Operations Manager",
+  foreman: "Foreman",
+  crew: "Crew",
+};
 
 export const TopBar: React.FC = () => {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { openSearch, openNew } = useCommandMenu();
   const { items } = useNeedsAttention();
+  const { toggle: toggleSidebar } = useSidebarCollapsed();
   const router = useRouter();
   const [profileOpen, setProfileOpen] = useState(false);
 
   const { section, page } = breadcrumbForPath(pathname);
   const initials = (user?.name || user?.email || "?").split(" ").filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || "").join("") || "?";
+  const roleLabel = user?.role ? (ROLE_LABEL[user.role] || user.role) : "";
 
   return (
     <View style={styles.wrap} testID="topbar">
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={styles.crumb} numberOfLines={1}>{section}</Text>
-        <Text style={styles.title} numberOfLines={1}>{page}</Text>
+      <TouchableOpacity onPress={toggleSidebar} style={styles.iconBtn} testID="topbar-sidebar-toggle">
+        <Ionicons name="menu-outline" size={20} color={colors.inkSecondary} />
+      </TouchableOpacity>
+
+      <View style={styles.breadcrumb}>
+        <Text style={styles.crumbMuted} numberOfLines={1}>{section}</Text>
+        <Ionicons name="chevron-forward" size={12} color={colors.inkMuted} style={{ marginHorizontal: 4 }} />
+        <Text style={styles.crumbActive} numberOfLines={1}>{page}</Text>
       </View>
 
       <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7}>
         <Ionicons name="search" size={15} color={colors.inkMuted} />
-        <Text style={styles.searchText}>Search…</Text>
+        <Text style={styles.searchText} numberOfLines={1}>Search rentals, equipment, sites, vendors…</Text>
         <View style={styles.kbd}><Text style={styles.kbdText}>⌘K</Text></View>
       </TouchableOpacity>
 
       <TouchableOpacity onPress={openNew} style={styles.newBtn} testID="topbar-new" activeOpacity={0.85}>
-        <Ionicons name="add" size={16} color="#FFF" />
+        <Ionicons name="add" size={15} color="#FFF" />
         <Text style={styles.newText}>New</Text>
       </TouchableOpacity>
 
       <TouchableOpacity onPress={() => router.push("/(app)" as any)} style={styles.iconBtn} testID="topbar-attention">
-        <Ionicons name="notifications-outline" size={19} color={colors.inkSecondary} />
+        <Ionicons name="notifications-outline" size={18} color={colors.inkSecondary} />
         {items.length > 0 ? (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{items.length > 9 ? "9+" : items.length}</Text>
@@ -51,9 +65,20 @@ export const TopBar: React.FC = () => {
         ) : null}
       </TouchableOpacity>
 
+      <View style={styles.helpBtn}>
+        <Text style={styles.helpText}>?</Text>
+      </View>
+
       <View>
-        <TouchableOpacity onPress={() => setProfileOpen((o) => !o)} style={styles.avatar} testID="topbar-profile">
-          <Text style={styles.avatarText}>{initials}</Text>
+        <TouchableOpacity onPress={() => setProfileOpen((o) => !o)} style={styles.profileBtn} testID="topbar-profile" activeOpacity={0.75}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{initials}</Text>
+          </View>
+          <View style={styles.profileNames}>
+            <Text style={styles.profileName} numberOfLines={1}>{user?.name || ""}</Text>
+            <Text style={styles.profileRole} numberOfLines={1}>{roleLabel}</Text>
+          </View>
+          <Ionicons name="chevron-down" size={13} color={colors.inkMuted} />
         </TouchableOpacity>
         {profileOpen ? (
           <>
@@ -81,16 +106,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
     backgroundColor: colors.bg,
   },
-  crumb: { ...typo.caption, marginBottom: 0 },
-  title: { ...typo.h3, fontSize: 15 },
+  breadcrumb: { flexDirection: "row", alignItems: "center", minWidth: 0 },
+  crumbMuted: { fontSize: 12.5, color: colors.inkMuted, fontWeight: "500" },
+  crumbActive: { fontSize: 13, color: colors.ink, fontWeight: "700" },
   searchBtn: {
     flexDirection: "row", alignItems: "center", gap: 8,
-    height: 34, paddingHorizontal: 10, minWidth: 220,
+    height: 34, paddingHorizontal: 10, flex: 1, maxWidth: 460, marginLeft: spacing.md,
     borderWidth: 1, borderColor: colors.border, borderRadius: radii.md,
     backgroundColor: colors.bgMuted,
   },
@@ -99,17 +125,24 @@ const styles = StyleSheet.create({
   kbdText: { fontSize: 10, fontWeight: "700", color: colors.inkMuted },
   newBtn: {
     flexDirection: "row", alignItems: "center", gap: 6,
-    height: 34, paddingHorizontal: 14,
-    backgroundColor: colors.accent, borderRadius: radii.md,
+    height: 32, paddingHorizontal: 12,
+    backgroundColor: colors.primary, borderRadius: radii.md,
+    marginLeft: "auto",
   },
-  newText: { color: "#FFF", fontSize: 13, fontWeight: "700" },
-  iconBtn: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  newText: { color: "#FFF", fontSize: 12.5, fontWeight: "700" },
+  iconBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  helpBtn: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  helpText: { fontSize: 12, fontWeight: "700", color: colors.inkMuted },
   badge: { position: "absolute", top: 2, right: 2, minWidth: 15, height: 15, borderRadius: 8, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
   badgeText: { color: "#FFF", fontSize: 9, fontWeight: "700" },
-  avatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
-  avatarText: { color: "#FFF", fontSize: 12, fontWeight: "700" },
+  profileBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 4, paddingRight: 2 },
+  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: "#FFF", fontSize: 11.5, fontWeight: "700" },
+  profileNames: { alignItems: "flex-start" },
+  profileName: { fontSize: 12.5, fontWeight: "700", color: colors.ink, lineHeight: 15 },
+  profileRole: { fontSize: 10.5, color: colors.inkMuted, lineHeight: 13 },
   profileMenu: {
-    position: "absolute", top: 40, right: 0, width: 220, zIndex: 100,
+    position: "absolute", top: 44, right: 0, width: 220, zIndex: 100,
     backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md,
     padding: spacing.md,
   },

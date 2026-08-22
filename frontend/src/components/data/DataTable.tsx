@@ -108,13 +108,13 @@ export const DataTable = React.memo(DataTableInner) as typeof DataTableInner;
 const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row", alignItems: "center",
-    paddingHorizontal: spacing.md, height: 36,
+    paddingHorizontal: spacing.md, height: 30,
     borderBottomWidth: 1, borderBottomColor: colors.border,
     backgroundColor: colors.bgMuted,
   },
   row: {
     flexDirection: "row", alignItems: "center",
-    paddingHorizontal: spacing.md, minHeight: 48,
+    paddingHorizontal: spacing.md, minHeight: 34,
     borderBottomWidth: 1, borderBottomColor: colors.border,
     backgroundColor: colors.bg,
   },

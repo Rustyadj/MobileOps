@@ -1,33 +1,21 @@
 // Persistent collapsible left sidebar — desktop/large-tablet navigation.
 // Expanded: icon + label. Collapsed: icons only, with tooltips on web hover.
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform } from "react-native";
 import { useRouter, usePathname } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, radii, type as typo } from "@/src/theme";
-import { storage } from "@/src/utils/storage";
+import { useSidebarCollapsed } from "@/src/hooks/use-sidebar-collapsed";
 import { NAV_SECTIONS } from "./nav-config";
 
-const COLLAPSE_KEY = "cf_sidebar_collapsed";
-export const SIDEBAR_EXPANDED_W = 248;
-export const SIDEBAR_COLLAPSED_W = 68;
+export const SIDEBAR_EXPANDED_W = 180;
+export const SIDEBAR_COLLAPSED_W = 60;
 
-export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concrete Form" }) => {
+export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "MobileOps" }) => {
   const router = useRouter();
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
+  const { collapsed, toggle } = useSidebarCollapsed();
   const [hover, setHover] = useState<string | null>(null);
-
-  useEffect(() => {
-    storage.getItem<boolean>(COLLAPSE_KEY, false).then((v) => setCollapsed(!!v));
-  }, []);
-
-  const toggle = () => {
-    setCollapsed((c) => {
-      storage.setItem(COLLAPSE_KEY, !c);
-      return !c;
-    });
-  };
 
   const width = collapsed ? SIDEBAR_COLLAPSED_W : SIDEBAR_EXPANDED_W;
 
@@ -35,14 +23,14 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concret
     <View style={[styles.wrap, { width }]} testID="sidebar">
       <View style={styles.brandRow}>
         <View style={styles.brandMark}>
-          <Text style={styles.brandLetter}>C</Text>
+          <Text style={styles.brandLetter}>M</Text>
         </View>
         {!collapsed ? <Text style={styles.brandText} numberOfLines={1}>{brandName}</Text> : null}
       </View>
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingVertical: spacing.sm }}>
         {NAV_SECTIONS.map((section) => (
-          <View key={section.key} style={{ marginBottom: spacing.sm }}>
+          <View key={section.key} style={{ marginBottom: 6 }}>
             {!collapsed ? <Text style={styles.sectionLabel}>{section.label}</Text> : <View style={styles.collapsedDivider} />}
             {section.items.map((item) => {
               const active = pathname === routeToPath(item.route);
@@ -57,16 +45,15 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concret
                   <TouchableOpacity
                     onPress={() => router.push(item.route as any)}
                     style={[styles.item, active && styles.itemActive, collapsed && styles.itemCollapsed]}
-                    activeOpacity={0.7}
+                    activeOpacity={0.75}
                     testID={item.testID}
                   >
-                    <Ionicons name={item.icon} size={18} color={active ? "#FFFFFF" : "#94A3B8"} />
+                    <Ionicons name={item.icon} size={16} color={active ? "#FFFFFF" : colors.sidebarItemMuted} />
                     {!collapsed ? (
                       <Text style={[styles.itemLabel, active && styles.itemLabelActive]} numberOfLines={1}>
                         {item.label}
                       </Text>
                     ) : null}
-                    {active ? <View style={styles.activeBar} /> : null}
                   </TouchableOpacity>
                   {collapsed && hover === item.key ? (
                     <View style={styles.tooltip} pointerEvents="none">
@@ -81,7 +68,7 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concret
       </ScrollView>
 
       <TouchableOpacity onPress={toggle} style={styles.collapseBtn} testID="sidebar-toggle" activeOpacity={0.7}>
-        <Ionicons name={collapsed ? "chevron-forward" : "chevron-back"} size={16} color="#94A3B8" />
+        <Ionicons name={collapsed ? "chevron-forward" : "chevron-back"} size={14} color={colors.sidebarItemMuted} />
         {!collapsed ? <Text style={styles.collapseText}>Collapse</Text> : null}
       </TouchableOpacity>
     </View>
@@ -96,49 +83,48 @@ function routeToPath(route: string): string {
 const styles = StyleSheet.create({
   wrap: {
     height: "100%",
-    backgroundColor: "#0B1835",
+    backgroundColor: colors.sidebar,
     borderRightWidth: 1,
-    borderRightColor: "#172B52",
+    borderRightColor: colors.sidebarBorder,
     ...(Platform.OS === "web" ? ({ transition: "width 150ms ease-out" } as any) : null),
   },
   brandRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 14,
-    height: 56,
+    gap: 8,
+    paddingHorizontal: 12,
+    height: 52,
     borderBottomWidth: 1,
-    borderBottomColor: "#172B52",
+    borderBottomColor: colors.sidebarBorder,
   },
-  brandMark: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" },
-  brandLetter: { color: "#FFF", fontSize: 15, fontWeight: "700" },
-  brandText: { ...typo.h3, fontSize: 15, color: "#F8FAFC" },
-  sectionLabel: { ...typo.caption, color: "#64748B", paddingHorizontal: 14, marginTop: spacing.sm, marginBottom: 6 },
-  collapsedDivider: { height: 1, backgroundColor: "#172B52", marginHorizontal: 14, marginTop: spacing.sm, marginBottom: spacing.sm },
+  brandMark: { width: 24, height: 24, borderRadius: radii.sm, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  brandLetter: { color: "#FFF", fontSize: 13, fontWeight: "700" },
+  brandText: { ...typo.h3, fontSize: 14, color: colors.sidebarText, fontWeight: "700" },
+  sectionLabel: { fontSize: 10, fontWeight: "700", color: "#5E7191", textTransform: "uppercase", letterSpacing: 0.6, paddingHorizontal: 12, marginTop: 10, marginBottom: 5 },
+  collapsedDivider: { height: 1, backgroundColor: colors.sidebarBorder, marginHorizontal: 12, marginTop: spacing.sm, marginBottom: spacing.sm },
   item: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    height: 38,
-    paddingHorizontal: 14,
-    marginHorizontal: 8,
+    gap: 10,
+    height: 32,
+    paddingHorizontal: 10,
+    marginHorizontal: 6,
     borderRadius: radii.sm,
   },
-  itemCollapsed: { justifyContent: "center", paddingHorizontal: 0, marginHorizontal: 8 },
-  itemActive: { backgroundColor: "#1D3A70" },
-  itemLabel: { ...typo.body, fontSize: 13.5, color: "#CBD5E1", flex: 1 },
+  itemCollapsed: { justifyContent: "center", paddingHorizontal: 0, marginHorizontal: 6 },
+  itemActive: { backgroundColor: colors.sidebarActive },
+  itemLabel: { fontSize: 12.5, color: "#C9D6E8", flex: 1, fontWeight: "500" },
   itemLabelActive: { color: "#FFFFFF", fontWeight: "700" },
-  activeBar: { position: "absolute", left: -8, top: 6, bottom: 6, width: 3, borderRadius: 2, backgroundColor: colors.accent },
   collapseBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    height: 44,
-    paddingHorizontal: 20,
+    height: 38,
+    paddingHorizontal: 16,
     borderTopWidth: 1,
-    borderTopColor: "#172B52",
+    borderTopColor: colors.sidebarBorder,
   },
-  collapseText: { ...typo.label, color: "#94A3B8" },
+  collapseText: { fontSize: 11.5, fontWeight: "600", color: colors.sidebarItemMuted },
   tooltip: {
     position: "absolute",
     left: SIDEBAR_COLLAPSED_W + 4,

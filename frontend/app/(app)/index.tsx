@@ -1,18 +1,27 @@
+// Dashboard — operations command center matching the reference enterprise
+// console: 5-tile KPI strip, live rental map + Needs Attention, four dense
+// operational tables, and a full-width Recent Activity table. All data is
+// pulled from existing endpoints (dashboard/stats, rentals, bookings,
+// equipment, maintenance, bookings/capacity) — no fabricated business data.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from "react-native";
+import { View, Text, StyleSheet, Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { PageBody } from "@/src/components/layout/PageBody";
-import { MapCanvas, Pin } from "@/src/components/MapCanvas";
+import { Pin } from "@/src/components/MapCanvas";
 import { StatusBadge } from "@/src/components/data/StatusBadge";
+import { KpiStrip, KpiTile } from "@/src/components/dashboard/KpiStrip";
+import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
+import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
+import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
+import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { api, apiBaseUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { useNeedsAttention, AttentionItem } from "@/src/hooks/use-needs-attention";
-import { colors, spacing, type as typo, radii } from "@/src/theme";
+import { colors, spacing } from "@/src/theme";
 
 type Stats = {
   utilization: number;
@@ -30,8 +39,9 @@ type Rental = {
   status: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
 };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string };
-type Equipment = { id: string; sku: string; name: string; quantity: number; available: number; condition: string };
+type Equipment = { id: string; sku: string; name: string; quantity: number; available: number; condition: string; location: string };
 type Maintenance = { id: string; equipment_name: string; issue: string; status: string; created_at: string; serviced_at?: string | null };
+type CapacityRow = { equipment_id: string; sku: string; name: string; category: string; quantity: number; committed: number; available: number };
 
 const EMPTY_STATS: Stats = {
   utilization: 0, total_quantity: 0, total_available: 0, active_rentals: 0,
@@ -39,32 +49,46 @@ const EMPTY_STATS: Stats = {
 };
 
 const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const shortId = (id: string) => id.slice(0, 8).toUpperCase();
+
+const MAINT_STATUS_TONE: Record<string, "error" | "warning" | "success"> = {
+  open: "error", in_progress: "warning", resolved: "success",
+};
+const MAINT_STATUS_LABEL: Record<string, string> = {
+  open: "Open", in_progress: "In progress", resolved: "Resolved",
+};
 
 export default function Dashboard() {
   const { user } = useAuth();
   const router = useRouter();
-  const { isShellWide, isDesktop } = useBreakpoint();
+  const { isShellWide } = useBreakpoint();
   const { items: attention, reload: reloadAttention } = useNeedsAttention();
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [maintenance, setMaintenance] = useState<Maintenance[]>([]);
+  const [capacityRows, setCapacityRows] = useState<CapacityRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(new Date());
 
   const load = useCallback(async () => {
-    const [nextStats, nextRentals, nextBookings, nextEquipment, nextMaintenance] = await Promise.all([
+    const todayISO = new Date().toISOString().slice(0, 10) + "T00:00:00";
+    const [nextStats, nextRentals, nextBookings, nextEquipment, nextMaintenance, nextCapacity] = await Promise.all([
       api<Stats>("/dashboard/stats").catch(() => EMPTY_STATS),
       api<Rental[]>("/rentals").catch(() => []),
       api<Booking[]>("/bookings").catch(() => []),
       api<Equipment[]>("/equipment").catch(() => []),
       api<Maintenance[]>("/maintenance").catch(() => []),
+      api<{ date: string; rows: CapacityRow[] }>(`/bookings/capacity?target_date=${todayISO}`).catch(() => ({ date: "", rows: [] })),
     ]);
     setStats(nextStats);
     setRentals(nextRentals);
     setBookings(nextBookings);
     setEquipment(nextEquipment);
     setMaintenance(nextMaintenance);
+    setCapacityRows(nextCapacity.rows);
+    setLastUpdated(new Date());
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -91,18 +115,22 @@ export default function Dashboard() {
     setRefreshing(false);
   };
 
-  const today = useMemo(() => new Date(), []);
   const activeRentals = useMemo(
     () => rentals.filter((r) => r.status !== "returned").sort((a, b) => +new Date(b.start_date) - +new Date(a.start_date)),
     [rentals],
   );
-  const upcomingBookings = useMemo(
-    () => bookings.filter((b) => b.status !== "cancelled" && new Date(b.end_date) >= today).sort((a, b) => +new Date(a.start_date) - +new Date(b.start_date)),
-    [bookings, today],
+  const unitsOnRental = useMemo(
+    () => activeRentals.reduce((sum, r) => sum + r.lines.reduce((s, l) => s + Math.max(0, l.qty - l.returned_qty), 0), 0),
+    [activeRentals],
   );
+  const upcomingBookings = useMemo(() => {
+    const now = new Date();
+    return bookings.filter((b) => b.status !== "cancelled" && new Date(b.end_date) >= now).sort((a, b) => +new Date(a.start_date) - +new Date(b.start_date));
+  }, [bookings]);
+  const equipmentLocation = useMemo(() => Object.fromEntries(equipment.map((e) => [e.id, e.location])), [equipment]);
   const shortages = useMemo(
-    () => equipment.filter((e) => e.quantity > 0 && e.available / e.quantity <= 0.2).sort((a, b) => (a.available / a.quantity) - (b.available / b.quantity)),
-    [equipment],
+    () => capacityRows.filter((r) => r.committed > r.quantity).sort((a, b) => (b.committed - b.quantity) - (a.committed - a.quantity)),
+    [capacityRows],
   );
   const maintenanceQueue = useMemo(
     () => maintenance.filter((m) => m.status === "open" || m.status === "in_progress").sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)),
@@ -113,74 +141,91 @@ export default function Dashboard() {
     [activeRentals],
   );
 
+  const rentalColumns: OpColumn<Rental>[] = [
+    { key: "id", label: "Rental #", flex: 1, render: (r) => <Text style={styles.link} numberOfLines={1}>{shortId(r.id)}</Text> },
+    { key: "site", label: "Site", flex: 1.3, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.job_site || "—"}</Text> },
+    { key: "equipment", label: "Equipment", flex: 1.4, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.lines[0]?.name || "—"}{r.lines.length > 1 ? ` +${r.lines.length - 1}` : ""}</Text> },
+    { key: "due", label: "Due back", flex: 1, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.due_date ? dateLabel(r.due_date) : "—"}</Text> },
+  ];
+
+  const bookingColumns: OpColumn<Booking>[] = [
+    { key: "id", label: "Booking #", flex: 1, render: (b) => <Text style={styles.link} numberOfLines={1}>{shortId(b.id)}</Text> },
+    { key: "site", label: "Site", flex: 1.4, render: (b) => <Text style={styles.cell} numberOfLines={1}>{b.job_site || "—"}</Text> },
+    { key: "start", label: "Start date", flex: 1, render: (b) => <Text style={styles.cell} numberOfLines={1}>{dateLabel(b.start_date)}</Text> },
+  ];
+
+  const shortageColumns: OpColumn<CapacityRow>[] = [
+    { key: "equipment", label: "Equipment", flex: 1.6, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.name}</Text> },
+    { key: "site", label: "Site", flex: 1, render: (r) => <Text style={styles.cell} numberOfLines={1}>{equipmentLocation[r.equipment_id] || "—"}</Text> },
+    { key: "short", label: "Qty short", flex: 0.8, align: "right", render: (r) => <Text style={styles.danger}>{r.quantity - r.committed}</Text> },
+  ];
+
+  const maintenanceColumns: OpColumn<Maintenance>[] = [
+    { key: "id", label: "ID", flex: 0.8, render: (m) => <Text style={styles.link} numberOfLines={1}>{shortId(m.id)}</Text> },
+    { key: "equipment", label: "Equipment", flex: 1.4, render: (m) => <Text style={styles.cell} numberOfLines={1}>{m.equipment_name || "—"}</Text> },
+    { key: "opened", label: "Opened", flex: 1, render: (m) => <Text style={styles.cell} numberOfLines={1}>{dateLabel(m.created_at)}</Text> },
+    { key: "status", label: "Status", flex: 1, render: (m) => <StatusBadge label={MAINT_STATUS_LABEL[m.status] || m.status} tone={MAINT_STATUS_TONE[m.status]} /> },
+  ];
+
   const commandCenter = (
-    <View style={[styles.commandCenter, !isDesktop && styles.commandCenterCompact]} testID="dashboard-command-center">
-      <View style={styles.dashboardHeading}>
-        <View>
-          <Text style={styles.eyebrow}>Live operations</Text>
-          <Text style={styles.heading}>Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}, {user?.name?.split(" ")[0] || "team"}</Text>
-        </View>
-        <View style={styles.asOf}>
-          <View style={styles.liveDot} />
-          <Text style={styles.asOfText}>{new Date().toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</Text>
-        </View>
+    <View style={styles.commandCenter} testID="dashboard-command-center">
+      <KpiStrip>
+        <KpiTile label="Active rentals" value={String(activeRentals.length)} meta={`${pins.length} mapped`} icon="receipt-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-active-rentals" />
+        <KpiTile label="On rental (units)" value={String(unitsOnRental)} meta="Units deployed" icon="cube-outline" tone="success" onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-units-on-rental" />
+        <KpiTile label="Equipment shortages" value={String(shortages.length)} meta={shortages.length ? "Constrained SKUs today" : "No shortages today"} icon="warning-outline" tone="warning" onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
+        <KpiTile label="Maintenance due" value={String(maintenanceQueue.length)} meta="Open queue" icon="build-outline" tone="danger" onPress={() => router.push("/(app)/assets/maintenance" as any)} testID="stat-maintenance-due" />
+        <KpiTile label="Available equipment" value={String(stats.total_available)} meta={`${stats.utilization}% utilization`} icon="layers-outline" tone="info" last onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-available" />
+      </KpiStrip>
+
+      <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
+        <DashboardMap
+          pins={pins}
+          missingLocationCount={Math.max(0, activeRentals.length - pins.length)}
+          onPinPress={(pin) => router.push(`/(app)/operations/rentals?open=${pin.id}` as any)}
+          onOpenMap={() => router.push("/(app)/operations/map" as any)}
+          onRefresh={onRefresh}
+          lastUpdated={lastUpdated}
+        />
+        <NeedsAttention
+          items={attention.slice(0, 5)}
+          total={attention.length}
+          onViewAll={() => router.push("/(app)/operations/capacity" as any)}
+          onPressItem={(item: AttentionItem) => router.push(item.route as any)}
+        />
       </View>
 
-      <View style={[styles.kpiStrip, !isDesktop && styles.wrapGrid]} testID="dashboard-kpi-strip">
-        <Kpi label="Utilization" value={`${stats.utilization}%`} meta={`${stats.total_quantity - stats.total_available} units deployed`} icon="pulse-outline" onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-utilization" />
-        <Kpi label="Active rentals" value={String(activeRentals.length)} meta={`${pins.length} mapped`} icon="receipt-outline" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-active-rentals" />
-        <Kpi label="Upcoming bookings" value={String(upcomingBookings.length)} meta="Current pipeline" icon="calendar-outline" onPress={() => router.push("/(app)/operations/bookings" as any)} testID="stat-upcoming-bookings" />
-        <Kpi label="Available units" value={String(stats.total_available)} meta={`${shortages.length} shortages`} icon="cube-outline" tone={shortages.length ? "warning" : "default"} onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-available" />
-        <Kpi label="Open service" value={String(maintenanceQueue.length)} meta="Maintenance queue" icon="build-outline" tone={maintenanceQueue.length ? "warning" : "default"} onPress={() => router.push("/(app)/assets/maintenance" as any)} testID="stat-open-maintenance" />
+      <View style={[styles.tableRow, !isShellWide && styles.stackGrid]}>
+        <OperationalTable
+          title="Active rentals" icon="receipt-outline" columns={rentalColumns} rows={activeRentals.slice(0, 5)}
+          keyExtractor={(r) => r.id} onRowPress={(r) => router.push(`/(app)/operations/rentals?open=${r.id}` as any)}
+          emptyLabel="No active rentals." viewAllLabel="View all rentals" onViewAll={() => router.push("/(app)/operations/rentals" as any)}
+          testID="dashboard-active-rentals"
+        />
+        <OperationalTable
+          title="Upcoming bookings" icon="calendar-outline" columns={bookingColumns} rows={upcomingBookings.slice(0, 5)}
+          keyExtractor={(b) => b.id} onRowPress={(b) => router.push(`/(app)/operations/bookings?open=${b.id}` as any)}
+          emptyLabel="No upcoming bookings." viewAllLabel="View all bookings" onViewAll={() => router.push("/(app)/operations/bookings" as any)}
+          testID="dashboard-upcoming-bookings"
+        />
+        <OperationalTable
+          title="Equipment shortages" icon="warning-outline" columns={shortageColumns} rows={shortages.slice(0, 5)}
+          keyExtractor={(r) => r.equipment_id} onRowPress={(r) => router.push(`/(app)/assets/equipment?open=${r.equipment_id}` as any)}
+          emptyLabel="Inventory levels are healthy." viewAllLabel="View all shortages" onViewAll={() => router.push("/(app)/operations/capacity" as any)}
+          testID="dashboard-shortages"
+        />
+        <OperationalTable
+          title="Maintenance queue" icon="build-outline" columns={maintenanceColumns} rows={maintenanceQueue.slice(0, 5)}
+          keyExtractor={(m) => m.id} onRowPress={(m) => router.push(`/(app)/assets/maintenance?open=${m.id}` as any)}
+          emptyLabel="No open maintenance." viewAllLabel="View all maintenance" onViewAll={() => router.push("/(app)/assets/maintenance" as any)}
+          testID="dashboard-maintenance-queue"
+        />
       </View>
 
-      <View style={[styles.primaryGrid, !isDesktop && styles.stackGrid]}>
-        <ConsolePanel title="Live rental map" subtitle={`${pins.length} pinned · ${activeRentals.length - pins.length} missing location`} icon="map-outline" actionLabel="Open map" onAction={() => router.push("/(app)/operations/map" as any)} style={styles.mapPanel} testID="dashboard-map-panel">
-          <View style={styles.mapBody}>
-            <MapCanvas pins={pins} onPinPress={(pin) => router.push(`/(app)/operations/rentals?open=${pin.id}` as any)} style={{ borderRadius: 0, borderWidth: 0 }} />
-          </View>
-        </ConsolePanel>
-
-        <View style={styles.rightStack}>
-          <ConsolePanel title="Needs attention" subtitle={`${attention.length} open exceptions`} icon="alert-circle-outline" actionLabel="Review" onAction={() => router.push("/(app)/operations/capacity" as any)} style={styles.attentionPanel} testID="dashboard-attention-panel">
-            <PanelList rows={attention.slice(0, 4)} empty="No operational exceptions." renderRow={(item: AttentionItem) => (
-              <ConsoleRow key={item.id} title={item.title} subtitle={item.subtitle} tone="warning" onPress={() => router.push(item.route as any)} testID={`attention-${item.id}`} />
-            )} />
-          </ConsolePanel>
-
-          <ConsolePanel title="Recent activity" icon="time-outline" actionLabel="Refresh" onAction={onRefresh} style={styles.activityPanel} testID="activity-card">
-            <PanelList rows={stats.activity.slice(0, 3)} empty="No recent activity." renderRow={(item, index) => (
-              <ConsoleRow key={`${item.type}-${item.ts}-${index}`} title={item.title} subtitle={dateLabel(item.ts)} icon={item.type === "rental" ? "receipt-outline" : "build-outline"} onPress={() => router.push((item.type === "rental" ? "/(app)/operations/rentals" : "/(app)/assets/maintenance") as any)} />
-            )} />
-          </ConsolePanel>
-        </View>
-      </View>
-
-      <View style={[styles.queueGrid, !isDesktop && styles.wrapGrid]}>
-        <ConsolePanel title="Active rentals" subtitle={`${activeRentals.length} in field`} icon="receipt-outline" actionLabel="View all" onAction={() => router.push("/(app)/operations/rentals" as any)} style={styles.queuePanel} testID="dashboard-rentals-panel">
-          <PanelList rows={activeRentals.slice(0, 4)} empty="No active rentals." renderRow={(r: Rental) => (
-            <ConsoleRow key={r.id} title={r.customer_name} subtitle={`${r.job_site || "No job site"} · ${r.lines.reduce((sum, line) => sum + line.qty - line.returned_qty, 0)} units`} badge={r.status} onPress={() => router.push(`/(app)/operations/rentals?open=${r.id}` as any)} />
-          )} />
-        </ConsolePanel>
-
-        <ConsolePanel title="Upcoming bookings" subtitle="Scheduled pipeline" icon="calendar-outline" actionLabel="View all" onAction={() => router.push("/(app)/operations/bookings" as any)} style={styles.queuePanel} testID="dashboard-bookings-panel">
-          <PanelList rows={upcomingBookings.slice(0, 4)} empty="No upcoming bookings." renderRow={(b: Booking) => (
-            <ConsoleRow key={b.id} title={b.customer_name} subtitle={`${dateLabel(b.start_date)} · ${b.job_site || "No job site"}`} badge={b.status} onPress={() => router.push(`/(app)/operations/bookings?open=${b.id}` as any)} />
-          )} />
-        </ConsolePanel>
-
-        <ConsolePanel title="Equipment shortages" subtitle={`${shortages.length} constrained SKUs`} icon="warning-outline" actionLabel="Inventory" onAction={() => router.push("/(app)/assets/equipment" as any)} style={styles.queuePanel} testID="dashboard-shortages-panel">
-          <PanelList rows={shortages.slice(0, 4)} empty="Inventory levels are healthy." renderRow={(e: Equipment) => (
-            <ConsoleRow key={e.id} title={e.name} subtitle={`${e.sku} · ${e.available}/${e.quantity} available`} tone="warning" onPress={() => router.push(`/(app)/assets/equipment?open=${e.id}` as any)} />
-          )} />
-        </ConsolePanel>
-
-        <ConsolePanel title="Maintenance queue" subtitle={`${maintenanceQueue.length} unresolved`} icon="build-outline" actionLabel="Open queue" onAction={() => router.push("/(app)/assets/maintenance" as any)} style={styles.queuePanel} testID="dashboard-maintenance-panel">
-          <PanelList rows={maintenanceQueue.slice(0, 4)} empty="No open maintenance." renderRow={(m: Maintenance) => (
-            <ConsoleRow key={m.id} title={m.equipment_name || "Equipment"} subtitle={m.issue} badge={m.status} onPress={() => router.push(`/(app)/assets/maintenance?open=${m.id}` as any)} />
-          )} />
-        </ConsolePanel>
-      </View>
+      <RecentActivity
+        rows={stats.activity}
+        onViewAll={onRefresh}
+        onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : "/(app)/assets/maintenance") as any)}
+      />
     </View>
   );
 
@@ -191,86 +236,13 @@ export default function Dashboard() {
   return <Screen title={`Welcome, ${user?.name || ""}`} subtitle="Operations command center" onRefresh={onRefresh} refreshing={refreshing} testID="dashboard-screen">{commandCenter}</Screen>;
 }
 
-const Kpi: React.FC<{
-  label: string; value: string; meta: string; icon: React.ComponentProps<typeof Ionicons>["name"];
-  tone?: "default" | "warning"; onPress: () => void; testID: string;
-}> = ({ label, value, meta, icon, tone = "default", onPress, testID }) => (
-  <TouchableOpacity style={styles.kpi} onPress={onPress} activeOpacity={0.72} testID={testID}>
-    <View style={styles.kpiTop}><Text style={styles.kpiLabel}>{label}</Text><Ionicons name={icon} size={15} color={tone === "warning" ? colors.warning : colors.primary} /></View>
-    <Text style={[styles.kpiValue, tone === "warning" && { color: colors.warning }]}>{value}</Text>
-    <Text style={styles.kpiMeta} numberOfLines={1}>{meta}</Text>
-  </TouchableOpacity>
-);
-
-const ConsolePanel: React.FC<{
-  title: string; subtitle?: string; icon: React.ComponentProps<typeof Ionicons>["name"]; actionLabel: string;
-  onAction: () => void; children: React.ReactNode; style?: any; testID?: string;
-}> = ({ title, subtitle, icon, actionLabel, onAction, children, style, testID }) => (
-  <View style={[styles.panel, style]} testID={testID}>
-    <View style={styles.panelHeader}>
-      <View style={styles.panelTitleIcon}><Ionicons name={icon} size={15} color={colors.primary} /></View>
-      <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.panelTitle} numberOfLines={1}>{title}</Text>{subtitle ? <Text style={styles.panelSubtitle} numberOfLines={1}>{subtitle}</Text> : null}</View>
-      <TouchableOpacity onPress={onAction} style={styles.panelAction} activeOpacity={0.65}><Text style={styles.panelActionText}>{actionLabel}</Text><Ionicons name="arrow-forward" size={12} color={colors.primary} /></TouchableOpacity>
-    </View>
-    <View style={styles.panelBody}>{children}</View>
-  </View>
-);
-
-function PanelList<T>({ rows, empty, renderRow }: { rows: T[]; empty: string; renderRow: (item: T, index: number) => React.ReactNode }) {
-  if (rows.length === 0) return <View style={styles.emptyPanel}><Ionicons name="checkmark-circle-outline" size={18} color={colors.success} /><Text style={styles.emptyPanelText}>{empty}</Text></View>;
-  return <>{rows.map(renderRow)}</>;
-}
-
-const ConsoleRow: React.FC<{
-  title: string; subtitle: string; badge?: string; tone?: "default" | "warning";
-  icon?: React.ComponentProps<typeof Ionicons>["name"]; onPress: () => void; testID?: string;
-}> = ({ title, subtitle, badge, tone = "default", icon, onPress, testID }) => (
-  <TouchableOpacity style={styles.consoleRow} onPress={onPress} activeOpacity={0.62} testID={testID}>
-    <View style={[styles.rowMarker, tone === "warning" && styles.rowMarkerWarning]}>{icon ? <Ionicons name={icon} size={13} color={tone === "warning" ? colors.warning : colors.primary} /> : null}</View>
-    <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.rowTitle} numberOfLines={1}>{title}</Text><Text style={styles.rowSubtitle} numberOfLines={1}>{subtitle}</Text></View>
-    {badge ? <StatusBadge label={badge} /> : <Ionicons name="chevron-forward" size={14} color={colors.inkMuted} />}
-  </TouchableOpacity>
-);
-
 const styles = StyleSheet.create({
   desktopPage: { flex: 1, backgroundColor: colors.bgMuted },
   commandCenter: { paddingTop: spacing.md, minWidth: 0 },
-  commandCenterCompact: { paddingTop: 0 },
-  dashboardHeading: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginBottom: spacing.md },
-  eyebrow: { ...typo.caption, color: colors.primary, marginBottom: 3 },
-  heading: { ...typo.h2, fontSize: 21 },
-  asOf: { flexDirection: "row", alignItems: "center", gap: 7, paddingBottom: 2 },
-  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.success },
-  asOfText: { fontSize: 12, color: colors.inkSecondary, fontWeight: "600" },
-  kpiStrip: { flexDirection: "row", gap: 10, marginBottom: 12 },
-  wrapGrid: { flexWrap: "wrap" },
-  kpi: { flex: 1, minWidth: 142, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, paddingHorizontal: 13, paddingVertical: 11 },
-  kpiTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 },
-  kpiLabel: { fontSize: 10.5, fontWeight: "700", color: colors.inkSecondary, textTransform: "uppercase", letterSpacing: 0.55 },
-  kpiValue: { fontFamily: "monospace", fontSize: 23, fontWeight: "700", color: colors.ink, marginTop: 5 },
-  kpiMeta: { fontSize: 10.5, color: colors.inkMuted, marginTop: 2 },
-  primaryGrid: { flexDirection: "row", gap: 12, height: 360, marginBottom: 12 },
+  mainRow: { flexDirection: "row", gap: 12, height: 360, marginBottom: 12 },
+  tableRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
   stackGrid: { height: "auto", flexDirection: "column" },
-  mapPanel: { flex: 1.7, minHeight: 300 },
-  rightStack: { flex: 1, gap: 12, minWidth: 0 },
-  attentionPanel: { flex: 1.35, minHeight: 205 },
-  activityPanel: { flex: 1, minHeight: 135 },
-  queueGrid: { flexDirection: "row", gap: 12, paddingBottom: spacing.md },
-  queuePanel: { flex: 1, minWidth: 210, height: 230 },
-  panel: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden", minWidth: 0 },
-  panelHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bg },
-  panelTitleIcon: { width: 27, height: 27, borderRadius: radii.sm, alignItems: "center", justifyContent: "center", backgroundColor: colors.primarySoft },
-  panelTitle: { fontSize: 13, fontWeight: "700", color: colors.ink },
-  panelSubtitle: { fontSize: 10.5, color: colors.inkMuted, marginTop: 1 },
-  panelAction: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 7, paddingLeft: 8 },
-  panelActionText: { fontSize: 10.5, color: colors.primary, fontWeight: "700" },
-  panelBody: { flex: 1, minHeight: 0 },
-  mapBody: { flex: 1, minHeight: 0 },
-  consoleRow: { minHeight: 43, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
-  rowMarker: { width: 20, height: 20, borderRadius: 10, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
-  rowMarkerWarning: { backgroundColor: colors.warningSoft },
-  rowTitle: { fontSize: 11.5, color: colors.ink, fontWeight: "600" },
-  rowSubtitle: { fontSize: 10, color: colors.inkMuted, marginTop: 1 },
-  emptyPanel: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.md, flexDirection: "row", gap: 7 },
-  emptyPanelText: { fontSize: 11, color: colors.inkSecondary },
+  cell: { fontSize: 12, color: colors.ink },
+  link: { fontSize: 12, color: colors.primary, fontWeight: "700" },
+  danger: { fontSize: 12, color: colors.error, fontWeight: "700" },
 });

@@ -6,26 +6,32 @@ import { Platform } from "react-native";
 
 export const colors = {
   bg: "#FFFFFF",             // surface
-  bgMuted: "#F8FAFC",        // slate-50 — app background
+  bgMuted: "#F5F7FA",        // app workspace background
   bgTint: "#F1F5F9",         // slate-100
-  ink: "#0F172A",            // slate-900 — primary text
-  inkSecondary: "#475569",   // slate-600 — secondary text
+  ink: "#122033",            // primary text
+  inkSecondary: "#5B677A",   // secondary/muted text
   inkMuted: "#94A3B8",       // slate-400
   inverse: "#FFFFFF",
-  primary: "#1E3A8A",        // navy — structural/brand accent
-  primaryHover: "#1E40AF",
-  primarySoft: "#EFF6FF",
-  border: "#E2E8F0",         // slate-200
+  primary: "#0B6CF2",        // enterprise blue — brand accent, active states, links
+  primaryHover: "#0958CC",
+  primarySoft: "#EAF2FE",
+  border: "#DDE3EA",
   borderStrong: "#CBD5E1",   // slate-300
-  success: "#059669",
+  success: "#22A447",
   successSoft: "#ECFDF5",
-  warning: "#D97706",
+  warning: "#F59E0B",
   warningSoft: "#FFFBEB",
-  error: "#DC2626",
+  error: "#E43D30",
   errorSoft: "#FEF2F2",
   info: "#0284C7",
-  // Restrained safety-orange accent — high-value actions, active states,
-  // field alerts. Used selectively; the app foundation stays white/slate/navy.
+  // Sidebar — dark navy, matched against the reference operations console.
+  sidebar: "#061B33",
+  sidebarBorder: "#132A47",
+  sidebarActive: "#0B6CF2",
+  sidebarItemMuted: "#8CA0BA",
+  sidebarText: "#F8FAFC",
+  // Restrained accent reserved for field alerts / high-value CTAs distinct
+  // from the primary brand blue.
   accent: "#EA580C",
   accentHover: "#C2410C",
   accentSoft: "#FFF7ED",
