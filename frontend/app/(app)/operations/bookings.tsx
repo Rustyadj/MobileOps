@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, Alert, ScrollView, TouchableOpacity } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
@@ -16,7 +16,7 @@ import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type BookingLine = { equipment_id: string; sku: string; name: string; qty: number; returned_qty: number; daily_rate: number };
-type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string };
+type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string; dispatched_rental_id?: string | null };
 type CapacityRow = { equipment_id: string; sku: string; name: string; category: string; quantity: number; committed: number; available: number };
 type Eq = { id: string; sku: string; name: string };
 type BookingSortKey = "customer_name" | "job_site" | "start_date" | "end_date" | "status";
@@ -25,11 +25,13 @@ const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
   { key: "tentative", label: "Tentative" },
   { key: "confirmed", label: "Confirmed" },
+  { key: "dispatched", label: "Dispatched" },
   { key: "cancelled", label: "Cancelled" },
 ];
 
 export default function BookingsScreen() {
   const { isShellWide } = useBreakpoint();
+  const router = useRouter();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [tab, setTab] = useState<"pipeline" | "capacity">("pipeline");
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -137,6 +139,15 @@ export default function BookingsScreen() {
     catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
 
+  const dispatch = async (booking: Booking) => {
+    try {
+      const rental = await api<{ id: string }>(`/bookings/${booking.id}/dispatch`, { method: "POST" });
+      setSelected(null);
+      await load();
+      router.push(`/(app)/operations/rentals?open=${rental.id}` as any);
+    } catch (e: any) { Alert.alert("Dispatch failed", e.message); }
+  };
+
   const columns = useMemo<ColumnDef<Booking>[]>(() => [
     { key: "customer_name", label: "Customer", flex: 1.35, render: (booking) => <Text style={styles.primaryCell} numberOfLines={1}>{booking.customer_name}</Text> },
     { key: "job_site", label: "Job site", flex: 1.5, render: (booking) => booking.job_site || "—" },
@@ -198,7 +209,20 @@ export default function BookingsScreen() {
       )}
 
       <DetailDrawer visible={!!selected} title={selected?.customer_name || "Booking"} subtitle={selected?.job_site || "No job site"} onClose={() => setSelected(null)} testID="booking-detail-drawer">
-        {selected ? <><View style={styles.detailGrid}><Detail label="Status" value={selected.status} badge /><Detail label="Start" value={new Date(selected.start_date).toLocaleDateString()} /><Detail label="End" value={new Date(selected.end_date).toLocaleDateString()} /><Detail label="Units" value={String((selected.items || []).reduce((sum, item) => sum + item.qty, 0))} /></View><SectionLabel>Reserved equipment</SectionLabel>{(selected.items || []).length ? (selected.items || []).map((item) => <View key={item.equipment_id} style={styles.detailRow}><View style={{ flex: 1 }}><Text style={typo.body}>{item.name}</Text><Mono style={styles.tableMono}>{item.sku}</Mono></View><Mono>{item.qty}</Mono></View>) : <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>No equipment reserved.</Text>}<SectionLabel>Notes</SectionLabel><Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text><Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /></> : null}
+        {selected ? <>
+          <View style={styles.detailGrid}><Detail label="Status" value={selected.status} badge /><Detail label="Start" value={new Date(selected.start_date).toLocaleDateString()} /><Detail label="End" value={new Date(selected.end_date).toLocaleDateString()} /><Detail label="Units" value={String((selected.items || []).reduce((sum, item) => sum + item.qty, 0))} /></View>
+          <SectionLabel>Reserved equipment</SectionLabel>
+          {(selected.items || []).length ? (selected.items || []).map((item) => <View key={item.equipment_id} style={styles.detailRow}><View style={{ flex: 1 }}><Text style={typo.body}>{item.name}</Text><Mono style={styles.tableMono}>{item.sku}</Mono></View><Mono>{item.qty}</Mono></View>) : <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>No equipment reserved.</Text>}
+          <SectionLabel>Notes</SectionLabel>
+          <Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text>
+          {selected.status === "confirmed" ? (
+            <Button title="Dispatch → Start Rental" onPress={() => dispatch(selected)} testID={`dispatch-booking-${selected.id}`} style={{ marginBottom: spacing.sm }} />
+          ) : null}
+          {selected.status === "dispatched" && selected.dispatched_rental_id ? (
+            <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />
+          ) : null}
+          <Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} />
+        </> : null}
       </DetailDrawer>
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>

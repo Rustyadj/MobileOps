@@ -393,9 +393,10 @@ class Booking(BaseModel):
     job_site: str = ""
     start_date: datetime
     end_date: datetime
-    status: str = "tentative"  # tentative, confirmed, cancelled
+    status: str = "tentative"  # tentative, confirmed, cancelled, dispatched
     items: List[RentalLine] = []
     notes: str = ""
+    dispatched_rental_id: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -1336,6 +1337,8 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
     doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Booking not found")
+    if doc.get("status") == "dispatched":
+        raise HTTPException(400, "Booking already dispatched to a rental — manage it from the rental instead")
     if body.status not in ("tentative", "confirmed", "cancelled"):
         raise HTTPException(400, "Invalid status")
     was_active = doc.get("status") != "cancelled"
@@ -1371,7 +1374,9 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
 @api.delete("/bookings/{bk_id}")
 async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
     doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
-    if doc and doc.get("status") != "cancelled":
+    # A dispatched booking's units already moved reserved -> on_rental under
+    # the rental it created — nothing is left in "reserved" to release.
+    if doc and doc.get("status") not in ("cancelled", "dispatched"):
         for item in doc.get("items", []):
             await apply_ledger_entry(
                 item["equipment_id"], item["qty"], "reserved", "available", "booking_released",
@@ -1379,6 +1384,36 @@ async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Rol
             )
     await db.bookings.delete_one({"id": bk_id})
     return {"ok": True}
+
+
+@api.post("/bookings/{bk_id}/dispatch", response_model=Rental, status_code=201)
+async def dispatch_booking(bk_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
+    """Convert a confirmed booking into a Rental, moving its reserved units
+    straight to on_rental. This is the only sanctioned path from a booking's
+    reservation into an active rental — it prevents the same units being
+    double-committed by a booking's reservation AND a separately created
+    rental for the same job."""
+    doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Booking not found")
+    if doc.get("status") != "confirmed":
+        raise HTTPException(400, "Only a confirmed booking can be dispatched")
+    if not doc.get("items"):
+        raise HTTPException(400, "Booking has no equipment to dispatch")
+
+    rental = Rental(
+        customer_name=doc["customer_name"], job_site=doc.get("job_site", ""),
+        start_date=doc["start_date"], notes=doc.get("notes", ""),
+        lines=[RentalLine(**item) for item in doc["items"]],
+    )
+    await db.rentals.insert_one(rental.model_dump())
+    for item in doc["items"]:
+        await apply_ledger_entry(
+            item["equipment_id"], item["qty"], "reserved", "on_rental", "booking_dispatched",
+            location=doc.get("job_site", ""), rental_id=rental.id, booking_id=bk_id, created_by=user.name,
+        )
+    await db.bookings.update_one({"id": bk_id}, {"$set": {"status": "dispatched", "dispatched_rental_id": rental.id}})
+    return rental
 
 
 @api.get("/bookings/capacity")
