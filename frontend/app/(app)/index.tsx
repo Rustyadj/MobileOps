@@ -15,6 +15,7 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { KpiStrip, KpiTile } from "@/src/components/dashboard/KpiStrip";
 import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
 import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
+import { WhatsNext, NextMovement } from "@/src/components/dashboard/WhatsNext";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -48,6 +49,7 @@ type Rental = {
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string };
 type ShortageRow = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
 type ShopTask = { id: string; title: string; assignee: string; priority: string; status: string; created_at: string };
+type DispatchDoc = NextMovement;
 
 const EMPTY_STATS: Stats = {
   total_quantity: 0, total_available: 0, total_reserved: 0, total_on_rental: 0,
@@ -80,23 +82,26 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [shortageRows, setShortageRows] = useState<ShortageRow[]>([]);
   const [shopTasks, setShopTasks] = useState<ShopTask[]>([]);
+  const [dispatches, setDispatches] = useState<DispatchDoc[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
 
   const load = useCallback(async () => {
-    const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks] = await Promise.all([
+    const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks, nextDispatches] = await Promise.all([
       api<unknown>("/dashboard/stats").then(statsResponse).catch(() => EMPTY_STATS),
       api<Rental[]>("/rentals").catch(() => []),
       api<Booking[]>("/bookings").catch(() => []),
       api<{ rows: ShortageRow[] }>("/dashboard/shortages?days=14").catch(() => ({ rows: [] })),
       api<ShopTask[]>("/shop-tasks").catch(() => []),
+      api<DispatchDoc[]>("/dispatches").catch(() => []),
     ]);
     setStats(nextStats);
     setRentals(nextRentals);
     setBookings(nextBookings);
     setShortageRows(nextShortages.rows);
     setShopTasks(nextShopTasks);
+    setDispatches(nextDispatches);
     setLastUpdated(new Date());
   }, []);
 
@@ -142,6 +147,14 @@ export default function Dashboard() {
       .filter((t) => t.status !== "done")
       .sort((a, b) => (order[a.priority] ?? 1) - (order[b.priority] ?? 1) || +new Date(a.created_at) - +new Date(b.created_at));
   }, [shopTasks]);
+  const whatsNext = useMemo(() => {
+    const live = dispatches.filter((d) => d.status !== "completed" && d.status !== "cancelled");
+    return [...live].sort((a, b) => {
+      const aTime = a.scheduled_date ? +new Date(a.scheduled_date) : Number.MAX_SAFE_INTEGER;
+      const bTime = b.scheduled_date ? +new Date(b.scheduled_date) : Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
+    });
+  }, [dispatches]);
   const pins: Pin[] = useMemo(
     () => activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_name, subtitle: r.job_site, status: r.status })),
     [activeRentals],
@@ -192,6 +205,12 @@ export default function Dashboard() {
         <KpiTile label="Open shop tasks" value={String(stats.open_shop_tasks)} meta="To do / in progress / blocked" icon="checkbox-outline" tone="danger" onPress={() => router.push("/(app)/shop/tasks" as any)} testID="stat-shop-tasks" />
         <KpiTile label="Equipment shortages" value={String(stats.shortage_count)} meta={stats.shortage_count ? "Constrained in next 14 days" : "No upcoming shortages"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
       </KpiStrip>
+
+      <WhatsNext
+        items={whatsNext.slice(0, 6)}
+        onPressItem={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
+        onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
+      />
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
         <DashboardMap
