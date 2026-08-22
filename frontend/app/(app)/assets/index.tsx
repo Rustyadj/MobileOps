@@ -13,15 +13,18 @@ export default function AssetsIndex() {
   const router = useRouter();
   const [equipCount, setEquipCount] = useState<number | null>(null);
   const [openMaint, setOpenMaint] = useState<number | null>(null);
+  const [pendingCounts, setPendingCounts] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [equipment, maintenance] = await Promise.all([
+      const [equipment, maintenance, counts] = await Promise.all([
         api<any[]>("/equipment").catch(() => []),
         api<any[]>("/maintenance").catch(() => []),
+        api<{ status: string }[]>("/inventory-counts").catch(() => []),
       ]);
       setEquipCount(equipment.length);
       setOpenMaint(maintenance.filter((m) => m.status === "open" || m.status === "in_progress").length);
+      setPendingCounts(counts.filter((count) => count.status === "pending").length);
     } catch {}
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -29,6 +32,7 @@ export default function AssetsIndex() {
   const items = [
     { label: "Equipment", sub: `${equipCount ?? "—"} SKUs in inventory`, route: "/(app)/assets/equipment", icon: "cube-outline" as const, testID: "assets-equipment" },
     { label: "Maintenance", sub: `${openMaint ?? "—"} open service entries`, route: "/(app)/assets/maintenance", icon: "build-outline" as const, testID: "assets-maintenance" },
+    { label: "Reconciliation", sub: `${pendingCounts ?? "—"} physical counts pending`, route: "/(app)/assets/reconciliation", icon: "clipboard-outline" as const, testID: "assets-reconciliation" },
   ];
 
   return (

@@ -25,6 +25,8 @@ type Ctx = {
 
 const SESSION_KEY = "cf_session_token";  // Emergent Google session (7-day)
 const AUTH_URL = "https://auth.emergentagent.com/";
+const DEMO_MODE = process.env.EXPO_PUBLIC_DEMO_MODE === "true";
+const DEMO_USER: User = { id: "demo-user", email: "demo@mobileops.local", name: "Demo Operator", role: "admin" };
 
 // Track session_ids we've already exchanged so a re-mount / hot deep link doesn't fire twice.
 const exchangedSessionIds = new Set<string>();
@@ -63,6 +65,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const bootstrap = useCallback(async () => {
     try {
+      if (DEMO_MODE) {
+        setAccessToken("demo-access-token");
+        setUser(DEMO_USER);
+        return;
+      }
+
       // On web: check the URL for a session_id BEFORE anything else (playbook rule #3).
       if (Platform.OS === "web" && typeof window !== "undefined") {
         const sidFromUrl = extractSessionId(window.location.hash) || extractSessionId(window.location.search);
@@ -200,6 +208,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    if (DEMO_MODE) {
+      setUser(DEMO_USER);
+      return;
+    }
     await storage.secureRemove(REFRESH_KEY);
     await storage.secureRemove(SESSION_KEY);
     setAccessToken(null);
@@ -207,6 +219,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const refreshUser = async () => {
+    if (DEMO_MODE) return;
     try {
       const u = await api<User>("/auth/me");
       setUser(u);

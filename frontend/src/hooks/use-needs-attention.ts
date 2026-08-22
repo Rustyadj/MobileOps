@@ -1,24 +1,35 @@
-// Shared "what needs attention" computation — powers the TopBar alert badge
-// and the Dashboard's Needs Attention panel. Everything here is derived
-// client-side from existing list/capacity endpoints; no new backend contract.
+// Shared exception feed for the TopBar alert badge and Dashboard panel.
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/src/api/client";
 
+type RentalLine = { qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
+type Rental = { id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null; status: string; lines: RentalLine[] };
+type Booking = { id: string; customer_name: string; job_site: string; status: string };
+type Equipment = { id: string; sku: string; name: string; pending_inspection: number; in_maintenance: number };
+type Shortage = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
+type InventoryCount = { id: string; equipment_id: string; equipment_name: string; variance: number; status: string; counted_at: string };
+
 export type AttentionItem = {
   id: string;
-  kind: "overdue" | "low-availability" | "missing-location" | "open-maintenance" | "booking-conflict";
+  kind: "rental-overdue" | "due-soon" | "shortage" | "pending-inspection" | "booking-missing-site" | "damaged-maintenance" | "count-variance";
   title: string;
   subtitle: string;
   route: string;
+  jobs?: string[];
 };
 
-export type AttentionData = {
-  items: AttentionItem[];
-  loading: boolean;
-  reload: () => Promise<void>;
-};
+export type AttentionData = { items: AttentionItem[]; loading: boolean; reload: () => Promise<void> };
 
-const UPCOMING_DAYS = 14;
+const DAY_MS = 86_400_000;
+// Rentals without a due date become exceptions after 30 active days.
+const ACTIVE_RENTAL_OVERDUE_DAYS = 30;
+const dateLabel = (dateOnly: string) => new Date(`${dateOnly}T12:00:00`)
+  .toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })
+  .replace(",", "");
+const outstandingUnits = (rental: Rental) => rental.lines.reduce((sum, line) => {
+  const delivered = (line.delivered_qty ?? 0) > 0 ? line.delivered_qty ?? line.qty : line.qty;
+  return sum + Math.max(0, delivered - line.returned_qty - (line.damaged_qty ?? 0));
+}, 0);
 
 export function useNeedsAttention(): AttentionData {
   const [items, setItems] = useState<AttentionItem[]>([]);
@@ -27,89 +38,60 @@ export function useNeedsAttention(): AttentionData {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rentals, equipment, maintenance, bookings] = await Promise.all([
-        api<any[]>("/rentals").catch(() => []),
-        api<any[]>("/equipment").catch(() => []),
-        api<any[]>("/maintenance").catch(() => []),
-        api<any[]>("/bookings").catch(() => []),
+      const [rentals, bookings, equipment, shortageData, inventoryCounts] = await Promise.all([
+        api<Rental[]>("/rentals").catch(() => []),
+        api<Booking[]>("/bookings").catch(() => []),
+        api<Equipment[]>("/equipment").catch(() => []),
+        api<{ rows: Shortage[] }>("/dashboard/shortages?days=14").catch(() => ({ rows: [] })),
+        api<InventoryCount[]>("/inventory-counts").catch(() => []),
       ]);
-
       const out: AttentionItem[] = [];
       const now = new Date();
+      const nextDay = new Date(now.getTime() + DAY_MS);
 
-      for (const r of rentals) {
-        if (r.status === "returned") continue;
-        if (r.due_date && new Date(r.due_date) < now) {
-          out.push({
-            id: `overdue-${r.id}`,
-            kind: "overdue",
-            title: `${r.customer_name} — return overdue`,
-            subtitle: r.job_site || "No job site",
-            route: `/(app)/operations/rentals?open=${r.id}`,
-          });
-        }
-        if (r.lat == null || r.lng == null) {
-          out.push({
-            id: `noloc-${r.id}`,
-            kind: "missing-location",
-            title: `${r.customer_name} — no location set`,
-            subtitle: r.job_site || "Set a job-site pin",
-            route: `/(app)/operations/rentals?open=${r.id}`,
-          });
+      for (const rental of rentals) {
+        const units = outstandingUnits(rental);
+        if (rental.status === "returned" || units === 0) continue;
+        const due = rental.due_date ? new Date(rental.due_date) : null;
+        const threshold = due ?? new Date(new Date(rental.start_date).getTime() + ACTIVE_RENTAL_OVERDUE_DAYS * DAY_MS);
+        if (threshold < now) {
+          out.push({ id: `overdue-${rental.id}`, kind: "rental-overdue", title: `${rental.customer_name} — return overdue`, subtitle: `${units} units on site · ${rental.job_site || "No job site"}`, route: `/(app)/operations/rentals?open=${rental.id}` });
+        } else if (due && due <= nextDay) {
+          out.push({ id: `due-soon-${rental.id}`, kind: "due-soon", title: `${rental.customer_name} — due back within 24 hours`, subtitle: `${units} units on site · ${rental.job_site || "No job site"}`, route: `/(app)/operations/rentals?open=${rental.id}` });
         }
       }
 
-      for (const e of equipment) {
-        if ((e.available ?? 0) <= 0 && (e.quantity ?? 0) > 0) {
-          out.push({
-            id: `lowavail-${e.id}`,
-            kind: "low-availability",
-            title: `${e.name} — none available`,
-            subtitle: `${e.sku} · 0/${e.quantity} on hand`,
-            route: `/(app)/assets/equipment?open=${e.id}`,
-          });
+      for (const shortage of shortageData.rows) {
+        out.push({
+          id: `shortage-${shortage.date}-${shortage.equipment_id}`,
+          kind: "shortage",
+          title: `SHORTAGE — ${shortage.shortage} ${shortage.name} — ${dateLabel(shortage.date)}`,
+          subtitle: `${shortage.demand} needed / ${shortage.owned} owned · ${shortage.jobs.length} job${shortage.jobs.length === 1 ? "" : "s"}`,
+          route: `/(app)/operations/capacity?date=${shortage.date}`,
+          jobs: shortage.jobs,
+        });
+      }
+
+      for (const item of equipment) {
+        if (item.pending_inspection > 0) {
+          out.push({ id: `inspection-${item.id}`, kind: "pending-inspection", title: `${item.pending_inspection} ${item.name} pending inspection`, subtitle: item.sku, route: `/(app)/assets/equipment?open=${item.id}` });
+        }
+        if (item.in_maintenance > 0) {
+          out.push({ id: `maintenance-${item.id}`, kind: "damaged-maintenance", title: `${item.in_maintenance} ${item.name} in maintenance`, subtitle: `${item.sku} · damaged inventory queue`, route: `/(app)/assets/maintenance?equipment=${item.id}` });
         }
       }
 
-      for (const m of maintenance) {
-        if (m.status === "open" || m.status === "in_progress") {
-          out.push({
-            id: `maint-${m.id}`,
-            kind: "open-maintenance",
-            title: `${m.equipment_name || "Equipment"} — ${m.issue}`,
-            subtitle: m.status === "open" ? "Open" : "In progress",
-            route: `/(app)/assets/maintenance?open=${m.id}`,
-          });
+      for (const booking of bookings) {
+        if (booking.status !== "cancelled" && !booking.job_site.trim()) {
+          out.push({ id: `booking-site-${booking.id}`, kind: "booking-missing-site", title: `${booking.customer_name} booking has no job site`, subtitle: "Add a job site before dispatch", route: `/(app)/operations/bookings?open=${booking.id}` });
         }
       }
 
-      // Booking conflicts: check capacity on each distinct upcoming booking
-      // start date (next N days) for demand exceeding on-hand quantity.
-      const cutoff = new Date(now.getTime() + UPCOMING_DAYS * 86400000);
-      const upcoming = bookings.filter((b: any) => {
-        if (b.status === "cancelled") return false;
-        const sd = new Date(b.start_date);
-        return sd >= new Date(now.toDateString()) && sd <= cutoff;
-      });
-      const distinctDates = Array.from(new Set(upcoming.map((b: any) => b.start_date.slice(0, 10))));
-      const conflictChecks = await Promise.all(
-        distinctDates.map((d) => api<{ date: string; rows: any[] }>(`/bookings/capacity?target_date=${d}T00:00:00`).catch(() => null)),
-      );
-      for (const check of conflictChecks) {
-        if (!check) continue;
-        for (const row of check.rows) {
-          if (row.committed > row.quantity) {
-            out.push({
-              id: `conflict-${check.date}-${row.equipment_id}`,
-              kind: "booking-conflict",
-              title: `${row.name} short ${row.committed - row.quantity} on ${check.date}`,
-              subtitle: `${row.committed}/${row.quantity} committed`,
-              route: `/(app)/operations/capacity?date=${check.date}`,
-            });
-          }
+      for (const count of inventoryCounts) {
+        if (count.status === "pending" && count.variance !== 0) {
+          out.push({ id: `count-${count.id}`, kind: "count-variance", title: `${count.equipment_name} count variance ${count.variance > 0 ? "+" : ""}${count.variance}`, subtitle: "Physical count needs reconciliation", route: `/(app)/assets/reconciliation?open=${count.id}` });
         }
       }
-
       setItems(out);
     } finally {
       setLoading(false);
@@ -117,6 +99,5 @@ export function useNeedsAttention(): AttentionData {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
   return { items, loading, reload: load };
 }

@@ -18,7 +18,16 @@ import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Eq = { id: string; sku: string; name: string; daily_rate: number; available: number };
-type Line = { equipment_id: string; sku: string; name: string; qty: number; daily_rate: number; returned_qty: number };
+type Line = {
+  equipment_id: string;
+  sku: string;
+  name: string;
+  qty: number;
+  daily_rate: number;
+  delivered_qty: number;
+  returned_qty: number;
+  damaged_qty: number;
+};
 type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
   job_site: string; start_date: string; due_date?: string | null; deposit: number; notes: string;
@@ -27,14 +36,27 @@ type Rental = {
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
 type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "total";
+type RentalDirection = "outbound" | "inbound";
+type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
   { key: "active", label: "Active" },
+  { key: "partially_returned", label: "Partial return" },
   { key: "returned", label: "Returned" },
 ];
 
-const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + Math.max(0, line.qty - line.returned_qty), 0);
+const lineLifecycle = (line: Line) => {
+  const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
+  return {
+    ordered: line.qty,
+    delivered,
+    onSite: Math.max(0, delivered - line.returned_qty - line.damaged_qty),
+    returned: line.returned_qty,
+    damaged: line.damaged_qty,
+  };
+};
+const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + lineLifecycle(line).onSite, 0);
 const rentalDailyTotal = (rental: Rental) => rental.lines.reduce((total, line) => total + line.qty * line.daily_rate, 0);
 const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
@@ -52,8 +74,11 @@ export default function RentalsScreen() {
   const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
   const [addressBusy, setAddressBusy] = useState(false);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
+  const [returnPrompt, setReturnPrompt] = useState<ReturnPrompt | null>(null);
+  const [returnBusy, setReturnBusy] = useState(false);
   const [selected, setSelected] = useState<Rental | null>(null);
   const [search, setSearch] = useState("");
+  const [direction, setDirection] = useState<RentalDirection>("outbound");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortKey, setSortKey] = useState<RentalSortKey>("start_date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -66,6 +91,7 @@ export default function RentalsScreen() {
         api<Site>("/site"),
       ]);
       setRentals(r); setEquipment(e); setSite(s);
+      setSelected((current) => current ? r.find((rental) => rental.id === current.id) || null : null);
     } catch (err) { console.warn(err); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -190,7 +216,7 @@ export default function RentalsScreen() {
       if (existingLine) {
         return { ...d, lines: d.lines.map((l: Line) => l.equipment_id === eq.id ? { ...l, qty: parsed } : l) };
       }
-      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, name: eq.name, qty: parsed, daily_rate: eq.daily_rate, returned_qty: 0 }] };
+      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, name: eq.name, qty: parsed, daily_rate: eq.daily_rate, delivered_qty: 0, returned_qty: 0, damaged_qty: 0 }] };
     });
     setQtyPrompt(null);
   };
@@ -215,7 +241,8 @@ export default function RentalsScreen() {
         notes: draft.notes || "",
         lines: draft.lines.map((l: Line) => ({
           equipment_id: l.equipment_id, sku: l.sku, name: l.name,
-          qty: l.qty, daily_rate: l.daily_rate, returned_qty: l.returned_qty || 0,
+          qty: l.qty, daily_rate: l.daily_rate, delivered_qty: l.delivered_qty || 0,
+          returned_qty: l.returned_qty || 0, damaged_qty: l.damaged_qty || 0,
         })),
         lat: draft.lat ?? null,
         lng: draft.lng ?? null,
@@ -234,14 +261,37 @@ export default function RentalsScreen() {
     catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
 
-  const doReturn = async (rental: Rental, line: Line, qty: number) => {
+  const openReturn = (rental: Rental, line: Line) => {
+    const { onSite } = lineLifecycle(line);
+    setReturnPrompt({ rental, line, qty: String(onSite), damagedQty: "0" });
+  };
+
+  const submitReturn = async () => {
+    if (!returnPrompt) return;
+    const qty = Number.parseInt(returnPrompt.qty, 10);
+    const damagedQty = Number.parseInt(returnPrompt.damagedQty || "0", 10);
+    const { onSite } = lineLifecycle(returnPrompt.line);
+    if (!Number.isInteger(qty) || qty <= 0 || qty > onSite) {
+      Alert.alert("Invalid return quantity", `Enter between 1 and ${onSite}.`);
+      return;
+    }
+    if (!Number.isInteger(damagedQty) || damagedQty < 0 || damagedQty > qty) {
+      Alert.alert("Invalid damaged quantity", "Damaged units must be between 0 and the return quantity.");
+      return;
+    }
+    setReturnBusy(true);
     try {
-      await api(`/rentals/${rental.id}/return`, {
+      await api(`/rentals/${returnPrompt.rental.id}/return`, {
         method: "POST",
-        body: JSON.stringify([{ equipment_id: line.equipment_id, qty }]),
+        body: JSON.stringify([{ equipment_id: returnPrompt.line.equipment_id, qty, damaged_qty: damagedQty }]),
       });
-      load();
-    } catch (e: any) { Alert.alert("Return failed", e.message); }
+      setReturnPrompt(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert("Return failed", e.message);
+    } finally {
+      setReturnBusy(false);
+    }
   };
 
   const generatePDF = async (r: Rental) => {
@@ -306,9 +356,21 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     }
   };
 
+  const directionCounts = useMemo(() => ({
+    outbound: rentals.filter((rental) => !["partially_returned", "returned"].includes(rental.status)).length,
+    inbound: rentals.filter((rental) => ["partially_returned", "returned"].includes(rental.status)).length,
+  }), [rentals]);
+
+  const directionRentals = useMemo(
+    () => rentals.filter((rental) => direction === "inbound"
+      ? ["partially_returned", "returned"].includes(rental.status)
+      : !["partially_returned", "returned"].includes(rental.status)),
+    [direction, rentals],
+  );
+
   const filteredRentals = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const rows = rentals.filter((rental) => {
+    const rows = directionRentals.filter((rental) => {
       if (statusFilter !== "all" && rental.status !== statusFilter) return false;
       if (!query) return true;
       return [rental.id, rental.customer_name, rental.job_site, rental.customer_phone, rental.customer_email, ...rental.lines.flatMap((line) => [line.sku, line.name])]
@@ -328,7 +390,13 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
       const result = typeof left === "number" && typeof right === "number" ? left - right : String(left).localeCompare(String(right));
       return sortDirection === "asc" ? result : -result;
     });
-  }, [rentals, search, sortDirection, sortKey, statusFilter]);
+  }, [directionRentals, search, sortDirection, sortKey, statusFilter]);
+
+  const selectDirection = (next: RentalDirection) => {
+    setDirection(next);
+    setStatusFilter("all");
+    setSelected(null);
+  };
 
   const columns = useMemo<ColumnDef<Rental>[]>(() => {
     const identity: ColumnDef<Rental>[] = [
@@ -362,6 +430,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
 
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
+          <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} desktop />
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search rental, customer, site, equipment…" testID="rentals-search" style={{ flex: 1, maxWidth: 420 }} />
             <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" />
@@ -385,9 +454,12 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             />
           </View>
         </View>
-      ) : rentals.length === 0 ? (
-        <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No rentals yet. Tap + to create.</Text></Card>
-      ) : rentals.map((r) => {
+      ) : (
+        <>
+          <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} />
+          {directionRentals.length === 0 ? (
+            <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No {direction} rentals.</Text></Card>
+          ) : directionRentals.map((r) => {
         const totalQty = r.lines.reduce((s, l) => s + l.qty, 0);
         const returnedQty = r.lines.reduce((s, l) => s + l.returned_qty, 0);
         return (
@@ -418,18 +490,20 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               )}
             </Row>
             {r.lines.map((l) => (
-              <Row key={l.equipment_id} style={styles.lineRow}>
-                <View style={{ flex: 1 }}>
+              <View key={l.equipment_id} style={styles.lineRow}>
+                <Row>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={typo.body}>{l.name}</Text>
                   <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{l.sku}</Mono>
                 </View>
-                <Mono style={{ marginRight: 12 }}>{l.returned_qty}/{l.qty}</Mono>
-                {l.returned_qty < l.qty && r.status !== "returned" ? (
-                  <TouchableOpacity onPress={() => doReturn(r, l, l.qty - l.returned_qty)} style={styles.smallBtn} testID={`return-${r.id}-${l.equipment_id}`}>
+                {lineLifecycle(l).onSite > 0 && r.status !== "returned" ? (
+                  <TouchableOpacity onPress={() => openReturn(r, l)} style={styles.smallBtn} testID={`return-${r.id}-${l.equipment_id}`}>
                     <Text style={styles.smallBtnText}>Return</Text>
                   </TouchableOpacity>
                 ) : null}
-              </Row>
+                </Row>
+                <LifecycleStrip line={l} />
+              </View>
             ))}
             <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
               <View style={{ flex: 1 }}>
@@ -451,7 +525,9 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             </Row>
           </Card>
         );
-      })}
+          })}
+        </>
+      )}
 
       <DetailDrawer
         visible={isShellWide && !!selected}
@@ -485,9 +561,16 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <DetailSection label={`Equipment (${selected.lines.length})`}>
               {selected.lines.map((line) => (
                 <View key={line.equipment_id} style={styles.detailLine}>
-                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{line.sku}</Mono></View>
-                  <Mono style={styles.detailQty}>{line.returned_qty}/{line.qty}</Mono>
-                  <Mono style={styles.detailAmount}>${(line.qty * line.daily_rate).toFixed(2)}</Mono>
+                  <Row style={{ width: "100%" }}>
+                    <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{line.sku}</Mono></View>
+                    <Mono style={styles.detailAmount}>${(line.qty * line.daily_rate).toFixed(2)}</Mono>
+                    {lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
+                      <TouchableOpacity onPress={() => openReturn(selected, line)} style={styles.smallBtn} testID={`return-${selected.id}-${line.equipment_id}`}>
+                        <Text style={styles.smallBtnText}>Return</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </Row>
+                  <LifecycleStrip line={line} />
                 </View>
               ))}
             </DetailSection>
@@ -674,9 +757,57 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      <Modal visible={!!returnPrompt} transparent animationType="fade" onRequestClose={() => setReturnPrompt(null)}>
+        <TouchableOpacity activeOpacity={1} onPress={() => setReturnPrompt(null)} style={styles.qtyBackdrop}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.returnDialog} testID="return-dialog">
+            {returnPrompt ? (
+              <>
+                <H3>Receive returned equipment</H3>
+                <Text style={[typo.bodySmall, { marginTop: 4 }]}>{returnPrompt.rental.customer_name}</Text>
+                <Text style={[typo.body, { fontWeight: "700", marginTop: spacing.md }]}>{returnPrompt.line.name}</Text>
+                <Mono style={styles.detailSku}>{returnPrompt.line.sku} · {lineLifecycle(returnPrompt.line).onSite} currently on site</Mono>
+                <View style={styles.returnFields}>
+                  <View style={{ flex: 1 }}>
+                    <Input label="Return quantity" value={returnPrompt.qty} onChangeText={(qty) => setReturnPrompt({ ...returnPrompt, qty: qty.replace(/[^0-9]/g, "") })} keyboardType="number-pad" mono testID="return-qty" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Input label="Damaged quantity" value={returnPrompt.damagedQty} onChangeText={(damagedQty) => setReturnPrompt({ ...returnPrompt, damagedQty: damagedQty.replace(/[^0-9]/g, "") })} keyboardType="number-pad" mono testID="return-damaged-qty" />
+                  </View>
+                </View>
+                <Text style={styles.returnHelp}>Damaged units are included in the return quantity and move directly to maintenance.</Text>
+                <Row style={{ gap: spacing.sm, marginTop: spacing.md }}>
+                  <View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setReturnPrompt(null)} variant="outline" testID="return-cancel" /></View>
+                  <View style={{ flex: 1 }}><Button title="Receive" onPress={submitReturn} loading={returnBusy} testID="return-confirm" /></View>
+                </Row>
+              </>
+            ) : null}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </Screen>
   );
 }
+
+const LifecycleStrip: React.FC<{ line: Line }> = ({ line }) => {
+  const values = lineLifecycle(line);
+  return (
+    <View style={styles.lifecycleStrip} testID={`line-lifecycle-${line.equipment_id}`}>
+      {([
+        ["Ordered", values.ordered],
+        ["Delivered", values.delivered],
+        ["On Site", values.onSite],
+        ["Returned", values.returned],
+        ["Damaged", values.damaged],
+      ] as const).map(([label, value]) => (
+        <View key={label} style={styles.lifecycleMetric}>
+          <Text style={styles.lifecycleLabel}>{label}</Text>
+          <Mono style={[styles.lifecycleValue, label === "Damaged" && value > 0 && styles.lifecycleDamaged]}>{value}</Mono>
+        </View>
+      ))}
+    </View>
+  );
+};
 
 const DetailSection: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <View style={styles.detailSection}><Text style={styles.detailLabel}>{label}</Text>{children}</View>
@@ -686,8 +817,44 @@ const DetailMetric: React.FC<{ label: string; value: string }> = ({ label, value
   <View style={styles.detailMetric}><Text style={styles.detailLabel}>{label}</Text><Mono style={styles.detailMetricValue}>{value}</Mono></View>
 );
 
+const RentalDirectionTabs: React.FC<{
+  direction: RentalDirection;
+  counts: Record<RentalDirection, number>;
+  onChange: (direction: RentalDirection) => void;
+  desktop?: boolean;
+}> = ({ direction, counts, onChange, desktop = false }) => (
+  <View style={[styles.directionTabs, desktop && styles.directionTabsDesktop]} testID="rentals-direction-tabs">
+    {(["outbound", "inbound"] as RentalDirection[]).map((value) => {
+      const active = direction === value;
+      return (
+        <TouchableOpacity
+          key={value}
+          onPress={() => onChange(value)}
+          style={[styles.directionTab, active && styles.directionTabActive]}
+          activeOpacity={0.72}
+          testID={`rentals-direction-${value}`}
+        >
+          <Ionicons name={value === "outbound" ? "arrow-up-outline" : "arrow-down-outline"} size={15} color={active ? colors.primary : colors.inkMuted} />
+          <Text style={[styles.directionTabText, active && styles.directionTabTextActive]}>{value === "outbound" ? "Outbound" : "Inbound"}</Text>
+          <View style={[styles.directionCount, active && styles.directionCountActive]}><Text style={[styles.directionCountText, active && styles.directionCountTextActive]}>{counts[value]}</Text></View>
+        </TouchableOpacity>
+      );
+    })}
+  </View>
+);
+
 const styles = StyleSheet.create({
   desktopWorkspace: { flex: 1, paddingTop: spacing.lg },
+  directionTabs: { flexDirection: "row", gap: spacing.xs, marginBottom: spacing.md },
+  directionTabsDesktop: { paddingHorizontal: spacing.xl },
+  directionTab: { height: 38, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
+  directionTabActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  directionTabText: { fontSize: 13, fontWeight: "700", color: colors.inkSecondary },
+  directionTabTextActive: { color: colors.primary },
+  directionCount: { minWidth: 20, height: 20, paddingHorizontal: 5, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgTint },
+  directionCountActive: { backgroundColor: colors.bg },
+  directionCountText: { fontSize: 10.5, fontWeight: "800", color: colors.inkMuted },
+  directionCountTextActive: { color: colors.primary },
   toolbarButton: { height: 40 },
   filterRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingHorizontal: spacing.xl, paddingBottom: spacing.sm },
   resultCount: { ...typo.bodySmall, fontSize: 12 },
@@ -695,6 +862,11 @@ const styles = StyleSheet.create({
   tableLink: { fontSize: 12, color: colors.primary, fontWeight: "700" },
   tableMono: { fontSize: 12 },
   lineRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
+  lifecycleStrip: { width: "100%", flexDirection: "row", marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm, overflow: "hidden" },
+  lifecycleMetric: { flex: 1, minWidth: 0, alignItems: "center", paddingVertical: 7, paddingHorizontal: 2, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: colors.border },
+  lifecycleLabel: { fontSize: 8.5, fontWeight: "700", color: colors.inkMuted, textTransform: "uppercase", letterSpacing: 0.25 },
+  lifecycleValue: { fontSize: 13, fontWeight: "700", marginTop: 2 },
+  lifecycleDamaged: { color: colors.error },
   smallBtn: { paddingHorizontal: 10, height: 32, borderWidth: 1, borderColor: colors.ink, alignItems: "center", justifyContent: "center" },
   smallBtnText: { fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.6 },
   qtyBtn: { width: 36, height: 36, borderWidth: 1, borderColor: colors.ink, alignItems: "center", justifyContent: "center" },
@@ -704,6 +876,9 @@ const styles = StyleSheet.create({
   resultRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bgMuted },
   qtyBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", alignItems: "center", justifyContent: "center", padding: 24 },
   qtyDialog: { backgroundColor: colors.bg, borderRadius: 8, padding: 20, width: "100%", maxWidth: 360 },
+  returnDialog: { backgroundColor: colors.bg, borderRadius: radii.lg, padding: spacing.lg, width: "100%", maxWidth: 500 },
+  returnFields: { flexDirection: "row", gap: spacing.md, marginTop: spacing.md },
+  returnHelp: { ...typo.bodySmall, fontSize: 12 },
   detailStatusRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
   detailMuted: { ...typo.bodySmall, fontSize: 12 },
   detailSection: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
@@ -713,9 +888,8 @@ const styles = StyleSheet.create({
   detailPair: { flexDirection: "row", flexWrap: "wrap", borderBottomWidth: 1, borderBottomColor: colors.border },
   detailMetric: { width: "50%", paddingVertical: spacing.md, paddingRight: spacing.sm },
   detailMetricValue: { fontSize: 13 },
-  detailLine: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  detailLine: { minHeight: 48, paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
   detailSku: { fontSize: 10.5, color: colors.inkMuted },
-  detailQty: { width: 48, textAlign: "right", fontSize: 12 },
   detailAmount: { width: 74, textAlign: "right", fontSize: 12 },
   drawerActions: { paddingTop: spacing.lg, gap: spacing.sm },
   drawerActionRow: { flexDirection: "row", gap: spacing.sm },

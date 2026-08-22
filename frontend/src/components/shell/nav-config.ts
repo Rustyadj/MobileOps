@@ -43,6 +43,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { key: "equipment", label: "Equipment", route: "/(app)/assets/equipment", icon: "cube-outline", testID: "nav-equipment" },
       { key: "maintenance", label: "Maintenance", route: "/(app)/assets/maintenance", icon: "build-outline", testID: "nav-maintenance" },
+      { key: "reconciliation", label: "Reconciliation", route: "/(app)/assets/reconciliation", icon: "clipboard-outline", testID: "nav-reconciliation" },
     ],
   },
   {

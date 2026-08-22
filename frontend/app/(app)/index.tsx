@@ -17,6 +17,8 @@ import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
 import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
+import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
+import { Button, Mono } from "@/src/components/ui";
 import { api, apiBaseUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
@@ -33,7 +35,7 @@ type Stats = {
   activity: { type: string; title: string; ts: string }[];
 };
 
-type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; returned_qty: number; daily_rate: number };
+type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number; daily_rate: number };
 type Rental = {
   id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null;
   status: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
@@ -71,6 +73,7 @@ export default function Dashboard() {
   const [capacityRows, setCapacityRows] = useState<CapacityRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
 
   const load = useCallback(async () => {
     const todayISO = new Date().toISOString().slice(0, 10) + "T00:00:00";
@@ -120,7 +123,10 @@ export default function Dashboard() {
     [rentals],
   );
   const unitsOnRental = useMemo(
-    () => activeRentals.reduce((sum, r) => sum + r.lines.reduce((s, l) => s + Math.max(0, l.qty - l.returned_qty), 0), 0),
+    () => activeRentals.reduce((sum, r) => sum + r.lines.reduce((lineSum, line) => {
+      const delivered = (line.delivered_qty ?? 0) > 0 ? line.delivered_qty ?? line.qty : line.qty;
+      return lineSum + Math.max(0, delivered - line.returned_qty - (line.damaged_qty ?? 0));
+    }, 0), 0),
     [activeRentals],
   );
   const upcomingBookings = useMemo(() => {
@@ -140,6 +146,14 @@ export default function Dashboard() {
     () => activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_name, subtitle: r.job_site, status: r.status })),
     [activeRentals],
   );
+
+  const openAttention = (item: AttentionItem) => {
+    if (item.kind === "shortage" && item.jobs?.length) {
+      setSelectedAttention(item);
+      return;
+    }
+    router.push(item.route as never);
+  };
 
   const rentalColumns: OpColumn<Rental>[] = [
     { key: "id", label: "Rental #", flex: 1, render: (r) => <Text style={styles.link} numberOfLines={1}>{shortId(r.id)}</Text> },
@@ -190,7 +204,7 @@ export default function Dashboard() {
           items={attention.slice(0, 5)}
           total={attention.length}
           onViewAll={() => router.push("/(app)/operations/capacity" as any)}
-          onPressItem={(item: AttentionItem) => router.push(item.route as any)}
+          onPressItem={openAttention}
         />
       </View>
 
@@ -226,6 +240,31 @@ export default function Dashboard() {
         onViewAll={onRefresh}
         onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : "/(app)/assets/maintenance") as any)}
       />
+      <DetailDrawer
+        visible={!!selectedAttention}
+        title={selectedAttention?.title || "Shortage detail"}
+        subtitle="Jobs driving committed demand"
+        onClose={() => setSelectedAttention(null)}
+        testID="shortage-jobs-drawer"
+      >
+        {selectedAttention ? (
+          <View>
+            <Text style={styles.drawerLabel}>AFFECTED JOBS</Text>
+            {(selectedAttention.jobs || []).map((job, index) => (
+              <View key={`${job}-${index}`} style={styles.jobRow}>
+                <Mono style={styles.jobIndex}>{String(index + 1).padStart(2, "0")}</Mono>
+                <Text style={styles.jobName}>{job}</Text>
+              </View>
+            ))}
+            <Button
+              title="Open Capacity"
+              onPress={() => { setSelectedAttention(null); router.push(selectedAttention.route as never); }}
+              style={{ marginTop: spacing.lg }}
+              testID="shortage-open-capacity"
+            />
+          </View>
+        ) : null}
+      </DetailDrawer>
     </View>
   );
 
@@ -245,4 +284,8 @@ const styles = StyleSheet.create({
   cell: { fontSize: 12, color: colors.ink },
   link: { fontSize: 12, color: colors.primary, fontWeight: "700" },
   danger: { fontSize: 12, color: colors.error, fontWeight: "700" },
+  drawerLabel: { fontSize: 10.5, fontWeight: "800", color: colors.inkMuted, letterSpacing: 0.6, marginBottom: spacing.sm },
+  jobRow: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  jobIndex: { width: 24, color: colors.inkMuted, fontSize: 11 },
+  jobName: { flex: 1, color: colors.ink, fontSize: 13, fontWeight: "600" },
 });

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Redirect } from "expo-router";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, TouchableOpacity } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
@@ -11,7 +12,7 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
-  const { login, signup, loginWithGoogle } = useAuth();
+  const { user, login, signup, loginWithGoogle } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -71,6 +72,8 @@ export default function LoginScreen() {
       setGoogleBusy(false);
     }
   };
+
+  if (user) return <Redirect href="/(app)" />;
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>

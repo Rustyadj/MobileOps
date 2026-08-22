@@ -5,14 +5,16 @@ import { colors, spacing, radii } from "@/src/theme";
 import type { AttentionItem } from "@/src/hooks/use-needs-attention";
 
 const ICON: Record<AttentionItem["kind"], React.ComponentProps<typeof Ionicons>["name"]> = {
-  overdue: "time-outline",
-  "low-availability": "alert-circle-outline",
-  "missing-location": "location-outline",
-  "open-maintenance": "build-outline",
-  "booking-conflict": "warning-outline",
+  "rental-overdue": "time-outline",
+  "due-soon": "alarm-outline",
+  shortage: "warning-outline",
+  "pending-inspection": "search-outline",
+  "booking-missing-site": "location-outline",
+  "damaged-maintenance": "build-outline",
+  "count-variance": "clipboard-outline",
 };
 
-const URGENT: Set<AttentionItem["kind"]> = new Set(["overdue", "booking-conflict"]);
+const URGENT: Set<AttentionItem["kind"]> = new Set(["rental-overdue", "shortage", "count-variance"]);
 
 export const NeedsAttention: React.FC<{
   items: AttentionItem[];
