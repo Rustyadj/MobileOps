@@ -41,11 +41,12 @@ function AuthGate() {
 
   useEffect(() => {
     if (loading) return;
-    const inAuthGroup = segments[0] === "(app)";
+    const segArr: string[] = segments as unknown as string[];
+    const inAuthGroup = segArr[0] === "(app)";
     if (!user && inAuthGroup) {
       router.replace("/login");
-    } else if (user && (segments[0] === "login" || segments.length === 0)) {
-      router.replace("/(app)/(tabs)");
+    } else if (user && (segArr[0] === "login" || segArr.length === 0)) {
+      router.replace("/(app)");
     }
   }, [user, loading, segments, router]);
 

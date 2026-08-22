@@ -79,11 +79,11 @@ export default function Dashboard() {
 
       <SectionLabel>Quick actions</SectionLabel>
       <View style={styles.actionsRow}>
-        <ActionTile icon="map-outline" label="Map" onPress={() => router.push("/(app)/map")} testID="action-map" />
-        <ActionTile icon="construct-outline" label="Bracing" onPress={() => router.push("/(app)/(tabs)/bracing")} testID="action-bracing" />
-        <ActionTile icon="calculator-outline" label="Calculator" onPress={() => router.push("/(app)/(tabs)/calculator")} testID="action-calculator" />
-        <ActionTile icon="cube-outline" label="Equipment" onPress={() => router.push("/(app)/(tabs)/equipment")} testID="action-equipment" />
-        <ActionTile icon="receipt-outline" label="Rentals" onPress={() => router.push("/(app)/rentals")} testID="action-rentals" />
+        <ActionTile icon="map-outline" label="Map" onPress={() => router.push("/(app)/operations/map")} testID="action-map" />
+        <ActionTile icon="construct-outline" label="Bracing" onPress={() => router.push("/(app)/tools/bracing")} testID="action-bracing" />
+        <ActionTile icon="calculator-outline" label="Calculator" onPress={() => router.push("/(app)/tools/calculator")} testID="action-calculator" />
+        <ActionTile icon="cube-outline" label="Equipment" onPress={() => router.push("/(app)/assets/equipment")} testID="action-equipment" />
+        <ActionTile icon="receipt-outline" label="Rentals" onPress={() => router.push("/(app)/operations/rentals")} testID="action-rentals" />
       </View>
 
       <SectionLabel>Recent activity</SectionLabel>

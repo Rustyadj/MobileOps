@@ -1,0 +1,112 @@
+// Single source of truth for the app's information architecture.
+// Consumed by Sidebar (desktop), MobileBottomNav + Menu (phone), and the
+// CommandMenu (global search / jump-to). Keep routes in sync with app/(app)/*.
+import type { Ionicons } from "@expo/vector-icons";
+
+export type IconName = React.ComponentProps<typeof Ionicons>["name"];
+
+export type NavItem = {
+  key: string;
+  label: string;
+  route: string;
+  icon: IconName;
+  testID: string;
+};
+
+export type NavSection = {
+  key: string;
+  label: string;
+  items: NavItem[];
+};
+
+export const NAV_SECTIONS: NavSection[] = [
+  {
+    key: "overview",
+    label: "Overview",
+    items: [
+      { key: "dashboard", label: "Dashboard", route: "/(app)", icon: "grid-outline", testID: "nav-dashboard" },
+    ],
+  },
+  {
+    key: "operations",
+    label: "Operations",
+    items: [
+      { key: "operations", label: "Operations Overview", route: "/(app)/operations", icon: "speedometer-outline", testID: "nav-operations" },
+      { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
+      { key: "rentals", label: "Rentals", route: "/(app)/operations/rentals", icon: "receipt-outline", testID: "nav-rentals" },
+      { key: "bookings", label: "Bookings", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },
+      { key: "capacity", label: "Capacity", route: "/(app)/operations/capacity", icon: "bar-chart-outline", testID: "nav-capacity" },
+    ],
+  },
+  {
+    key: "assets",
+    label: "Assets",
+    items: [
+      { key: "equipment", label: "Equipment", route: "/(app)/assets/equipment", icon: "cube-outline", testID: "nav-equipment" },
+      { key: "maintenance", label: "Maintenance", route: "/(app)/assets/maintenance", icon: "build-outline", testID: "nav-maintenance" },
+    ],
+  },
+  {
+    key: "tools",
+    label: "Tools",
+    items: [
+      { key: "bracing", label: "Bracing", route: "/(app)/tools/bracing", icon: "construct-outline", testID: "nav-bracing" },
+      { key: "calculator", label: "Calculator", route: "/(app)/tools/calculator", icon: "calculator-outline", testID: "nav-calculator" },
+    ],
+  },
+  {
+    key: "partners",
+    label: "Partners",
+    items: [
+      { key: "vendors", label: "Vendors", route: "/(app)/vendors", icon: "business-outline", testID: "nav-vendors" },
+    ],
+  },
+  {
+    key: "administration",
+    label: "Administration",
+    items: [
+      { key: "site-admin", label: "Site Admin", route: "/(app)/site-admin", icon: "settings-outline", testID: "nav-site-admin" },
+    ],
+  },
+];
+
+export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((s) => s.items);
+
+// Mobile bottom nav: 5 destinations max. Operations/Assets/Tools land on
+// their section overview; Menu exposes everything else (Partners, Admin, account).
+export const MOBILE_TABS: { key: string; label: string; route: string; icon: IconName; testID: string }[] = [
+  { key: "home", label: "Home", route: "/(app)", icon: "grid-outline", testID: "tab-home" },
+  { key: "operations", label: "Operations", route: "/(app)/operations", icon: "speedometer-outline", testID: "tab-operations" },
+  { key: "assets", label: "Assets", route: "/(app)/assets", icon: "cube-outline", testID: "tab-assets" },
+  { key: "tools", label: "Tools", route: "/(app)/tools", icon: "construct-outline", testID: "tab-tools" },
+  { key: "menu", label: "Menu", route: "/(app)/menu", icon: "menu-outline", testID: "tab-menu" },
+];
+
+// Route-prefix -> which mobile tab (and sidebar section) should read as active.
+export function activeSectionForPath(pathname: string): string {
+  if (pathname.startsWith("/operations")) return "operations";
+  if (pathname.startsWith("/assets")) return "assets";
+  if (pathname.startsWith("/tools")) return "tools";
+  if (pathname.startsWith("/vendors")) return "partners";
+  if (pathname.startsWith("/site-admin")) return "administration";
+  if (pathname.startsWith("/menu")) return "menu";
+  return "overview";
+}
+
+// TopBar breadcrumb: section label + page label for the current path.
+// Falls back to humanizing the last path segment for un-registered routes
+// (e.g. a rental/equipment detail screen reached by id).
+export function breadcrumbForPath(pathname: string): { section: string; page: string } {
+  for (const section of NAV_SECTIONS) {
+    for (const item of section.items) {
+      const path = item.route === "/(app)" ? "/" : item.route.replace("/(app)", "");
+      if (pathname === path) return { section: section.label, page: item.label };
+    }
+  }
+  const segments = pathname.split("/").filter(Boolean);
+  const last = segments[segments.length - 1] || "Dashboard";
+  const humanized = last.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const sectionKey = activeSectionForPath(pathname);
+  const section = NAV_SECTIONS.find((s) => s.key === sectionKey || (sectionKey === "partners" && s.key === "partners") || (sectionKey === "administration" && s.key === "administration"));
+  return { section: section?.label || "Overview", page: humanized };
+}

@@ -1,3 +1,6 @@
+// Mobile "Menu" tab — secondary destinations not on the primary bottom nav
+// (Partners, Administration) plus account info and sign out. Home/Operations/
+// Assets/Tools each have their own bottom-nav tab, so they aren't repeated here.
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,15 +10,11 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
-  { label: "Rental Map", sub: "Live map of pinned rentals & equipment", route: "/(app)/map", icon: "map-outline", testID: "more-map" },
-  { label: "Rentals", sub: "Multi-SKU rentals with delivery tickets", route: "/(app)/rentals", icon: "receipt-outline", testID: "more-rentals" },
-  { label: "Bookings", sub: "Tentative pipeline & capacity", route: "/(app)/bookings", icon: "calendar-outline", testID: "more-bookings" },
-  { label: "Maintenance", sub: "Equipment service & repairs", route: "/(app)/maintenance", icon: "build-outline", testID: "more-maintenance" },
   { label: "Vendors", sub: "ICF block supplier directory", route: "/(app)/vendors", icon: "business-outline", testID: "more-vendors" },
-  { label: "Site Admin", sub: "Brand, content, logo", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
+  { label: "Site Admin", sub: "Brand, logo, company contact", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];
 
-export default function MoreScreen() {
+export default function MenuScreen() {
   const router = useRouter();
   const { user, logout } = useAuth();
 
@@ -27,7 +26,7 @@ export default function MoreScreen() {
     .join("") || "?";
 
   return (
-    <Screen title="More" subtitle="Modules & settings" testID="more-screen">
+    <Screen title="Menu" subtitle="Partners, admin & account" testID="menu-screen">
       <View style={styles.userCard}>
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>{initials}</Text>
@@ -41,7 +40,7 @@ export default function MoreScreen() {
         </View>
       </View>
 
-      <SectionLabel>Modules</SectionLabel>
+      <SectionLabel>Partners &amp; administration</SectionLabel>
       {ITEMS.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

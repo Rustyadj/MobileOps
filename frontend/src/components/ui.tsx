@@ -10,7 +10,7 @@ export const Card: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewS
   <View testID={testID} style={[styles.card, style]}>{children}</View>
 );
 
-export const SectionLabel: React.FC<{ children: string; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
+export const SectionLabel: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
   <Text style={[typo.caption, { marginBottom: spacing.sm }, style]}>{children}</Text>
 );
 
@@ -69,7 +69,7 @@ export const Input: React.FC<TextInputProps & { label?: string; mono?: boolean; 
   </View>
 );
 
-export const Pill: React.FC<{ children: string; color?: string; bg?: string; testID?: string }> = ({ children, color = colors.inkSecondary, bg = colors.bgTint, testID }) => (
+export const Pill: React.FC<{ children: React.ReactNode; color?: string; bg?: string; testID?: string }> = ({ children, color = colors.inkSecondary, bg = colors.bgTint, testID }) => (
   <View testID={testID} style={[styles.pill, { backgroundColor: bg, borderColor: "transparent" }]}>
     <Text style={{ color, fontSize: 11, fontWeight: "600", letterSpacing: 0.3 }}>{children}</Text>
   </View>
@@ -79,8 +79,8 @@ export const Divider: React.FC<{ vertical?: boolean }> = ({ vertical }) => (
   <View style={vertical ? { width: 1, backgroundColor: colors.border, alignSelf: "stretch" } : { height: 1, backgroundColor: colors.border, marginVertical: spacing.md }} />
 );
 
-export const Row: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewStyle> }> = ({ children, style }) => (
-  <View style={[{ flexDirection: "row", alignItems: "center" }, style]}>{children}</View>
+export const Row: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewStyle>; testID?: string }> = ({ children, style, testID }) => (
+  <View testID={testID} style={[{ flexDirection: "row", alignItems: "center" }, style]}>{children}</View>
 );
 
 const styles = StyleSheet.create({

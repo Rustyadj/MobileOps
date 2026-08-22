@@ -17,7 +17,7 @@ type Rental = {
   lines: Line[]; status: string; delivered_by: string; received_by: string;
   lat?: number | null; lng?: number | null;
 };
-type Site = { brand_name: string; tagline: string; company_address: string; company_phone: string; company_email: string };
+type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
 
 export default function RentalsScreen() {
   const [rentals, setRentals] = useState<Rental[]>([]);

@@ -1,35 +1,52 @@
 // Concrete Form — Corporate design tokens.
-// Professional navy palette, restrained typography, subtle rounded corners.
+// Professional operations-platform palette: white / slate / navy foundation,
+// with a restrained safety-orange accent reserved for high-value actions,
+// active states, and field alerts. Semantic tokens only — no ad-hoc colors.
 import { Platform } from "react-native";
 
 export const colors = {
-  bg: "#FFFFFF",
-  bgMuted: "#F8FAFC",       // slate-50
-  bgTint: "#F1F5F9",        // slate-100
-  ink: "#0F172A",           // slate-900
-  inkSecondary: "#475569",  // slate-600
-  inkMuted: "#94A3B8",      // slate-400
+  bg: "#FFFFFF",             // surface
+  bgMuted: "#F8FAFC",        // slate-50 — app background
+  bgTint: "#F1F5F9",         // slate-100
+  ink: "#0F172A",            // slate-900 — primary text
+  inkSecondary: "#475569",   // slate-600 — secondary text
+  inkMuted: "#94A3B8",       // slate-400
   inverse: "#FFFFFF",
-  primary: "#1E3A8A",       // blue-900 — main accent
-  primaryHover: "#1E40AF",  // blue-800
-  primarySoft: "#EFF6FF",   // blue-50
-  border: "#E2E8F0",        // slate-200
-  borderStrong: "#CBD5E1",  // slate-300
-  success: "#059669",       // emerald-600
-  successSoft: "#ECFDF5",   // emerald-50
-  warning: "#D97706",       // amber-600
-  warningSoft: "#FFFBEB",   // amber-50
+  primary: "#1E3A8A",        // navy — structural/brand accent
+  primaryHover: "#1E40AF",
+  primarySoft: "#EFF6FF",
+  border: "#E2E8F0",         // slate-200
+  borderStrong: "#CBD5E1",   // slate-300
+  success: "#059669",
+  successSoft: "#ECFDF5",
+  warning: "#D97706",
+  warningSoft: "#FFFBEB",
   error: "#DC2626",
   errorSoft: "#FEF2F2",
   info: "#0284C7",
-  // legacy alias (kept so any lingering ref doesn't break)
-  orange: "#1E3A8A",
-  orangeHover: "#1E40AF",
+  // Restrained safety-orange accent — high-value actions, active states,
+  // field alerts. Used selectively; the app foundation stays white/slate/navy.
+  accent: "#EA580C",
+  accentHover: "#C2410C",
+  accentSoft: "#FFF7ED",
+  orange: "#EA580C",         // alias kept for existing call sites
+  orangeHover: "#C2410C",
 };
 
 export const radii = { none: 0, sm: 4, md: 6, lg: 8, xl: 12 };
 
 export const spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48 };
+
+// Responsive breakpoints (px, min-width). Phone < tablet; tablet is
+// master/detail territory; desktop gets the full sidebar+topbar shell.
+export const breakpoints = {
+  tablet: 768,
+  desktop: 1024,
+  wide: 1440,
+};
+
+// Desktop working canvas — don't let content stretch edge-to-edge on huge displays.
+export const maxContentWidth = 1600;
 
 export const fonts = {
   display: Platform.select({ ios: "System", android: "sans-serif-medium", default: "System" })!,

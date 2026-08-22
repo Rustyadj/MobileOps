@@ -57,7 +57,7 @@ export default function BracingScreen() {
   };
 
   return (
-    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" testID="bracing-screen">
+    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back testID="bracing-screen">
       <SectionLabel>Rule</SectionLabel>
       <Card style={{ marginBottom: spacing.md }}>
         <Text style={typo.body}>1 strongback per corner. 1 brace every 4 ft of wall (round up). Brace length set by wall height:

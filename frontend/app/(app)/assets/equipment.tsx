@@ -115,6 +115,7 @@ export default function EquipmentScreen() {
     <Screen
       title="Equipment"
       subtitle={`${items.length} SKUs · ${items.reduce((s, i) => s + i.available, 0)} avail`}
+      back
       rightAction={{ icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" }}
       onRefresh={onRefresh}
       refreshing={refreshing}

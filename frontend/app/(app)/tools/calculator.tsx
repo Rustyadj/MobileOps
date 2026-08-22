@@ -23,7 +23,7 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function CalculatorScreen() {
   const [tab, setTab] = useState<TabKey>("icf");
   return (
-    <Screen title="Calculator" subtitle="Construction Master · Imperial" testID="calculator-screen">
+    <Screen title="Calculator" subtitle="Construction Master · Imperial" back testID="calculator-screen">
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
