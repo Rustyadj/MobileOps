@@ -46,7 +46,9 @@ const rentalLabel = (id: string) => id.toUpperCase().startsWith("RNT-") ? id.toU
 const sameLocalDay = (left: Date, right: Date) => left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 const lineOutstanding = (line: RentalLine) => {
   const delivered = (line.delivered_qty ?? 0) > 0 ? line.delivered_qty ?? line.qty : line.qty;
-  return Math.max(0, delivered - line.returned_qty - (line.damaged_qty ?? 0));
+  // returned_qty already counts every physically-returned unit, damaged or
+  // not — damaged_qty is a subset marker, not an additional deduction.
+  return Math.max(0, delivered - line.returned_qty);
 };
 const outstandingUnits = (rental: Rental) => rental.lines.reduce((sum, line) => sum + lineOutstanding(line), 0);
 const unitLabel = (name: string, quantity: number) => `${quantity} ${name.toLowerCase()}`;

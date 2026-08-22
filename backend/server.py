@@ -958,7 +958,7 @@ async def equipment_breakdown(eq_id: str, _: UserPublic = Depends(get_current_us
             if line["equipment_id"] != eq_id:
                 continue
             delivered = line.get("delivered_qty") or line["qty"]
-            outstanding = delivered - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+            outstanding = delivered - line.get("returned_qty", 0)
             if outstanding > 0:
                 label = f"{r.get('job_site') or r['customer_name']} / Rental #{r['id'][:6]}"
                 rows.append({"qty": outstanding, "label": label, "kind": "rental", "rental_id": r["id"]})
@@ -1194,7 +1194,10 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
     for ret in returns:
         for line in rental.lines:
             if line.equipment_id == ret.equipment_id:
-                remaining = line.qty - line.returned_qty - line.damaged_qty
+                # returned_qty already counts every physically-returned unit,
+                # damaged or not — damaged_qty is a subset marker, not an
+                # additional deduction.
+                remaining = resolve_delivered_qty(line) - line.returned_qty
                 qty_back = min(ret.qty, remaining)
                 damaged = min(ret.damaged_qty, qty_back)
                 clean = qty_back - damaged
@@ -1216,8 +1219,8 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
                         notes=f"Reported damaged on return from {rental.customer_name}.", created_by=user.name,
                     )
                     await db.shop_tasks.insert_one(task.model_dump())
-    all_returned = all((l.returned_qty + l.damaged_qty) >= l.qty for l in rental.lines)
-    any_returned = any((l.returned_qty + l.damaged_qty) > 0 for l in rental.lines)
+    all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
+    any_returned = any(l.returned_qty > 0 for l in rental.lines)
     rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
     await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
     return rental
@@ -1244,7 +1247,10 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     # units already returned/damaged for this rental are left alone.
     old_by_eq: dict[str, int] = {}
     for line in doc.get("lines", []):
-        remaining = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+        # returned_qty already counts every physically-returned unit, damaged
+        # or not — damaged_qty is a subset marker, not an additional deduction.
+        delivered = line.get("delivered_qty") or line["qty"]
+        remaining = delivered - line.get("returned_qty", 0)
         old_by_eq[line["equipment_id"]] = old_by_eq.get(line["equipment_id"], 0) + remaining
 
     new_by_eq: dict[str, int] = {}
@@ -1270,8 +1276,8 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     if not upd["lines"]:
         upd["status"] = "active"
     else:
-        all_ret = all((l["returned_qty"] + l["damaged_qty"]) >= l["qty"] for l in upd["lines"])
-        any_ret = any((l["returned_qty"] + l["damaged_qty"]) > 0 for l in upd["lines"])
+        all_ret = all(l["returned_qty"] >= (l.get("delivered_qty") or l["qty"]) for l in upd["lines"])
+        any_ret = any(l["returned_qty"] > 0 for l in upd["lines"])
         upd["status"] = "returned" if all_ret else ("partially_returned" if any_ret else "active")
 
     # Preserve id, created_at, and legacy due_date.
@@ -1290,9 +1296,12 @@ async def delete_rental(rental_id: str, user: UserPublic = Depends(require_role(
     doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Not found")
-    # restore inventory: only the still-on_rental portion returns to available
+    # restore inventory: only the still-on_rental portion returns to available.
+    # returned_qty already counts every physically-returned unit, damaged or
+    # not — damaged_qty is a subset marker, not an additional deduction.
     for line in doc.get("lines", []):
-        remaining = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+        delivered = line.get("delivered_qty") or line["qty"]
+        remaining = delivered - line.get("returned_qty", 0)
         if remaining > 0:
             await apply_ledger_entry(
                 line["equipment_id"], remaining, "on_rental", "available", "rental_deleted",
@@ -1384,9 +1393,12 @@ async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_u
     bookings = await db.bookings.find({"status": {"$in": ["tentative", "confirmed"]}}, {"_id": 0}).to_list(1000)
     usage: dict[str, int] = {}
     # Active rentals commit inventory until returned (no due_date used).
+    # returned_qty already counts every physically-returned unit, damaged or
+    # not — damaged_qty is a subset marker, not an additional deduction.
     for r in rentals:
         for line in r.get("lines", []):
-            rem = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+            delivered = line.get("delivered_qty") or line["qty"]
+            rem = delivered - line.get("returned_qty", 0)
             if rem > 0:
                 usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
     for b in bookings:
@@ -1425,7 +1437,8 @@ async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_curren
         jobs: dict[str, List[str]] = {}
         for r in rentals:
             for line in r.get("lines", []):
-                rem = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+                delivered = line.get("delivered_qty") or line["qty"]
+                rem = delivered - line.get("returned_qty", 0)
                 if rem > 0:
                     usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
                     jobs.setdefault(line["equipment_id"], []).append(r.get("job_site") or r["customer_name"])

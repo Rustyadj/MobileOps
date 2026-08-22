@@ -48,10 +48,12 @@ const STATUS_OPTIONS = [
 
 const lineLifecycle = (line: Line) => {
   const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
+  // returned_qty already counts every physically-returned unit, damaged or
+  // not — damaged_qty is a subset marker, not an additional deduction.
   return {
     ordered: line.qty,
     delivered,
-    onSite: Math.max(0, delivered - line.returned_qty - line.damaged_qty),
+    onSite: Math.max(0, delivered - line.returned_qty),
     returned: line.returned_qty,
     damaged: line.damaged_qty,
   };
