@@ -77,7 +77,7 @@ export default function DispatchScreen() {
   const [tab, setTab] = useState<Tab>("all");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
-  const [assignDraft, setAssignDraft] = useState<{ driver_name: string; truck: string; trailer: string; crew: string } | null>(null);
+  const [assignDraft, setAssignDraft] = useState<{ driver_name: string; truck: string; trailer: string; crew: string; scheduled_date: string } | null>(null);
 
   const [creating, setCreating] = useState(false);
   const [newDirection, setNewDirection] = useState<Direction>("outbound");
@@ -118,7 +118,10 @@ export default function DispatchScreen() {
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   useEffect(() => {
-    if (selected) setAssignDraft({ driver_name: selected.driver_name, truck: selected.truck, trailer: selected.trailer, crew: selected.crew });
+    if (selected) setAssignDraft({
+      driver_name: selected.driver_name, truck: selected.truck, trailer: selected.trailer, crew: selected.crew,
+      scheduled_date: selected.scheduled_date ? new Date(selected.scheduled_date).toISOString().slice(0, 16) : "",
+    });
   }, [selected?.id]);
 
   const advance = async (d: Dispatch, status: string) => {
@@ -144,7 +147,11 @@ export default function DispatchScreen() {
     if (!selected || !assignDraft) return;
     setBusy(true);
     try {
-      await api(`/dispatches/${selected.id}/assign`, { method: "PATCH", body: JSON.stringify(assignDraft) });
+      const { scheduled_date, ...rest } = assignDraft;
+      await api(`/dispatches/${selected.id}/assign`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...rest, scheduled_date: scheduled_date ? new Date(scheduled_date).toISOString() : null }),
+      });
       await load();
     } catch (e: any) {
       Alert.alert("Save failed", e.message);
@@ -329,6 +336,14 @@ export default function DispatchScreen() {
               ))}
             </DetailSection>
             <DetailSection label="Assignment">
+              <Input
+                label="Scheduled date/time (yyyy-mm-ddThh:mm)"
+                value={assignDraft?.scheduled_date || ""}
+                onChangeText={(t) => setAssignDraft((a) => a ? { ...a, scheduled_date: t } : a)}
+                mono
+                autoCapitalize="none"
+                testID="assign-scheduled-date"
+              />
               <Input label="Driver" value={assignDraft?.driver_name || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, driver_name: t } : a)} testID="assign-driver" />
               <Row style={{ gap: spacing.md }}>
                 <View style={{ flex: 1 }}><Input label="Truck" value={assignDraft?.truck || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, truck: t } : a)} testID="assign-truck" /></View>
