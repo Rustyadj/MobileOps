@@ -415,6 +415,56 @@ class MaintenanceCreate(BaseModel):
     serviced_at: Optional[datetime] = None
 
 
+class ChecklistItem(BaseModel):
+    text: str
+    done: bool = False
+
+
+SHOP_TASK_STATUSES = ["to_do", "in_progress", "blocked", "done"]
+SHOP_TASK_TYPES = ["general", "repair", "staging", "inspection"]
+
+
+class ShopTask(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    title: str
+    description: str = ""
+    task_type: str = "general"  # general, repair, staging, inspection
+    status: str = "to_do"  # to_do, in_progress, blocked, done
+    priority: str = "normal"  # low, normal, high
+    assignee: str = ""
+    due_date: Optional[datetime] = None
+    notes: str = ""
+    checklist: List[ChecklistItem] = []
+    qty: int = 0  # units of equipment this task represents (repair/staging tasks)
+    related_rental_id: Optional[str] = None
+    related_booking_id: Optional[str] = None
+    related_equipment_id: Optional[str] = None
+    created_by: str = ""
+    completed_by: str = ""
+    completed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class ShopTaskCreate(BaseModel):
+    title: str
+    description: str = ""
+    task_type: str = "general"
+    status: str = "to_do"
+    priority: str = "normal"
+    assignee: str = ""
+    due_date: Optional[datetime] = None
+    notes: str = ""
+    checklist: List[ChecklistItem] = []
+    qty: int = 0
+    related_rental_id: Optional[str] = None
+    related_booking_id: Optional[str] = None
+    related_equipment_id: Optional[str] = None
+
+
+class ShopTaskStatusUpdate(BaseModel):
+    status: str
+
+
 class Vendor(BaseModel):
     id: str = Field(default_factory=gen_id)
     name: str
@@ -939,6 +989,13 @@ async def inspect_equipment(eq_id: str, body: InspectBody, user: UserPublic = De
     to_bucket = "available" if body.outcome == "available" else "in_maintenance"
     reason = "inspection_pass" if body.outcome == "available" else "damage_reported"
     await apply_ledger_entry(eq_id, body.qty, "pending_inspection", to_bucket, reason, note=body.note, created_by=user.name)
+    if body.outcome == "damaged":
+        task = ShopTask(
+            title=f"Repair {body.qty} {eq.get('name', '')}", task_type="repair", priority="high",
+            qty=body.qty, related_equipment_id=eq_id,
+            notes=body.note or "Failed inspection after return.", created_by=user.name,
+        )
+        await db.shop_tasks.insert_one(task.model_dump())
     new_doc = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
     return Equipment(**new_doc)
 
@@ -1077,6 +1134,12 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
                         line.equipment_id, damaged, "on_rental", "in_maintenance", "damage_reported",
                         rental_id=rental_id, created_by=user.name,
                     )
+                    task = ShopTask(
+                        title=f"Repair {damaged} {line.name}", task_type="repair", priority="high",
+                        qty=damaged, related_rental_id=rental_id, related_equipment_id=line.equipment_id,
+                        notes=f"Reported damaged on return from {rental.customer_name}.", created_by=user.name,
+                    )
+                    await db.shop_tasks.insert_one(task.model_dump())
     all_returned = all((l.returned_qty + l.damaged_qty) >= l.qty for l in rental.lines)
     any_returned = any((l.returned_qty + l.damaged_qty) > 0 for l in rental.lines)
     rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
@@ -1204,6 +1267,17 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
                 item["equipment_id"], item["qty"], "available", "reserved", "booking_reserved",
                 location=doc.get("job_site", ""), booking_id=bk_id, created_by=user.name,
             )
+    if body.status == "confirmed" and doc.get("status") != "confirmed":
+        existing = await db.shop_tasks.find_one({"related_booking_id": bk_id, "task_type": "staging"})
+        if not existing and doc.get("items"):
+            job = doc.get("job_site") or doc.get("customer_name", "")
+            checklist = [ChecklistItem(text=f"{item['qty']} {item['name']}") for item in doc["items"]]
+            task = ShopTask(
+                title=f"Stage {job} rental", task_type="staging", priority="normal",
+                due_date=doc.get("start_date"), checklist=checklist,
+                related_booking_id=bk_id, created_by=user.name,
+            )
+            await db.shop_tasks.insert_one(task.model_dump())
     await db.bookings.update_one({"id": bk_id}, {"$set": {"status": body.status}})
     new_doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     return Booking(**new_doc)
@@ -1334,6 +1408,87 @@ async def delete_maintenance(m_id: str, _: UserPublic = Depends(require_role(Rol
     return {"ok": True}
 
 
+# ----------------------------- Shop tasks -----------------------------------
+@api.get("/shop-tasks", response_model=List[ShopTask])
+async def list_shop_tasks(_: UserPublic = Depends(get_current_user)):
+    docs = await db.shop_tasks.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    return [ShopTask(**d) for d in docs]
+
+
+@api.post("/shop-tasks", response_model=ShopTask, status_code=201)
+async def create_shop_task(body: ShopTaskCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    if body.status not in SHOP_TASK_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    if body.task_type not in SHOP_TASK_TYPES:
+        raise HTTPException(400, "Invalid task_type")
+    task = ShopTask(**body.model_dump(), created_by=user.name)
+    if task.status == "done":
+        task.completed_by = user.name
+        task.completed_at = now_utc()
+    await db.shop_tasks.insert_one(task.model_dump())
+    return task
+
+
+@api.put("/shop-tasks/{task_id}", response_model=ShopTask)
+async def update_shop_task(task_id: str, body: ShopTaskCreate, _: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Task not found")
+    if body.status not in SHOP_TASK_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    if body.task_type not in SHOP_TASK_TYPES:
+        raise HTTPException(400, "Invalid task_type")
+    upd = body.model_dump()
+    # status transitions go through PATCH /shop-tasks/{id}/status so completion
+    # linkage (repair -> available, completed_by/at) always runs — don't let a
+    # plain field edit silently change status here.
+    upd["status"] = doc["status"]
+    await db.shop_tasks.update_one({"id": task_id}, {"$set": upd})
+    new_doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+    return ShopTask(**new_doc)
+
+
+@api.patch("/shop-tasks/{task_id}/status", response_model=ShopTask)
+async def update_shop_task_status(task_id: str, body: ShopTaskStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Task not found")
+    if body.status not in SHOP_TASK_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    was_done = doc["status"] == "done"
+    will_be_done = body.status == "done"
+    upd: dict = {"status": body.status}
+    if will_be_done and not was_done:
+        upd["completed_by"] = user.name
+        upd["completed_at"] = now_utc()
+        # Repair complete -> the units it took out of service go back to available.
+        # Clamp to what's actually sitting in maintenance so a task whose qty
+        # doesn't line up with real inventory (e.g. a manually-entered task)
+        # can never drive the bucket negative.
+        if doc.get("task_type") == "repair" and doc.get("related_equipment_id") and doc.get("qty", 0) > 0:
+            eq = await db.equipment.find_one({"id": doc["related_equipment_id"]}, {"_id": 0})
+            movable = min(doc["qty"], eq.get("in_maintenance", 0)) if eq else 0
+            if movable > 0:
+                await apply_ledger_entry(
+                    doc["related_equipment_id"], movable, "in_maintenance", "available", "maintenance_resolved",
+                    note=f"Shop task: {doc.get('title', '')}", created_by=user.name,
+                )
+    elif was_done and not will_be_done:
+        upd["completed_by"] = ""
+        upd["completed_at"] = None
+    await db.shop_tasks.update_one({"id": task_id}, {"$set": upd})
+    new_doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+    return ShopTask(**new_doc)
+
+
+@api.delete("/shop-tasks/{task_id}")
+async def delete_shop_task(task_id: str, _: UserPublic = Depends(require_role(Role.admin))):
+    res = await db.shop_tasks.delete_one({"id": task_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
 # ----------------------------- Vendors ------------------------------------
 @api.get("/vendors", response_model=List[Vendor])
 async def list_vendors(_: UserPublic = Depends(get_current_user)):
@@ -1412,19 +1567,40 @@ async def bracing_calc(body: BracingRequest, _: UserPublic = Depends(get_current
 # ----------------------------- Dashboard ----------------------------------
 @api.get("/dashboard/stats")
 async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
+    """Operational KPIs only — no dollar figures. MobileOps tracks equipment
+    accountability, not rental accounting."""
     equipment = await db.equipment.find({}, {"_id": 0}).to_list(5000)
     total_qty = sum(e.get("quantity", 0) for e in equipment)
     total_avail = sum(e.get("available", 0) for e in equipment)
-    utilization = round(((total_qty - total_avail) / total_qty) * 100, 1) if total_qty else 0
+    total_reserved = sum(e.get("reserved", 0) for e in equipment)
+    total_on_rental = sum(e.get("on_rental", 0) for e in equipment)
+    total_pending_inspection = sum(e.get("pending_inspection", 0) for e in equipment)
 
     active_rentals = await db.rentals.count_documents({"status": {"$in": ["active", "partially_returned"]}})
-
     open_maintenance = await db.maintenance.count_documents({"status": {"$in": ["open", "in_progress"]}})
+    open_shop_tasks = await db.shop_tasks.count_documents({"status": {"$ne": "done"}})
     vendors_count = await db.vendors.count_documents({})
 
-    # recent activity (last 8 rentals + maintenance)
+    today = now_utc().date()
+    returning_today = 0
+    bookings_today = await db.bookings.find({"status": {"$ne": "cancelled"}}, {"_id": 0}).to_list(1000)
+    for b in bookings_today:
+        ed = b.get("end_date")
+        if isinstance(ed, str):
+            try:
+                ed = datetime.fromisoformat(ed.replace("Z", "+00:00"))
+            except Exception:
+                ed = None
+        if isinstance(ed, datetime) and ed.date() == today:
+            returning_today += sum(item.get("qty", 0) for item in b.get("items", []))
+
+    shortages_today = await dashboard_shortages(days=1, _=_)
+    shortage_count = len(shortages_today["rows"])
+
+    # recent activity (last 8 rentals + maintenance + shop tasks)
     recent_r = await db.rentals.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
     recent_m = await db.maintenance.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
+    recent_t = await db.shop_tasks.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
     activity = []
     for r in recent_r:
         ts = r.get("created_at")
@@ -1432,14 +1608,22 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
     for m in recent_m:
         ts = m.get("created_at")
         activity.append({"type": "maintenance", "title": f"Service — {m.get('equipment_name','')}", "ts": ts.isoformat() if isinstance(ts, datetime) else str(ts)})
+    for t in recent_t:
+        ts = t.get("created_at")
+        activity.append({"type": "shop_task", "title": t.get("title", ""), "ts": ts.isoformat() if isinstance(ts, datetime) else str(ts)})
     activity.sort(key=lambda x: x["ts"], reverse=True)
 
     return {
-        "utilization": utilization,
         "total_quantity": total_qty,
         "total_available": total_avail,
+        "total_reserved": total_reserved,
+        "total_on_rental": total_on_rental,
+        "total_pending_inspection": total_pending_inspection,
+        "returning_today": returning_today,
         "active_rentals": active_rentals,
         "open_maintenance": open_maintenance,
+        "open_shop_tasks": open_shop_tasks,
+        "shortage_count": shortage_count,
         "vendors_count": vendors_count,
         "activity": activity[:8],
     }
