@@ -1262,7 +1262,16 @@ async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> 
     flow = DISPATCH_FLOWS[direction]
     current = doc["status"]
     old_bucket = dispatch_bucket_for_status(direction, current)
-    new_bucket = dispatch_bucket_for_status(direction, flow[0]) if new_status == "cancelled" else dispatch_bucket_for_status(direction, new_status)
+    if new_status == "cancelled":
+        if direction == "outbound" and not doc.get("booking_id"):
+            # This dispatch made its own available -> reserved reservation on
+            # create (no booking backing it) — cancelling must release it all
+            # the way back to available, not leave it stuck in reserved.
+            new_bucket = "available"
+        else:
+            new_bucket = dispatch_bucket_for_status(direction, flow[0])
+    else:
+        new_bucket = dispatch_bucket_for_status(direction, new_status)
 
     now = now_utc()
     upd: dict = {"status": new_status, "updated_at": now}
@@ -1375,6 +1384,33 @@ async def update_dispatch_status(d_id: str, body: DispatchStatusUpdate, user: Us
 
     updated = await _set_dispatch_status(doc, new_status, user)
     return Dispatch(**updated)
+
+
+async def _create_outbound_dispatch_for_booking(doc: dict, user: UserPublic) -> Optional[dict]:
+    """Create the linked outbound Dispatch for a just-confirmed booking. The
+    booking's own reservation already moved units available -> reserved on
+    booking creation, so this does NOT touch buckets — create_dispatch skips
+    its reserve step whenever booking_id is set. No-ops (returns None) if a
+    live (non-cancelled) outbound dispatch is already linked to this booking,
+    so re-confirming or a retried call never double-creates one."""
+    if not doc.get("items"):
+        return None
+    existing = await db.dispatches.find_one(
+        {"booking_id": doc["id"], "direction": "outbound", "status": {"$ne": "cancelled"}}, {"_id": 0}
+    )
+    if existing:
+        return existing
+    dispatch = Dispatch(
+        direction="outbound",
+        scheduled_date=doc.get("start_date"),
+        customer_name=doc["customer_name"],
+        job_site=doc.get("job_site", ""),
+        booking_id=doc["id"],
+        lines=[DispatchLine(**item) for item in doc["items"]],
+        created_by=user.name,
+    )
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch.model_dump()
 
 
 # ----------------------------- Serialized units -----------------------------
@@ -1613,6 +1649,7 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
                 related_booking_id=bk_id, created_by=user.name,
             )
             await db.shop_tasks.insert_one(task.model_dump())
+        await _create_outbound_dispatch_for_booking(doc, user)
     await db.bookings.update_one({"id": bk_id}, {"$set": {"status": body.status}})
     new_doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     return Booking(**new_doc)
@@ -1635,11 +1672,13 @@ async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Rol
 
 @api.post("/bookings/{bk_id}/dispatch", response_model=Rental, status_code=201)
 async def dispatch_booking(bk_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
-    """Convert a confirmed booking into a Rental, moving its reserved units
-    straight to on_rental. This is the only sanctioned path from a booking's
-    reservation into an active rental — it prevents the same units being
-    double-committed by a booking's reservation AND a separately created
-    rental for the same job."""
+    """Quick-dispatch shortcut: fast-forwards a confirmed booking's linked
+    outbound Dispatch through the rest of DISPATCH_FLOWS straight to
+    'completed' in one call, for a booking that doesn't need its staging/
+    loading steps tracked individually. It walks the exact same status path
+    (and bucket moves) a manually-staged dispatch would, via repeated
+    _set_dispatch_status calls, so the Rental it produces and the bucket
+    accounting are identical either way — this is not a separate path."""
     doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Booking not found")
@@ -1648,19 +1687,14 @@ async def dispatch_booking(bk_id: str, user: UserPublic = Depends(require_role(R
     if not doc.get("items"):
         raise HTTPException(400, "Booking has no equipment to dispatch")
 
-    rental = Rental(
-        customer_name=doc["customer_name"], job_site=doc.get("job_site", ""),
-        start_date=doc["start_date"], notes=doc.get("notes", ""),
-        lines=[RentalLine(**item) for item in doc["items"]],
-    )
-    await db.rentals.insert_one(rental.model_dump())
-    for item in doc["items"]:
-        await apply_ledger_entry(
-            item["equipment_id"], item["qty"], "reserved", "on_rental", "booking_dispatched",
-            location=doc.get("job_site", ""), rental_id=rental.id, booking_id=bk_id, created_by=user.name,
-        )
-    await db.bookings.update_one({"id": bk_id}, {"$set": {"status": "dispatched", "dispatched_rental_id": rental.id}})
-    return rental
+    dispatch_doc = await _create_outbound_dispatch_for_booking(doc, user)
+    flow = DISPATCH_FLOWS["outbound"]
+    cur_idx = flow.index(dispatch_doc["status"])
+    for status in flow[cur_idx + 1:]:
+        dispatch_doc = await _set_dispatch_status(dispatch_doc, status, user)
+
+    rental_doc = await db.rentals.find_one({"id": dispatch_doc["rental_id"]}, {"_id": 0})
+    return Rental(**rental_doc)
 
 
 @api.get("/bookings/capacity")
