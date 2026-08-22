@@ -504,6 +504,15 @@ class ReturnLine(BaseModel):
     damaged_qty: int = 0  # of `qty`, how many came back visibly damaged — routed straight to maintenance instead of inspection
 
 
+class SchedulePickupCreate(BaseModel):
+    scheduled_date: Optional[datetime] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    notes: str = ""
+
+
 class Booking(BaseModel):
     id: str = Field(default_factory=gen_id)
     customer_name: str
@@ -1301,14 +1310,49 @@ async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> 
         if doc.get("booking_id"):
             await db.bookings.update_one({"id": doc["booking_id"]}, {"$set": {"status": "dispatched", "dispatched_rental_id": rental.id}})
 
+    if direction == "inbound" and new_status == "completed" and doc.get("rental_id"):
+        # The truck physically picked these units up off the job — that's a
+        # return event. Credit it against the rental's lines the same way
+        # partial_return does, so the rental's outstanding/returned math and
+        # status stay correct regardless of which path (desk return vs.
+        # scheduled pickup) brought the units back.
+        rdoc = await db.rentals.find_one({"id": doc["rental_id"]}, {"_id": 0})
+        if rdoc:
+            rental = Rental(**rdoc)
+            for dline in doc["lines"]:
+                for rline in rental.lines:
+                    if rline.equipment_id == dline["equipment_id"]:
+                        remaining = resolve_delivered_qty(rline) - rline.returned_qty
+                        rline.returned_qty += min(dline["qty"], remaining)
+                        break
+            all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
+            any_returned = any(l.returned_qty > 0 for l in rental.lines)
+            rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
+            await db.rentals.update_one({"id": doc["rental_id"]}, {"$set": rental.model_dump()})
+
     await db.dispatches.update_one({"id": doc["id"]}, {"$set": upd})
     doc.update(upd)
     return doc
 
 
 @api.get("/dispatches", response_model=List[Dispatch])
-async def list_dispatches(_: UserPublic = Depends(get_current_user)):
-    docs = await db.dispatches.find({}, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
+async def list_dispatches(
+    direction: Optional[str] = None,
+    status: Optional[str] = None,
+    rental_id: Optional[str] = None,
+    booking_id: Optional[str] = None,
+    _: UserPublic = Depends(get_current_user),
+):
+    query: dict = {}
+    if direction:
+        query["direction"] = direction
+    if status:
+        query["status"] = status
+    if rental_id:
+        query["rental_id"] = rental_id
+    if booking_id:
+        query["booking_id"] = booking_id
+    docs = await db.dispatches.find(query, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
     return [Dispatch(**d) for d in docs]
 
 
@@ -1508,6 +1552,49 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
     rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
     await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
     return rental
+
+
+@api.post("/rentals/{rental_id}/schedule-pickup", response_model=Dispatch, status_code=201)
+async def schedule_pickup(rental_id: str, body: SchedulePickupCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    """Create the inbound Dispatch that sends a truck back out to a job to
+    collect a rental's still-outstanding units. Lines are derived from what's
+    actually left on site (delivered - returned) — already-returned lines are
+    skipped so the driver isn't sent to pick up units that came back some
+    other way (e.g. a desk return)."""
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+    rental = Rental(**doc)
+    if rental.status == "returned":
+        raise HTTPException(400, "Rental is already fully returned — nothing left to pick up")
+    existing = await db.dispatches.find_one(
+        {"rental_id": rental_id, "direction": "inbound", "status": {"$nin": ["completed", "cancelled"]}}, {"_id": 0}
+    )
+    if existing:
+        raise HTTPException(400, "A pickup is already scheduled for this rental")
+
+    lines = []
+    for line in rental.lines:
+        outstanding = resolve_delivered_qty(line) - line.returned_qty
+        if outstanding > 0:
+            lines.append(DispatchLine(equipment_id=line.equipment_id, sku=line.sku, name=line.name, qty=outstanding))
+    if not lines:
+        raise HTTPException(400, "Nothing outstanding to pick up on this rental")
+
+    dispatch = Dispatch(
+        direction="inbound",
+        scheduled_date=body.scheduled_date,
+        customer_name=rental.customer_name,
+        job_site=rental.job_site,
+        lat=rental.lat, lng=rental.lng,
+        rental_id=rental_id,
+        driver_name=body.driver_name, truck=body.truck, trailer=body.trailer, crew=body.crew,
+        lines=lines,
+        notes=body.notes,
+        created_by=user.name,
+    )
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch
 
 
 @api.patch("/rentals/{rental_id}/location", response_model=Rental)
