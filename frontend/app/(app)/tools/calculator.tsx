@@ -1,9 +1,10 @@
 import { useState, useMemo } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from "react-native";
 import { Screen } from "@/src/components/Screen";
-import { Card, Input, Button, Mono, SectionLabel, Pill, Row } from "@/src/components/ui";
+import { Card, Input, Button, Mono, SectionLabel, Row } from "@/src/components/ui";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, type as typo } from "@/src/theme";
+import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import {
   parseFeetInches, formatFtInFrac, formatDecimalFt, formatTotalInches,
   icfConcreteCubicYards, areaSqFt, icfBlockCount, ICF_BLOCK_PRESETS, rebarTakeoff, REBAR_WEIGHT,
@@ -23,7 +24,7 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function CalculatorScreen() {
   const [tab, setTab] = useState<TabKey>("icf");
   return (
-    <Screen title="Calculator" subtitle="Construction Master · Imperial" back testID="calculator-screen">
+    <Screen title="Calculator" subtitle="Construction Master · Imperial" back clampWidth testID="calculator-screen">
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -63,16 +64,20 @@ function ICFTab() {
     parseFloat(core || "0"), parseFloat(waste || "0"),
   ), [length, height, core, waste]);
   return (
-    <>
-      <SectionLabel>ICF wall concrete</SectionLabel>
-      <Card style={{ marginBottom: spacing.md }}>
-        <Input label="Wall length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="icf-length" />
-        <Input label="Wall height (ft)" value={height} onChangeText={setHeight} keyboardType="decimal-pad" mono testID="icf-height" />
-        <Input label="Core thickness (in)" value={core} onChangeText={setCore} keyboardType="decimal-pad" mono testID="icf-core" />
-        <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="icf-waste" />
-      </Card>
-      <ResultTile label="Concrete required" value={`${cy.toFixed(2)} cy`} testID="icf-result" />
-    </>
+    <TwoColTab
+      inputs={
+        <>
+          <SectionLabel>ICF wall concrete</SectionLabel>
+          <Card>
+            <Input label="Wall length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="icf-length" />
+            <Input label="Wall height (ft)" value={height} onChangeText={setHeight} keyboardType="decimal-pad" mono testID="icf-height" />
+            <Input label="Core thickness (in)" value={core} onChangeText={setCore} keyboardType="decimal-pad" mono testID="icf-core" />
+            <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="icf-waste" />
+          </Card>
+        </>
+      }
+      result={<ResultTile label="Concrete required" value={`${cy.toFixed(2)} cy`} testID="icf-result" />}
+    />
   );
 }
 
@@ -108,15 +113,19 @@ function AreaTab() {
   const [waste, setWaste] = useState("5");
   const sqft = areaSqFt(parseFloat(length || "0"), parseFloat(width || "0"), parseFloat(waste || "0"));
   return (
-    <>
-      <SectionLabel>Area</SectionLabel>
-      <Card style={{ marginBottom: spacing.md }}>
-        <Input label="Length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="area-length" />
-        <Input label="Width (ft)" value={width} onChangeText={setWidth} keyboardType="decimal-pad" mono testID="area-width" />
-        <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="area-waste" />
-      </Card>
-      <ResultTile label="Area" value={`${sqft.toFixed(2)} sq ft`} testID="area-result" />
-    </>
+    <TwoColTab
+      inputs={
+        <>
+          <SectionLabel>Area</SectionLabel>
+          <Card>
+            <Input label="Length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="area-length" />
+            <Input label="Width (ft)" value={width} onChangeText={setWidth} keyboardType="decimal-pad" mono testID="area-width" />
+            <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="area-waste" />
+          </Card>
+        </>
+      }
+      result={<ResultTile label="Area" value={`${sqft.toFixed(2)} sq ft`} testID="area-result" />}
+    />
   );
 }
 
@@ -345,6 +354,18 @@ function DimMathTab() {
 }
 
 /* ----- helpers ----- */
+// Puts inputs and result side-by-side on desktop instead of stacked full-width.
+const TwoColTab: React.FC<{ inputs: React.ReactNode; result: React.ReactNode }> = ({ inputs, result }) => {
+  const { isShellWide } = useBreakpoint();
+  if (!isShellWide) return <>{inputs}<View style={{ marginTop: spacing.md }}>{result}</View></>;
+  return (
+    <Row style={{ gap: spacing.lg, alignItems: "flex-start" }}>
+      <View style={{ flex: 1 }}>{inputs}</View>
+      <View style={{ flex: 1 }}>{result}</View>
+    </Row>
+  );
+};
+
 const ResultTile: React.FC<{ label: string; value: string; accent?: boolean; testID?: string }> = ({ label, value, accent, testID }) => (
   <View style={[styles.resultTile, accent && { backgroundColor: colors.ink }]} testID={testID}>
     <Text style={[typo.label, accent && { color: "#FFF", opacity: 0.7 }]}>{label}</Text>
