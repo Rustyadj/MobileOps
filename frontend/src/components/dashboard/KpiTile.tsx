@@ -5,6 +5,7 @@ import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radii } from "@/src/theme";
+import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 
 export type KpiTone = "primary" | "success" | "warning" | "danger" | "info";
 
@@ -25,8 +26,9 @@ export const KpiTile: React.FC<{
   last?: boolean;
   onPress: () => void;
   testID?: string;
-}> = ({ label, value, meta, icon, tone = "primary", last, onPress, testID }) => (
-  <TouchableOpacity style={[styles.tile, !last && styles.tileBorder]} onPress={onPress} activeOpacity={0.7} testID={testID}>
+}> = ({ label, value, meta, icon, tone = "primary", last, onPress, testID }) => {
+  const { isShellWide } = useBreakpoint();
+  return <TouchableOpacity style={[styles.tile, !last && styles.tileBorder, !isShellWide && styles.tileMobile]} onPress={onPress} activeOpacity={0.7} testID={testID}>
     <View style={[styles.iconWrap, { backgroundColor: `${TONE_COLOR[tone]}1A` }]}>
       <Ionicons name={icon} size={15} color={TONE_COLOR[tone]} />
     </View>
@@ -36,12 +38,13 @@ export const KpiTile: React.FC<{
       {meta ? <Text style={styles.meta} numberOfLines={1}>{meta}</Text> : null}
     </View>
     <Ionicons name="chevron-forward" size={14} color={colors.inkMuted} />
-  </TouchableOpacity>
-);
+  </TouchableOpacity>;
+};
 
 const styles = StyleSheet.create({
   tile: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 14, minWidth: 0 },
   tileBorder: { borderRightWidth: 1, borderRightColor: colors.border },
+  tileMobile: { flexBasis: "50%", flexGrow: 0, borderBottomWidth: 1, borderBottomColor: colors.border },
   iconWrap: { width: 30, height: 30, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
   label: { fontSize: 10, fontWeight: "700", color: colors.inkSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
   value: { fontSize: 21, fontWeight: "700", color: colors.ink, marginTop: 2, fontFamily: "monospace" },

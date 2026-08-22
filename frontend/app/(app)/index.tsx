@@ -1,5 +1,5 @@
 // Dashboard — operations command center matching the reference enterprise
-// console: 5-tile KPI strip, live rental map + Needs Attention, four dense
+// console: operational KPI strip, live rental map + Needs Attention, four dense
 // operational tables, and a full-width Recent Activity table. All data is
 // pulled from existing endpoints (dashboard/stats, rentals, bookings,
 // equipment, maintenance, bookings/capacity) — no fabricated business data.
@@ -40,7 +40,7 @@ type Stats = {
   activity: { type: string; title: string; ts: string }[];
 };
 
-type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number; daily_rate: number };
+type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = {
   id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null;
   status: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
@@ -58,6 +58,11 @@ const EMPTY_STATS: Stats = {
 
 const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const shortId = (id: string) => id.slice(0, 8).toUpperCase();
+const statsResponse = (value: unknown): Stats => (
+  typeof value === "object" && value !== null
+    ? { ...EMPTY_STATS, ...(value as Partial<Stats>), activity: Array.isArray((value as Partial<Stats>).activity) ? (value as Partial<Stats>).activity! : [] }
+    : EMPTY_STATS
+);
 
 const MAINT_STATUS_TONE: Record<string, "error" | "warning" | "success"> = {
   open: "error", in_progress: "warning", resolved: "success",
@@ -84,7 +89,7 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const todayISO = new Date().toISOString().slice(0, 10) + "T00:00:00";
     const [nextStats, nextRentals, nextBookings, nextEquipment, nextMaintenance, nextCapacity] = await Promise.all([
-      api<Stats>("/dashboard/stats").catch(() => EMPTY_STATS),
+      api<unknown>("/dashboard/stats").then(statsResponse).catch(() => EMPTY_STATS),
       api<Rental[]>("/rentals").catch(() => []),
       api<Booking[]>("/bookings").catch(() => []),
       api<Equipment[]>("/equipment").catch(() => []),
@@ -127,13 +132,6 @@ export default function Dashboard() {
   const activeRentals = useMemo(
     () => rentals.filter((r) => r.status !== "returned").sort((a, b) => +new Date(b.start_date) - +new Date(a.start_date)),
     [rentals],
-  );
-  const unitsOnRental = useMemo(
-    () => activeRentals.reduce((sum, r) => sum + r.lines.reduce((lineSum, line) => {
-      const delivered = (line.delivered_qty ?? 0) > 0 ? line.delivered_qty ?? line.qty : line.qty;
-      return lineSum + Math.max(0, delivered - line.returned_qty - (line.damaged_qty ?? 0));
-    }, 0), 0),
-    [activeRentals],
   );
   const upcomingBookings = useMemo(() => {
     const now = new Date();
@@ -190,12 +188,12 @@ export default function Dashboard() {
   const commandCenter = (
     <View style={styles.commandCenter} testID="dashboard-command-center">
       <KpiStrip>
-        <KpiTile label="Available" value={String(stats.total_available)} meta={`of ${stats.total_quantity} owned`} icon="layers-outline" tone="success" onPress={() => router.push("/(app)/inventory/equipment" as any)} testID="stat-available" />
+        <KpiTile label="Available inventory" value={String(stats.total_available)} meta={`of ${stats.total_quantity} owned`} icon="layers-outline" tone="success" onPress={() => router.push("/(app)/inventory/equipment" as any)} testID="stat-available-inventory" />
         <KpiTile label="On rental" value={String(stats.total_on_rental)} meta={`${activeRentals.length} active rentals`} icon="cube-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-on-rental" />
         <KpiTile label="Reserved" value={String(stats.total_reserved)} meta="Booked, not yet delivered" icon="calendar-outline" tone="info" onPress={() => router.push("/(app)/operations/bookings" as any)} testID="stat-reserved" />
         <KpiTile label="Returning today" value={String(stats.returning_today)} meta="Units due back" icon="arrow-undo-outline" tone="warning" onPress={() => router.push("/(app)/operations/returns" as any)} testID="stat-returning-today" />
         <KpiTile label="Open shop tasks" value={String(stats.open_shop_tasks)} meta="To do / in progress / blocked" icon="checkbox-outline" tone="danger" onPress={() => router.push("/(app)/shop/tasks" as any)} testID="stat-shop-tasks" />
-        <KpiTile label="Shortages" value={String(shortages.length)} meta={shortages.length ? "Constrained SKUs today" : "No shortages today"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
+        <KpiTile label="Equipment shortages" value={String(stats.shortage_count)} meta={stats.shortage_count ? "Constrained in next 14 days" : "No upcoming shortages"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
       </KpiStrip>
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>

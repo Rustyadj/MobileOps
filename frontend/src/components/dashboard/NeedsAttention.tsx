@@ -13,7 +13,7 @@ const ICON: Record<AttentionItem["kind"], React.ComponentProps<typeof Ionicons>[
   "booking-missing-site": "location-outline",
   "damaged-maintenance": "build-outline",
   "count-variance": "clipboard-outline",
-  "loadout-incomplete": "cube-outline",
+  "loadout-incomplete": "file-tray-stacked-outline",
 };
 
 const URGENT: Set<AttentionItem["kind"]> = new Set(["rental-overdue", "shortage", "count-variance"]);

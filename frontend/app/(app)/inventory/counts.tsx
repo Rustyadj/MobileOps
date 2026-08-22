@@ -30,8 +30,9 @@ type InventoryCount = {
 
 const messageFor = (error: unknown) => error instanceof Error ? error.message : "Unexpected error";
 const shortDate = (value: string) => new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const arrayResponse = <T,>(value: unknown): T[] => Array.isArray(value) ? value as T[] : [];
 
-export default function ReconciliationScreen() {
+export default function InventoryCountsScreen() {
   const { isShellWide } = useBreakpoint();
   const params = useLocalSearchParams<{ open?: string }>();
   const [equipment, setEquipment] = useState<Equipment[]>([]);
@@ -49,14 +50,14 @@ export default function ReconciliationScreen() {
   const load = useCallback(async () => {
     try {
       const [nextEquipment, nextCounts] = await Promise.all([
-        api<Equipment[]>("/equipment"),
-        api<InventoryCount[]>("/inventory-counts"),
+        api<unknown>("/equipment").then(arrayResponse<Equipment>),
+        api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>),
       ]);
       setEquipment(nextEquipment);
       setCounts(nextCounts);
       setSelectedCount((current) => current ? nextCounts.find((count) => count.id === current.id) || null : null);
     } catch (error: unknown) {
-      Alert.alert("Unable to load reconciliation", messageFor(error));
+      Alert.alert("Unable to load inventory counts", messageFor(error));
     }
   }, []);
 
@@ -138,7 +139,7 @@ export default function ReconciliationScreen() {
   ];
 
   return (
-    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="reconciliation-screen">
+    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="inventory-counts-screen">
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
           <SectionLabel>RECORD PHYSICAL COUNT</SectionLabel>
