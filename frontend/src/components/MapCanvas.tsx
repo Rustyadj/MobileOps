@@ -49,8 +49,9 @@ export const MapCanvas: React.FC<{
   pins: Pin[];
   onPinPress?: (p: Pin) => void;
   center?: { lat: number; lng: number };
+  selectedId?: string | null;
   style?: any;
-}> = ({ pins, onPinPress, center, style }) => {
+}> = ({ pins, onPinPress, center, selectedId, style }) => {
   if (Platform.OS === "web" || !MapView) {
     return (
       <View style={[styles.webFallback, style]}>
@@ -104,7 +105,7 @@ export const MapCanvas: React.FC<{
           coordinate={{ latitude: p.lat, longitude: p.lng }}
           title={p.title}
           description={p.subtitle}
-          pinColor={statusColor(p.status)}
+          pinColor={p.id === selectedId ? colors.accent : statusColor(p.status)}
           onPress={() => onPinPress?.(p)}
         />
       ))}

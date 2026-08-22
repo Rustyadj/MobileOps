@@ -3,13 +3,13 @@
 // API as the native version (MapCanvas, LocationPicker, geocodeAddress,
 // geocodeString, Pin) so callers don't need platform branches.
 import "leaflet/dist/leaflet.css";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Modal, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { Ionicons } from "@expo/vector-icons";
-import { colors, spacing, radii, type as typo } from "@/src/theme";
+import { colors, spacing, type as typo } from "@/src/theme";
 import { Button, Row, Input } from "@/src/components/ui";
 import { api } from "@/src/api/client";
 
