@@ -31,7 +31,12 @@ type Equipment = {
   id: string; sku: string; name: string; category: string;
   condition: string; location: string; daily_rate: number;
   quantity: number; available: number; notes: string; created_at?: string;
+  reserved: number; on_rental: number; in_transit: number;
+  pending_inspection: number; in_maintenance: number; missing: number;
+  tracking_type: string;
 };
+type BreakdownRow = { qty: number; label: string; kind: string; rental_id?: string; booking_id?: string };
+type Breakdown = { equipment_id: string; quantity: number; rows: BreakdownRow[] };
 type Maintenance = {
   id: string; equipment_id: string; issue: string; action_taken: string;
   cost: number; status: string; serviced_at?: string | null; created_at: string;
@@ -66,6 +71,8 @@ export default function EquipmentScreen() {
   const [selected, setSelected] = useState<Equipment | null>(null);
   const [deleting, setDeleting] = useState<Equipment | null>(null);
   const [showFileMenu, setShowFileMenu] = useState(false);
+  const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
+  const [breakdownLoading, setBreakdownLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -80,6 +87,16 @@ export default function EquipmentScreen() {
     } catch (e) { console.warn(e); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!selected) { setBreakdown(null); return; }
+    let cancelled = false;
+    setBreakdownLoading(true);
+    api<Breakdown>(`/equipment/${selected.id}/breakdown`)
+      .then((data) => { if (!cancelled) setBreakdown(data); })
+      .catch((e) => console.warn(e))
+      .finally(() => { if (!cancelled) setBreakdownLoading(false); });
+    return () => { cancelled = true; };
+  }, [selected]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
   const mobileItems = cat === "all" ? items : items.filter((item) => item.category === cat);
@@ -174,14 +191,16 @@ export default function EquipmentScreen() {
   };
 
   const columns = useMemo<ColumnDef<Equipment>[]>(() => [
-    { key: "sku", label: "SKU", width: 112, render: (item) => <Mono style={styles.tableMono}>{item.sku}</Mono> },
-    { key: "name", label: "Equipment", flex: 1.5, render: (item) => item.name },
-    { key: "category", label: "Category", flex: 1.15, render: (item) => pretty(item.category) },
-    { key: "location", label: "Location", flex: 1, render: (item) => item.location || "—" },
-    { key: "quantity", label: "Total Qty", width: 82, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.quantity}</Mono> },
-    { key: "available", label: "Available", width: 88, align: "right", render: (item) => <StatusBadge label={`${item.available} / ${item.quantity}`} tone={item.available > 0 ? "success" : "error"} /> },
-    { key: "condition", label: "Condition", width: 96, render: (item) => <StatusBadge label={item.condition} /> },
-    { key: "daily_rate", label: "Daily Rate", width: 96, align: "right", render: (item) => <Mono style={styles.tableMono}>${item.daily_rate.toFixed(2)}</Mono> },
+    { key: "sku", label: "SKU", width: 96, render: (item) => <Mono style={styles.tableMono}>{item.sku}</Mono> },
+    { key: "name", label: "Equipment", flex: 1.4, render: (item) => item.name },
+    { key: "quantity", label: "Owned", width: 58, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.quantity}</Mono> },
+    { key: "available", label: "Available", width: 62, align: "right", render: (item) => <Mono style={[styles.tableMono, { color: item.available > 0 ? colors.success : colors.error, fontWeight: "700" }]}>{item.available}</Mono> },
+    { key: "reserved", label: "Reserved", width: 62, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.reserved || 0}</Mono> },
+    { key: "on_rental", label: "On Rental", width: 68, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.on_rental || 0}</Mono> },
+    { key: "in_transit", label: "In Transit", width: 62, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.in_transit || 0}</Mono> },
+    { key: "in_maintenance", label: "Maint.", width: 56, align: "right", render: (item) => <Mono style={[styles.tableMono, item.in_maintenance > 0 && { color: colors.warning }]}>{item.in_maintenance || 0}</Mono> },
+    { key: "missing", label: "Missing", width: 60, align: "right", render: (item) => <Mono style={[styles.tableMono, item.missing > 0 && { color: colors.error, fontWeight: "700" }]}>{item.missing || 0}</Mono> },
+    { key: "condition", label: "Condition", width: 90, render: (item) => <StatusBadge label={item.condition} /> },
   ], []);
   const selectedMaintenance = selected ? maintenance.filter((entry) => entry.equipment_id === selected.id) : [];
   const selectedRentals = selected ? rentals.filter((rental) => rental.lines.some((line) => line.equipment_id === selected.id)) : [];
@@ -237,6 +256,12 @@ export default function EquipmentScreen() {
                 <Text style={[typo.label, { marginTop: 2 }]}>{pretty(item.category)} · {item.location || "—"}</Text>
               </View><Pill color={item.available > 0 ? colors.success : colors.error} bg={item.available > 0 ? colors.successSoft : colors.errorSoft}>{item.available}/{item.quantity}</Pill></Row>
               <Row style={{ gap: spacing.md, marginTop: 8 }}><Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{item.condition}</Mono></Text><Text style={typo.label}>Rate <Mono style={{ fontSize: 13 }}>${item.daily_rate}/d</Mono></Text></Row>
+              <Row style={{ gap: spacing.md, marginTop: 6, flexWrap: "wrap" }}>
+                <Text style={typo.label}>Resv <Mono style={{ fontSize: 13 }}>{item.reserved || 0}</Mono></Text>
+                <Text style={typo.label}>Rental <Mono style={{ fontSize: 13 }}>{item.on_rental || 0}</Mono></Text>
+                {item.in_maintenance > 0 ? <Text style={typo.label}>Maint <Mono style={{ fontSize: 13, color: colors.warning }}>{item.in_maintenance}</Mono></Text> : null}
+                {item.missing > 0 ? <Text style={typo.label}>Missing <Mono style={{ fontSize: 13, color: colors.error }}>{item.missing}</Mono></Text> : null}
+              </Row>
               <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}><View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View></Row>
             </Card>
           ))}
@@ -248,7 +273,16 @@ export default function EquipmentScreen() {
         headerActions={selected ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID={`edit-${selected.sku}`}><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
         {selected ? <>
           <SectionLabel>Inventory</SectionLabel>
-          <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || "—"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Total quantity" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Daily rate" value={`$${selected.daily_rate.toFixed(2)}`} mono /><DetailStat label="On rent" value={String(Math.max(selected.quantity - selected.available, 0))} mono /></View>
+          <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || "—"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Owned" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Reserved" value={String(selected.reserved || 0)} mono /><DetailStat label="On rental" value={String(selected.on_rental || 0)} mono /><DetailStat label="In transit" value={String(selected.in_transit || 0)} mono /><DetailStat label="Pending inspection" value={String(selected.pending_inspection || 0)} mono /><DetailStat label="Maintenance" value={String(selected.in_maintenance || 0)} mono /><DetailStat label="Missing" value={String(selected.missing || 0)} mono /></View>
+          <SectionLabel>Where these units are</SectionLabel>
+          {breakdownLoading ? <Text style={[typo.bodySmall, styles.detailText]}>Loading…</Text>
+            : breakdown && breakdown.rows.length ? breakdown.rows.map((row, idx) => (
+              <View key={`${row.kind}-${row.rental_id || row.booking_id || idx}`} style={styles.breakdownRow}>
+                <Mono style={styles.breakdownQty}>{row.qty}</Mono>
+                <Text style={styles.breakdownDash}>—</Text>
+                <Text style={[typo.body, { flex: 1 }]}>{row.label}</Text>
+              </View>
+            )) : <Text style={[typo.bodySmall, styles.detailText]}>No units accounted for.</Text>}
           <SectionLabel>Notes</SectionLabel><Text style={[typo.body, styles.detailText]}>{selected.notes || "No notes recorded."}</Text>
           <SectionLabel>Rental usage</SectionLabel>
           {selectedRentals.length ? selectedRentals.map((rental) => { const line = rental.lines.find((entry) => entry.equipment_id === selected.id)!; return <View key={rental.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{rental.customer_name}</Text><Text style={typo.bodySmall}>{rental.job_site || "No job site"} · {new Date(rental.start_date).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={rental.status} /><Mono style={styles.tableMono}>{line.qty - (line.returned_qty || 0)} out</Mono></View></View>; }) : <Text style={[typo.bodySmall, styles.detailText]}>No rental history for this item.</Text>}
@@ -291,4 +325,7 @@ const styles = StyleSheet.create({
   drawerEdit: { height: 32, paddingHorizontal: spacing.sm, flexDirection: "row", alignItems: "center", gap: 4 }, drawerEditText: { ...typo.label, color: colors.primary },
   detailGrid: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -spacing.xs, marginBottom: spacing.lg }, detailStat: { width: "50%", padding: spacing.xs, gap: 4 }, detailText: { marginBottom: spacing.lg },
   historyRow: { flexDirection: "row", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border, marginBottom: spacing.sm },
+  breakdownRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
+  breakdownQty: { fontSize: 14, fontWeight: "700", color: colors.ink, minWidth: 32, textAlign: "right" },
+  breakdownDash: { fontSize: 13, color: colors.inkMuted },
 });
