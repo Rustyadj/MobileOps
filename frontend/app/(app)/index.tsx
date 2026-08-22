@@ -26,11 +26,16 @@ import { useNeedsAttention, AttentionItem } from "@/src/hooks/use-needs-attentio
 import { colors, spacing } from "@/src/theme";
 
 type Stats = {
-  utilization: number;
   total_quantity: number;
   total_available: number;
+  total_reserved: number;
+  total_on_rental: number;
+  total_pending_inspection: number;
+  returning_today: number;
   active_rentals: number;
   open_maintenance: number;
+  open_shop_tasks: number;
+  shortage_count: number;
   vendors_count: number;
   activity: { type: string; title: string; ts: string }[];
 };
@@ -46,8 +51,9 @@ type Maintenance = { id: string; equipment_name: string; issue: string; status: 
 type CapacityRow = { equipment_id: string; sku: string; name: string; category: string; quantity: number; committed: number; available: number };
 
 const EMPTY_STATS: Stats = {
-  utilization: 0, total_quantity: 0, total_available: 0, active_rentals: 0,
-  open_maintenance: 0, vendors_count: 0, activity: [],
+  total_quantity: 0, total_available: 0, total_reserved: 0, total_on_rental: 0,
+  total_pending_inspection: 0, returning_today: 0, active_rentals: 0,
+  open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, vendors_count: 0, activity: [],
 };
 
 const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -184,11 +190,12 @@ export default function Dashboard() {
   const commandCenter = (
     <View style={styles.commandCenter} testID="dashboard-command-center">
       <KpiStrip>
-        <KpiTile label="Active rentals" value={String(activeRentals.length)} meta={`${pins.length} mapped`} icon="receipt-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-active-rentals" />
-        <KpiTile label="On rental (units)" value={String(unitsOnRental)} meta="Units deployed" icon="cube-outline" tone="success" onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-units-on-rental" />
-        <KpiTile label="Equipment shortages" value={String(shortages.length)} meta={shortages.length ? "Constrained SKUs today" : "No shortages today"} icon="warning-outline" tone="warning" onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
-        <KpiTile label="Maintenance due" value={String(maintenanceQueue.length)} meta="Open queue" icon="build-outline" tone="danger" onPress={() => router.push("/(app)/assets/maintenance" as any)} testID="stat-maintenance-due" />
-        <KpiTile label="Available equipment" value={String(stats.total_available)} meta={`${stats.utilization}% utilization`} icon="layers-outline" tone="info" last onPress={() => router.push("/(app)/assets/equipment" as any)} testID="stat-available" />
+        <KpiTile label="Available" value={String(stats.total_available)} meta={`of ${stats.total_quantity} owned`} icon="layers-outline" tone="success" onPress={() => router.push("/(app)/inventory/equipment" as any)} testID="stat-available" />
+        <KpiTile label="On rental" value={String(stats.total_on_rental)} meta={`${activeRentals.length} active rentals`} icon="cube-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-on-rental" />
+        <KpiTile label="Reserved" value={String(stats.total_reserved)} meta="Booked, not yet delivered" icon="calendar-outline" tone="info" onPress={() => router.push("/(app)/operations/bookings" as any)} testID="stat-reserved" />
+        <KpiTile label="Returning today" value={String(stats.returning_today)} meta="Units due back" icon="arrow-undo-outline" tone="warning" onPress={() => router.push("/(app)/operations/returns" as any)} testID="stat-returning-today" />
+        <KpiTile label="Open shop tasks" value={String(stats.open_shop_tasks)} meta="To do / in progress / blocked" icon="checkbox-outline" tone="danger" onPress={() => router.push("/(app)/shop/tasks" as any)} testID="stat-shop-tasks" />
+        <KpiTile label="Shortages" value={String(shortages.length)} meta={shortages.length ? "Constrained SKUs today" : "No shortages today"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
       </KpiStrip>
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
@@ -223,14 +230,14 @@ export default function Dashboard() {
         />
         <OperationalTable
           title="Equipment shortages" icon="warning-outline" columns={shortageColumns} rows={shortages.slice(0, 5)}
-          keyExtractor={(r) => r.equipment_id} onRowPress={(r) => router.push(`/(app)/assets/equipment?open=${r.equipment_id}` as any)}
+          keyExtractor={(r) => r.equipment_id} onRowPress={(r) => router.push(`/(app)/inventory/equipment?open=${r.equipment_id}` as any)}
           emptyLabel="Inventory levels are healthy." viewAllLabel="View all shortages" onViewAll={() => router.push("/(app)/operations/capacity" as any)}
           testID="dashboard-shortages"
         />
         <OperationalTable
-          title="Maintenance queue" icon="build-outline" columns={maintenanceColumns} rows={maintenanceQueue.slice(0, 5)}
-          keyExtractor={(m) => m.id} onRowPress={(m) => router.push(`/(app)/assets/maintenance?open=${m.id}` as any)}
-          emptyLabel="No open maintenance." viewAllLabel="View all maintenance" onViewAll={() => router.push("/(app)/assets/maintenance" as any)}
+          title="Shop maintenance queue" icon="build-outline" columns={maintenanceColumns} rows={maintenanceQueue.slice(0, 5)}
+          keyExtractor={(m) => m.id} onRowPress={(m) => router.push(`/(app)/shop/maintenance?open=${m.id}` as any)}
+          emptyLabel="No open maintenance." viewAllLabel="View all maintenance" onViewAll={() => router.push("/(app)/shop/maintenance" as any)}
           testID="dashboard-maintenance-queue"
         />
       </View>
@@ -238,7 +245,7 @@ export default function Dashboard() {
       <RecentActivity
         rows={stats.activity}
         onViewAll={onRefresh}
-        onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : "/(app)/assets/maintenance") as any)}
+        onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : row.type === "shop_task" ? "/(app)/shop/tasks" : "/(app)/shop/maintenance") as any)}
       />
       <DetailDrawer
         visible={!!selectedAttention}

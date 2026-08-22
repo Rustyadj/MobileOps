@@ -8,7 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing } from "@/src/theme";
 import { NAV_SECTIONS, activeSectionForPath } from "./nav-config";
 
-const RAIL_SECTIONS = new Set(["operations", "assets", "tools"]);
+const RAIL_SECTIONS = new Set(["operations", "inventory", "shop", "tools"]);
 
 function routeToPath(route: string) {
   return route === "/(app)" ? "/" : route.replace("/(app)", "");

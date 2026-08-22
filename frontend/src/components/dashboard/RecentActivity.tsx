@@ -13,6 +13,7 @@ export type ActivityRow = { type: string; title: string; ts: string };
 const KIND_LABEL: Record<string, string> = {
   rental: "Rental created",
   maintenance: "Service logged",
+  shop_task: "Shop task",
 };
 
 function relatedTo(title: string): string {

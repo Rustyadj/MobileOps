@@ -1,5 +1,5 @@
-// Assets section landing — mobile "Assets" tab target; also reachable from
-// the desktop sidebar. Shows live counts so it's useful, not just a menu.
+// Inventory section landing — mobile "Inventory" tab target; also reachable
+// from the desktop sidebar. Shows live counts so it's useful, not just a menu.
 import { useCallback, useEffect, useState } from "react";
 import { View, Text, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
@@ -9,34 +9,34 @@ import { Card } from "@/src/components/ui";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
-export default function AssetsIndex() {
+export default function InventoryIndex() {
   const router = useRouter();
   const [equipCount, setEquipCount] = useState<number | null>(null);
-  const [openMaint, setOpenMaint] = useState<number | null>(null);
+  const [locationCount, setLocationCount] = useState<number | null>(null);
   const [pendingCounts, setPendingCounts] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [equipment, maintenance, counts] = await Promise.all([
+      const [equipment, counts] = await Promise.all([
         api<any[]>("/equipment").catch(() => []),
-        api<any[]>("/maintenance").catch(() => []),
         api<{ status: string }[]>("/inventory-counts").catch(() => []),
       ]);
       setEquipCount(equipment.length);
-      setOpenMaint(maintenance.filter((m) => m.status === "open" || m.status === "in_progress").length);
+      setLocationCount(new Set(equipment.map((e) => e.location).filter(Boolean)).size);
       setPendingCounts(counts.filter((count) => count.status === "pending").length);
     } catch {}
   }, []);
   useEffect(() => { load(); }, [load]);
 
   const items = [
-    { label: "Equipment", sub: `${equipCount ?? "—"} SKUs in inventory`, route: "/(app)/assets/equipment", icon: "cube-outline" as const, testID: "assets-equipment" },
-    { label: "Maintenance", sub: `${openMaint ?? "—"} open service entries`, route: "/(app)/assets/maintenance", icon: "build-outline" as const, testID: "assets-maintenance" },
-    { label: "Reconciliation", sub: `${pendingCounts ?? "—"} physical counts pending`, route: "/(app)/assets/reconciliation", icon: "clipboard-outline" as const, testID: "assets-reconciliation" },
+    { label: "Equipment", sub: `${equipCount ?? "—"} SKUs owned`, route: "/(app)/inventory/equipment", icon: "cube-outline" as const, testID: "inventory-equipment" },
+    { label: "Yard Inventory", sub: `${locationCount ?? "—"} yard locations`, route: "/(app)/inventory/yard", icon: "business-outline" as const, testID: "inventory-yard" },
+    { label: "Transfers", sub: "Move stock between yards", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline" as const, testID: "inventory-transfers" },
+    { label: "Inventory Counts", sub: `${pendingCounts ?? "—"} physical counts pending`, route: "/(app)/inventory/counts", icon: "clipboard-outline" as const, testID: "inventory-counts" },
   ];
 
   return (
-    <Screen title="Assets" subtitle="Equipment · Maintenance" onRefresh={load} testID="assets-index-screen">
+    <Screen title="Inventory" subtitle="Equipment · Yard · Transfers · Counts" onRefresh={load} testID="inventory-index-screen">
       {items.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

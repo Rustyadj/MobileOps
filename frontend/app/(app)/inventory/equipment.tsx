@@ -46,7 +46,7 @@ type Rental = {
   id: string; customer_name: string; job_site: string; status: string;
   start_date: string; lines: RentalLine[];
 };
-type SortKey = "sku" | "name" | "category" | "location" | "quantity" | "available" | "condition" | "daily_rate";
+type SortKey = "sku" | "name" | "category" | "location" | "quantity" | "available" | "condition";
 
 const blank: Partial<Equipment> = {
   sku: "", name: "", category: "strongback", condition: "good",
@@ -255,7 +255,7 @@ export default function EquipmentScreen() {
                 <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{item.sku}</Mono><H3>{item.name}</H3>
                 <Text style={[typo.label, { marginTop: 2 }]}>{pretty(item.category)} · {item.location || "—"}</Text>
               </View><Pill color={item.available > 0 ? colors.success : colors.error} bg={item.available > 0 ? colors.successSoft : colors.errorSoft}>{item.available}/{item.quantity}</Pill></Row>
-              <Row style={{ gap: spacing.md, marginTop: 8 }}><Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{item.condition}</Mono></Text><Text style={typo.label}>Rate <Mono style={{ fontSize: 13 }}>${item.daily_rate}/d</Mono></Text></Row>
+              <Row style={{ gap: spacing.md, marginTop: 8 }}><Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{item.condition}</Mono></Text><Text style={typo.label}>Owned <Mono style={{ fontSize: 13 }}>{item.quantity}</Mono></Text></Row>
               <Row style={{ gap: spacing.md, marginTop: 6, flexWrap: "wrap" }}>
                 <Text style={typo.label}>Resv <Mono style={{ fontSize: 13 }}>{item.reserved || 0}</Mono></Text>
                 <Text style={typo.label}>Rental <Mono style={{ fontSize: 13 }}>{item.on_rental || 0}</Mono></Text>
@@ -300,7 +300,7 @@ export default function EquipmentScreen() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{CATEGORIES.filter((category) => category.key !== "all").map((category) => <TouchableOpacity key={category.key} onPress={() => setEditing((entry) => ({ ...entry!, category: category.key }))} style={[styles.chip, editing?.category === category.key && styles.chipActive]} testID={`edit-cat-${category.key}`}><Text style={[styles.chipText, editing?.category === category.key && { color: colors.inverse }]}>{category.label}</Text></TouchableOpacity>)}</ScrollView>
           <Input label="Condition" value={editing?.condition || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, condition: text }))} testID="edit-condition" />
           <Input label="Location" value={editing?.location || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, location: text }))} testID="edit-location" />
-          <Row style={{ gap: spacing.md }}><View style={{ flex: 1 }}><Input label="Daily Rate" value={String(editing?.daily_rate ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, daily_rate: Number(text) || 0 }))} keyboardType="decimal-pad" mono testID="edit-rate" /></View><View style={{ flex: 1 }}><Input label="Quantity" value={String(editing?.quantity ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, quantity: Number(text) || 0, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-quantity" /></View></Row>
+          <Input label="Quantity" value={String(editing?.quantity ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, quantity: Number(text) || 0, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-quantity" />
           <Input label="Available" value={String(editing?.available ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-available" />
           <Input label="Notes" value={editing?.notes || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, notes: text }))} testID="edit-notes" />
           <Button title="Save" onPress={save} testID="save-equipment-btn" />

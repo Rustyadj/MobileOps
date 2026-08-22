@@ -33,17 +33,28 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
       { key: "rentals", label: "Rentals", route: "/(app)/operations/rentals", icon: "receipt-outline", testID: "nav-rentals" },
-      { key: "bookings", label: "Bookings", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },
-      { key: "capacity", label: "Capacity", route: "/(app)/operations/capacity", icon: "bar-chart-outline", testID: "nav-capacity" },
+      { key: "bookings", label: "Bookings / Upcoming Jobs", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },
+      { key: "returns", label: "Returns", route: "/(app)/operations/returns", icon: "arrow-undo-outline", testID: "nav-returns" },
     ],
   },
   {
-    key: "assets",
-    label: "Assets",
+    key: "inventory",
+    label: "Inventory",
     items: [
-      { key: "equipment", label: "Equipment", route: "/(app)/assets/equipment", icon: "cube-outline", testID: "nav-equipment" },
-      { key: "maintenance", label: "Maintenance", route: "/(app)/assets/maintenance", icon: "build-outline", testID: "nav-maintenance" },
-      { key: "reconciliation", label: "Reconciliation", route: "/(app)/assets/reconciliation", icon: "clipboard-outline", testID: "nav-reconciliation" },
+      { key: "equipment", label: "Equipment", route: "/(app)/inventory/equipment", icon: "cube-outline", testID: "nav-equipment" },
+      { key: "yard", label: "Yard Inventory", route: "/(app)/inventory/yard", icon: "business-outline", testID: "nav-yard" },
+      { key: "transfers", label: "Transfers", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline", testID: "nav-transfers" },
+      { key: "counts", label: "Inventory Counts", route: "/(app)/inventory/counts", icon: "clipboard-outline", testID: "nav-counts" },
+    ],
+  },
+  {
+    key: "shop",
+    label: "Shop",
+    items: [
+      { key: "tasks", label: "Tasks", route: "/(app)/shop/tasks", icon: "checkbox-outline", testID: "nav-shop-tasks" },
+      { key: "staging", label: "Staging / Loadout", route: "/(app)/shop/staging", icon: "cube-outline", testID: "nav-staging" },
+      { key: "inspections", label: "Inspections", route: "/(app)/shop/inspections", icon: "search-outline", testID: "nav-inspections" },
+      { key: "maintenance", label: "Maintenance / Repairs", route: "/(app)/shop/maintenance", icon: "build-outline", testID: "nav-maintenance" },
     ],
   },
   {
@@ -72,20 +83,23 @@ export const NAV_SECTIONS: NavSection[] = [
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((s) => s.items);
 
-// Mobile bottom nav: 5 destinations max. Operations/Assets/Tools land on
-// their section overview; Menu exposes everything else (Partners, Admin, account).
+// Mobile bottom nav: 5 destinations max. Shop work is first-class, so it
+// gets its own tab instead of being buried under Menu. Operations/Inventory/
+// Shop land on their section overview; Menu exposes everything else (Tools,
+// Vendors, Admin, account).
 export const MOBILE_TABS: { key: string; label: string; route: string; icon: IconName; testID: string }[] = [
   { key: "home", label: "Home", route: "/(app)", icon: "grid-outline", testID: "tab-home" },
   { key: "operations", label: "Operations", route: "/(app)/operations", icon: "speedometer-outline", testID: "tab-operations" },
-  { key: "assets", label: "Assets", route: "/(app)/assets", icon: "cube-outline", testID: "tab-assets" },
-  { key: "tools", label: "Tools", route: "/(app)/tools", icon: "construct-outline", testID: "tab-tools" },
+  { key: "inventory", label: "Inventory", route: "/(app)/inventory", icon: "cube-outline", testID: "tab-inventory" },
+  { key: "shop", label: "Shop", route: "/(app)/shop", icon: "construct-outline", testID: "tab-shop" },
   { key: "menu", label: "Menu", route: "/(app)/menu", icon: "menu-outline", testID: "tab-menu" },
 ];
 
 // Route-prefix -> which mobile tab (and sidebar section) should read as active.
 export function activeSectionForPath(pathname: string): string {
   if (pathname.startsWith("/operations")) return "operations";
-  if (pathname.startsWith("/assets")) return "assets";
+  if (pathname.startsWith("/inventory")) return "inventory";
+  if (pathname.startsWith("/shop")) return "shop";
   if (pathname.startsWith("/tools")) return "tools";
   if (pathname.startsWith("/vendors")) return "vendors";
   if (pathname.startsWith("/site-admin")) return "admin";

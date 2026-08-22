@@ -6,7 +6,7 @@ import { api } from "@/src/api/client";
 
 export type SearchResult = {
   id: string;
-  type: "equipment" | "rental" | "booking" | "vendor";
+  type: "equipment" | "rental" | "booking" | "vendor" | "task";
   title: string;
   subtitle: string;
   route: string;
@@ -17,11 +17,12 @@ let cache: Cache = null;
 const CACHE_MS = 30_000;
 
 async function fetchAll(): Promise<SearchResult[]> {
-  const [equipment, rentals, bookings, vendors] = await Promise.all([
+  const [equipment, rentals, bookings, vendors, tasks] = await Promise.all([
     api<any[]>("/equipment").catch(() => []),
     api<any[]>("/rentals").catch(() => []),
     api<any[]>("/bookings").catch(() => []),
     api<any[]>("/vendors").catch(() => []),
+    api<any[]>("/shop-tasks").catch(() => []),
   ]);
 
   const results: SearchResult[] = [];
@@ -31,7 +32,17 @@ async function fetchAll(): Promise<SearchResult[]> {
       type: "equipment",
       title: e.name,
       subtitle: `${e.sku} · ${e.category?.replace(/_/g, " ") || ""}`,
-      route: `/(app)/assets/equipment?open=${e.id}`,
+      route: `/(app)/inventory/equipment?open=${e.id}`,
+    });
+  }
+  for (const t of tasks) {
+    if (t.status === "done") continue;
+    results.push({
+      id: t.id,
+      type: "task",
+      title: t.title,
+      subtitle: `Shop task · ${t.status.replace(/_/g, " ")}`,
+      route: `/(app)/shop/tasks?open=${t.id}`,
     });
   }
   for (const r of rentals) {

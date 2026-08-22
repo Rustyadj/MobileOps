@@ -138,7 +138,7 @@ export default function ReconciliationScreen() {
   ];
 
   return (
-    <Screen title="Inventory Reconciliation" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="reconciliation-screen">
+    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="reconciliation-screen">
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
           <SectionLabel>RECORD PHYSICAL COUNT</SectionLabel>

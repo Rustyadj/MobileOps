@@ -7,11 +7,13 @@ import type { AttentionItem } from "@/src/hooks/use-needs-attention";
 const ICON: Record<AttentionItem["kind"], React.ComponentProps<typeof Ionicons>["name"]> = {
   "rental-overdue": "time-outline",
   "due-soon": "alarm-outline",
+  "returning-today": "arrow-undo-outline",
   shortage: "warning-outline",
   "pending-inspection": "search-outline",
   "booking-missing-site": "location-outline",
   "damaged-maintenance": "build-outline",
   "count-variance": "clipboard-outline",
+  "loadout-incomplete": "cube-outline",
 };
 
 const URGENT: Set<AttentionItem["kind"]> = new Set(["rental-overdue", "shortage", "count-variance"]);

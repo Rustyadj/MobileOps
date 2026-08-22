@@ -1,6 +1,7 @@
 // Mobile "Menu" tab — secondary destinations not on the primary bottom nav
-// (Partners, Administration) plus account info and sign out. Home/Operations/
-// Assets/Tools each have their own bottom-nav tab, so they aren't repeated here.
+// (Tools, Vendors, Administration) plus account info and sign out.
+// Home/Operations/Inventory/Shop each have their own bottom-nav tab, so
+// they aren't repeated here.
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -10,6 +11,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
+  { label: "Tools", sub: "Bracing calculator, block calculator", route: "/(app)/tools", icon: "construct-outline", testID: "more-tools" },
   { label: "Vendors", sub: "ICF block supplier directory", route: "/(app)/vendors", icon: "business-outline", testID: "more-vendors" },
   { label: "Site Admin", sub: "Brand, logo, company contact", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];
@@ -40,7 +42,7 @@ export default function MenuScreen() {
         </View>
       </View>
 
-      <SectionLabel>Partners &amp; administration</SectionLabel>
+      <SectionLabel>Tools, partners &amp; administration</SectionLabel>
       {ITEMS.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

@@ -295,6 +295,27 @@ class ReconcileBody(BaseModel):
     reason: str
 
 
+class Transfer(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    equipment_id: str
+    equipment_name: str = ""
+    qty: int
+    from_location: str = ""
+    to_location: str
+    status: str = "in_transit"  # in_transit, received
+    note: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+    received_by: str = ""
+    received_at: Optional[datetime] = None
+
+
+class TransferCreate(BaseModel):
+    qty: int
+    to_location: str
+    note: str = ""
+
+
 class RentalLine(BaseModel):
     equipment_id: str
     sku: str
@@ -1051,6 +1072,61 @@ async def reconcile_inventory_count(count_id: str, body: ReconcileBody, user: Us
     )
     new_doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
     return InventoryCount(**new_doc)
+
+
+# ----------------------------- Transfers ------------------------------------
+@api.get("/transfers", response_model=List[Transfer])
+async def list_transfers(_: UserPublic = Depends(get_current_user)):
+    docs = await db.transfers.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [Transfer(**d) for d in docs]
+
+
+@api.post("/equipment/{eq_id}/transfer", response_model=Transfer, status_code=201)
+async def create_transfer(eq_id: str, body: TransferCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    """Move `qty` available units of this SKU to another yard. Units sit in
+    the in_transit bucket until received at the destination — this is a
+    whole-yard relocation, not per-unit tracking (bulk equipment has one
+    location field for its whole available pool)."""
+    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    if body.qty <= 0 or body.qty > eq.get("available", 0):
+        raise HTTPException(400, "qty exceeds available units")
+    if not body.to_location.strip():
+        raise HTTPException(400, "to_location is required")
+    transfer = Transfer(
+        equipment_id=eq_id, equipment_name=eq.get("name", ""), qty=body.qty,
+        from_location=eq.get("location", ""), to_location=body.to_location.strip(),
+        note=body.note, created_by=user.name,
+    )
+    await db.transfers.insert_one(transfer.model_dump())
+    await apply_ledger_entry(
+        eq_id, body.qty, "available", "in_transit", "transfer",
+        location=body.to_location.strip(), note=body.note, created_by=user.name,
+    )
+    return transfer
+
+
+@api.post("/transfers/{transfer_id}/receive", response_model=Transfer)
+async def receive_transfer(transfer_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Transfer not found")
+    if doc["status"] == "received":
+        raise HTTPException(400, "Already received")
+    await apply_ledger_entry(
+        doc["equipment_id"], doc["qty"], "in_transit", "available", "transfer",
+        location=doc["to_location"], note=f"Received at {doc['to_location']}", created_by=user.name,
+    )
+    # Whole-yard relocation semantics: the destination becomes the equipment's
+    # location of record. A split-location yard isn't modeled — see note above.
+    await db.equipment.update_one({"id": doc["equipment_id"]}, {"$set": {"location": doc["to_location"]}})
+    await db.transfers.update_one(
+        {"id": transfer_id},
+        {"$set": {"status": "received", "received_by": user.name, "received_at": now_utc()}},
+    )
+    new_doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
+    return Transfer(**new_doc)
 
 
 # ----------------------------- Serialized units -----------------------------

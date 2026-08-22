@@ -35,7 +35,7 @@ type Rental = {
   lat?: number | null; lng?: number | null;
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
-type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "total";
+type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "lines";
 type RentalDirection = "outbound" | "inbound";
 type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
 
@@ -57,7 +57,6 @@ const lineLifecycle = (line: Line) => {
   };
 };
 const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + lineLifecycle(line).onSite, 0);
-const rentalDailyTotal = (rental: Rental) => rental.lines.reduce((total, line) => total + line.qty * line.daily_rate, 0);
 const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 export default function RentalsScreen() {
@@ -384,7 +383,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
         start_date: [+new Date(a.start_date), +new Date(b.start_date)],
         due_date: [a.due_date ? +new Date(a.due_date) : Number.MAX_SAFE_INTEGER, b.due_date ? +new Date(b.due_date) : Number.MAX_SAFE_INTEGER],
         units: [rentalUnits(a), rentalUnits(b)],
-        total: [rentalDailyTotal(a), rentalDailyTotal(b)],
+        lines: [a.lines.length, b.lines.length],
       };
       const [left, right] = values[sortKey];
       const result = typeof left === "number" && typeof right === "number" ? left - right : String(left).localeCompare(String(right));
@@ -413,7 +412,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
       { key: "start_date", label: "Start", width: 112, render: (rental) => shortDate(rental.start_date) },
       { key: "due_date", label: "Due", width: 112, render: (rental) => shortDate(rental.due_date) },
       { key: "units", label: "Units", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rentalUnits(rental)}</Mono> },
-      { key: "total", label: "Daily Total", width: 104, align: "right", render: (rental) => <Mono style={styles.tableMono}>${rentalDailyTotal(rental).toFixed(2)}</Mono> },
+      { key: "lines", label: "Lines", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rental.lines.length}</Mono> },
     ];
   }, [width]);
 
@@ -555,15 +554,15 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <View style={styles.detailPair}>
               <DetailMetric label="Start" value={shortDate(selected.start_date)} />
               <DetailMetric label="Due" value={shortDate(selected.due_date)} />
-              <DetailMetric label="Deposit" value={`$${selected.deposit.toFixed(2)}`} />
-              <DetailMetric label="Daily total" value={`$${rentalDailyTotal(selected).toFixed(2)}`} />
+              <DetailMetric label="Lines" value={String(selected.lines.length)} />
+              <DetailMetric label="On site" value={String(rentalUnits(selected))} />
             </View>
             <DetailSection label={`Equipment (${selected.lines.length})`}>
               {selected.lines.map((line) => (
                 <View key={line.equipment_id} style={styles.detailLine}>
                   <Row style={{ width: "100%" }}>
                     <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{line.sku}</Mono></View>
-                    <Mono style={styles.detailAmount}>${(line.qty * line.daily_rate).toFixed(2)}</Mono>
+                    <Mono style={styles.detailAmount}>{line.qty} ordered</Mono>
                     {lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
                       <TouchableOpacity onPress={() => openReturn(selected, line)} style={styles.smallBtn} testID={`return-${selected.id}-${line.equipment_id}`}>
                         <Text style={styles.smallBtnText}>Return</Text>
@@ -606,7 +605,6 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             autoCapitalize="none"
             testID="start-date"
           />
-          <Input label="Deposit ($)" value={String(draft?.deposit ?? 0)} onChangeText={(t) => setDraft({ ...draft, deposit: Number(t) || 0 })} keyboardType="decimal-pad" mono testID="deposit" />
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(t) => setDraft({ ...draft, notes: t })} testID="notes" />
 
           <SectionLabel>Job site location</SectionLabel>
@@ -676,7 +674,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <Row style={{ justifyContent: "space-between" }}>
                 <View style={{ flex: 1 }}>
                   <Text style={typo.body}>{l.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{l.sku} · ${l.daily_rate}/d</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{l.sku}</Mono>
                 </View>
                 <TouchableOpacity onPress={() => updateQty(l.equipment_id, l.qty - 1)} style={styles.qtyBtn} testID={`qty-minus-${l.sku}`}><Text style={styles.qtyText}>−</Text></TouchableOpacity>
                 <Mono style={{ marginHorizontal: 12, fontSize: 18 }}>{l.qty}</Mono>
@@ -691,7 +689,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <TouchableOpacity key={e.id} onPress={() => addLine(e)} style={styles.eqRow} testID={`add-eq-${e.sku}`}>
                 <View style={{ flex: 1 }}>
                   <Text style={typo.body}>{e.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{e.sku} · {e.available} avail · ${e.daily_rate}/d</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{e.sku} · {e.available} avail</Mono>
                 </View>
                 <Ionicons name="add-circle" size={26} color={colors.orange} />
               </TouchableOpacity>
