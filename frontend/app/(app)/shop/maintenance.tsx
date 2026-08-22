@@ -100,7 +100,6 @@ export default function MaintenanceScreen() {
     { key: "issue", label: "Issue", flex: 2, render: (item) => item.issue },
     { key: "status", label: "Status", width: 112, render: (item) => <StatusBadge label={item.status} /> },
     { key: "age", label: "Age", width: 74, align: "right", render: (item) => <Mono style={styles.tableMono}>{ageDays(item.created_at)}d</Mono> },
-    { key: "cost", label: "Cost", width: 96, align: "right", render: (item) => <Mono style={styles.tableMono}>${item.cost.toFixed(2)}</Mono> },
     { key: "service", label: "Service Date", width: 108, align: "right", render: (item) => <Text style={typo.bodySmall}>{serviceDate(item.serviced_at)}</Text> },
   ], [equipment]);
   const equipmentOptions = useMemo(() => [{ key: "all", label: "All equipment" }, ...equipment.map((item) => ({ key: item.id, label: item.sku }))], [equipment]);
@@ -136,7 +135,7 @@ export default function MaintenanceScreen() {
             <Card key={item.id} style={{ marginBottom: spacing.sm }} testID={`maint-${item.id}`}>
               <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}><View style={{ flex: 1 }}><H3>{item.equipment_name || "Equipment"}</H3><Text style={[typo.body, { marginTop: 4 }]}>{item.issue}</Text></View><Pill color={item.status === "resolved" ? colors.success : item.status === "in_progress" ? colors.warning : colors.error} bg={item.status === "resolved" ? colors.successSoft : item.status === "in_progress" ? colors.warningSoft : colors.errorSoft}>{item.status}</Pill></Row>
               {item.action_taken ? <Text style={[typo.body, { color: colors.inkSecondary, marginTop: 4 }]}>↪ {item.action_taken}</Text> : null}
-              <Row style={{ marginTop: 8, gap: spacing.md }}><Text style={typo.label}>Age <Mono style={{ fontSize: 13 }}>{ageDays(item.created_at)}d</Mono></Text><Text style={typo.label}>Cost <Mono style={{ fontSize: 13 }}>${item.cost.toFixed(2)}</Mono></Text></Row>
+              <Row style={{ marginTop: 8, gap: spacing.md }}><Text style={typo.label}>Age <Mono style={{ fontSize: 13 }}>{ageDays(item.created_at)}d</Mono></Text><Text style={typo.label}>Serviced <Mono style={{ fontSize: 13 }}>{serviceDate(item.serviced_at)}</Mono></Text></Row>
               <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}><View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-maint-${item.id}`} /></View><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`del-maint-${item.id}`} /></View></Row>
             </Card>
           ))}</View>;
@@ -168,7 +167,6 @@ const ServiceForm = ({ editing, setEditing, equipment, onSave }: { editing: Draf
     </ScrollView>
     <Input label="Issue" value={editing.issue || ""} onChangeText={(text) => setEditing({ ...editing, issue: text })} testID="maint-issue" />
     <Input label="Action Taken" value={editing.action_taken || ""} onChangeText={(text) => setEditing({ ...editing, action_taken: text })} testID="maint-action" />
-    <Input label="Cost" value={String(editing.cost ?? 0)} onChangeText={(text) => setEditing({ ...editing, cost: Number(text) || 0 })} keyboardType="decimal-pad" mono testID="maint-cost" />
     <SectionLabel>Status</SectionLabel>
     <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>{["open", "in_progress", "resolved"].map((value) => <View key={value} style={{ flex: 1 }}><Button title={value.replace("_", " ")} onPress={() => setEditing({ ...editing, status: value })} variant={editing.status === value ? "primary" : "outline"} testID={`maint-status-${value}`} /></View>)}</Row>
     <Button title="Save" onPress={onSave} testID="save-maint-btn" />

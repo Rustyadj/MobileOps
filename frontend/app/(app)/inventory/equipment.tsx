@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, Platform } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
@@ -56,6 +57,7 @@ const pretty = (value: string) => value.replace(/_/g, " ");
 
 export default function EquipmentScreen() {
   const { isShellWide } = useBreakpoint();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [items, setItems] = useState<Equipment[]>([]);
   const [maintenance, setMaintenance] = useState<Maintenance[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
@@ -87,6 +89,14 @@ export default function EquipmentScreen() {
     } catch (e) { console.warn(e); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!params.open || items.length === 0) return;
+    setSelected(items.find((item) => item.id === params.open) || null);
+  }, [params.open, items]);
+  useEffect(() => {
+    if (params.new) setEditing({ ...blank });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.new]);
   useEffect(() => {
     if (!selected) { setBreakdown(null); return; }
     let cancelled = false;

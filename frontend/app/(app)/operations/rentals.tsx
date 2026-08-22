@@ -63,7 +63,7 @@ const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDat
 
 export default function RentalsScreen() {
   const { isShellWide, width } = useBreakpoint();
-  const params = useLocalSearchParams<{ open?: string }>();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [equipment, setEquipment] = useState<Eq[]>([]);
   const [site, setSite] = useState<Site | null>(null);
@@ -169,6 +169,11 @@ export default function RentalsScreen() {
     });
     setCreating(true);
   };
+
+  useEffect(() => {
+    if (params.new) newRental();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.new]);
 
   const editRental = (r: Rental) => {
     setDraft({
