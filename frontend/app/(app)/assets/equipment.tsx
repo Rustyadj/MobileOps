@@ -1,202 +1,214 @@
-import { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, Platform } from "react-native";
-import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
-import { Screen } from "@/src/components/Screen";
-import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H2, H3 } from "@/src/components/ui";
+// Equipment — searchable/sortable DataTable + DetailDrawer on desktop,
+// cards on phone. CSV import/export moved into a toolbar overflow menu
+// instead of consuming prime page real estate.
+import { useEffect, useMemo, useState } from "react";
+import { View, Text, TouchableOpacity, Alert } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
-import { colors, spacing, type as typo } from "@/src/theme";
+import { Screen } from "@/src/components/Screen";
+import { Card, Mono, Row, H3, Button } from "@/src/components/ui";
+import { PageHeader } from "@/src/components/layout/PageHeader";
+import { PageToolbar } from "@/src/components/layout/PageToolbar";
+import { PageBody } from "@/src/components/layout/PageBody";
+import { SearchInput } from "@/src/components/data/SearchInput";
+import { FilterChips } from "@/src/components/data/FilterBar";
+import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
+import { StatusBadge } from "@/src/components/data/StatusBadge";
+import { EmptyState } from "@/src/components/feedback/EmptyState";
+import { LoadingState } from "@/src/components/feedback/LoadingState";
+import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { useEquipment, Equipment, CATEGORIES, blankEquipment } from "@/src/features/equipment/useEquipment";
+import { EquipmentDetailDrawer } from "@/src/features/equipment/EquipmentDetailDrawer";
+import { EquipmentForm } from "@/src/features/equipment/EquipmentForm";
+import { colors, spacing, type as typo, radii } from "@/src/theme";
 
-const CATEGORIES = [
+type AvailFilter = "all" | "available" | "out";
+const AVAIL_FILTERS: { key: AvailFilter; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "strongback", label: "Strongback" },
-  { key: "turnbuckle", label: "Turnbuckle" },
-  { key: "walkboard_bracket", label: "Walkboard" },
-  { key: "hand_rail", label: "Hand Rail" },
-  { key: "tb_extension", label: "TB Ext" },
-  { key: "crankup_scaffold", label: "Scaffold" },
+  { key: "available", label: "Available" },
+  { key: "out", label: "Out of stock" },
 ];
 
-type Equipment = {
-  id: string; sku: string; name: string; category: string;
-  condition: string; location: string; daily_rate: number;
-  quantity: number; available: number; notes: string;
-};
-
-const blank: Partial<Equipment> = {
-  sku: "", name: "", category: "strongback", condition: "good",
-  location: "", daily_rate: 0, quantity: 1, available: 1, notes: "",
-};
-
 export default function EquipmentScreen() {
-  const [items, setItems] = useState<Equipment[]>([]);
-  const [cat, setCat] = useState("all");
-  const [refreshing, setRefreshing] = useState(false);
-  const [editing, setEditing] = useState<Partial<Equipment> | null>(null);
+  const { isShellWide } = useBreakpoint();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
+  const { items, maintenance, rentalUsage, loading, refreshing, load, refresh, save, del, exportCSV, importCSV } = useEquipment();
 
-  const load = useCallback(async () => {
-    try {
-      const data = await api<Equipment[]>("/equipment");
-      setItems(data);
-    } catch (e) { console.warn(e); }
-  }, []);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [availFilter, setAvailFilter] = useState<AvailFilter>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Partial<Equipment> | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+
   useEffect(() => { load(); }, [load]);
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
-  const filtered = cat === "all" ? items : items.filter((i) => i.category === cat);
+  useEffect(() => {
+    if (params.open) setSelectedId(String(params.open));
+    if (params.new === "1") openNew();
+  }, [params.open, params.new]);
 
-  const save = async () => {
-    if (!editing) return;
+  const openNew = () => { setEditing({ ...blankEquipment }); setFormOpen(true); };
+  const openEdit = (it: Equipment) => { setSelectedId(null); setEditing(it); setFormOpen(true); };
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter((it) => {
+      if (category !== "all" && it.category !== category) return false;
+      if (availFilter === "available" && it.available <= 0) return false;
+      if (availFilter === "out" && it.available > 0) return false;
+      if (q && !it.name.toLowerCase().includes(q) && !it.sku.toLowerCase().includes(q) && !it.location.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [items, category, availFilter, search]);
+
+  const selected = items.find((i) => i.id === selectedId) || null;
+  const hasOpenService = (id: string) => maintenance.some((m) => m.equipment_id === id && m.status !== "resolved");
+
+  const handleImport = async () => {
+    setMenuOpen(false);
+    setImporting(true);
     try {
-      const body = {
-        sku: editing.sku || "", name: editing.name || "", category: editing.category || "strongback",
-        condition: editing.condition || "good", location: editing.location || "",
-        daily_rate: Number(editing.daily_rate) || 0,
-        quantity: Number(editing.quantity) || 1,
-        available: Number(editing.available ?? editing.quantity ?? 1),
-        notes: editing.notes || "",
-      };
-      if (editing.id) {
-        await api(`/equipment/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });
-      } else {
-        await api("/equipment", { method: "POST", body: JSON.stringify(body) });
-      }
-      setEditing(null);
-      load();
-    } catch (e: any) { Alert.alert("Save failed", e.message); }
-  };
-
-  const del = async (id: string) => {
-    try { await api(`/equipment/${id}`, { method: "DELETE" }); load(); }
-    catch (e: any) { Alert.alert("Delete failed", e.message); }
-  };
-
-  const exportCSV = async () => {
-    try {
-      const tok = getAccessToken();
-      const resp = await fetch(`${apiBaseUrl()}/equipment/export.csv`, { headers: { Authorization: `Bearer ${tok}` } });
-      const text = await resp.text();
-      if (Platform.OS === "web") {
-        const blob = new Blob([text], { type: "text/csv" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = "equipment.csv"; a.click();
-        URL.revokeObjectURL(url);
-      } else {
-        const path = (FileSystem.documentDirectory || "") + "equipment.csv";
-        await FileSystem.writeAsStringAsync(path, text);
-        if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(path);
-      }
-    } catch (e: any) { Alert.alert("Export failed", e.message); }
-  };
-
-  const importCSV = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({ type: ["text/csv", "text/comma-separated-values", "application/csv", "*/*"] });
-      if (res.canceled || !res.assets?.[0]) return;
-      const file = res.assets[0];
-      const form = new FormData();
-      // RN file
-      // @ts-ignore
-      form.append("file", { uri: file.uri, name: file.name || "equipment.csv", type: file.mimeType || "text/csv" } as any);
-      const tok = getAccessToken();
-      const resp = await fetch(`${apiBaseUrl()}/equipment/import.csv`, {
-        method: "POST", headers: { Authorization: `Bearer ${tok}` }, body: form as any,
-      });
-      const j = await resp.json();
-      Alert.alert("Imported", `${j.imported} rows`);
-      load();
+      const n = await importCSV();
+      if (n != null) Alert.alert("Imported", `${n} rows`);
     } catch (e: any) { Alert.alert("Import failed", e.message); }
+    finally { setImporting(false); }
   };
+  const handleExport = async () => {
+    setMenuOpen(false);
+    try { await exportCSV(); }
+    catch (e: any) { Alert.alert("Export failed", e.message); }
+  };
+
+  const columns: ColumnDef<Equipment>[] = [
+    { key: "sku", label: "SKU", width: 100, render: (it) => <Mono style={{ fontSize: 12 }}>{it.sku}</Mono> },
+    { key: "name", label: "Equipment", flex: 2, render: (it) => (
+      <View>
+        <Text style={typo.body} numberOfLines={1}>{it.name}</Text>
+        <Text style={[typo.bodySmall, { marginTop: 1 }]} numberOfLines={1}>{it.category.replace(/_/g, " ")}</Text>
+      </View>
+    ) },
+    { key: "location", label: "Location", flex: 1, render: (it) => it.location || "—" },
+    { key: "quantity", label: "Total", width: 70, align: "right", render: (it) => <Mono>{it.quantity}</Mono> },
+    { key: "available", label: "Available", width: 90, align: "right", render: (it) => (
+      <Mono style={{ color: it.available > 0 ? colors.success : colors.error, fontWeight: "700" }}>{it.available}</Mono>
+    ) },
+    { key: "rate", label: "Rate", width: 80, align: "right", render: (it) => <Mono>${it.daily_rate}</Mono> },
+    { key: "maint", label: "Service", width: 90, align: "center", render: (it) => hasOpenService(it.id) ? <Ionicons name="build" size={15} color={colors.warning} /> : null },
+  ];
+
+  if (loading) {
+    return <Screen title="Equipment" back testID="equipment-screen"><LoadingState label="Loading equipment…" /></Screen>;
+  }
+
+  const desktopHeader = (
+    <PageHeader
+      title="Equipment"
+      subtitle={`${items.length} SKUs · ${items.reduce((s, i) => s + i.available, 0)} avail`}
+      actions={
+        <Row style={{ gap: spacing.sm }}>
+          <View>
+            <Button title="⋯" onPress={() => setMenuOpen((o) => !o)} variant="outline" fullWidth={false} style={{ width: 44, height: 38 }} testID="equipment-menu-btn" />
+            {menuOpen ? (
+              <>
+                <TouchableOpacity style={{ position: "absolute", top: 44, right: 0, width: 400, height: 0 }} activeOpacity={1} onPress={() => setMenuOpen(false)} />
+                <View style={styles.menu} testID="equipment-menu">
+                  <TouchableOpacity onPress={handleImport} style={styles.menuItem} testID="import-csv-btn"><Ionicons name="cloud-upload-outline" size={16} color={colors.ink} /><Text style={styles.menuText}>{importing ? "Importing…" : "Import CSV"}</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={handleExport} style={styles.menuItem} testID="export-csv-btn"><Ionicons name="cloud-download-outline" size={16} color={colors.ink} /><Text style={styles.menuText}>Export CSV</Text></TouchableOpacity>
+                </View>
+              </>
+            ) : null}
+          </View>
+          <Button title="+ New Equipment" onPress={openNew} testID="add-equipment-btn" fullWidth={false} style={{ backgroundColor: colors.accent, borderColor: colors.accent, height: 38, paddingHorizontal: 16 }} />
+        </Row>
+      }
+    />
+  );
 
   return (
     <Screen
       title="Equipment"
       subtitle={`${items.length} SKUs · ${items.reduce((s, i) => s + i.available, 0)} avail`}
       back
-      rightAction={{ icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" }}
-      onRefresh={onRefresh}
+      rightAction={{ icon: "add", onPress: openNew, testID: "add-equipment-btn" }}
+      onRefresh={refresh}
       refreshing={refreshing}
+      scroll={isShellWide ? false : true}
+      desktopHeader={desktopHeader}
       testID="equipment-screen"
     >
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ marginHorizontal: -spacing.lg, paddingHorizontal: spacing.lg, marginBottom: spacing.md }}>
-        {CATEGORIES.map((c) => (
-          <TouchableOpacity key={c.key} onPress={() => setCat(c.key)} style={[styles.chip, cat === c.key && styles.chipActive]} testID={`cat-${c.key}`}>
-            <Text style={[styles.chipText, cat === c.key && { color: "#FFF" }]}>{c.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      <PageToolbar>
+        <SearchInput value={search} onChangeText={setSearch} placeholder="Search SKU, name, location…" testID="equipment-search" />
+        <FilterChips options={CATEGORIES} value={category} onChange={setCategory} testIDPrefix="cat" />
+        <FilterChips options={AVAIL_FILTERS} value={availFilter} onChange={(k) => setAvailFilter(k as AvailFilter)} testIDPrefix="avail" />
+      </PageToolbar>
 
-      <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-        <View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View>
-        <View style={{ flex: 1 }}><Button title="Export CSV" onPress={exportCSV} variant="outline" testID="export-csv-btn" /></View>
-      </Row>
+      {!isShellWide ? (
+        <PageToolbar>
+          <View style={{ flex: 1 }}><Button title="Import CSV" onPress={handleImport} variant="outline" loading={importing} testID="import-csv-btn" /></View>
+          <View style={{ flex: 1 }}><Button title="Export CSV" onPress={handleExport} variant="outline" testID="export-csv-btn" /></View>
+        </PageToolbar>
+      ) : null}
 
       {filtered.length === 0 ? (
-        <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No equipment in this category.</Text></Card>
-      ) : filtered.map((it) => (
-        <Card key={it.id} style={{ marginBottom: spacing.sm }} testID={`equipment-row-${it.sku}`}>
-          <Row style={{ marginBottom: 4, gap: 8, alignItems: "flex-start" }}>
-            <View style={{ flex: 1 }}>
-              <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{it.sku}</Mono>
-              <H3>{it.name}</H3>
-              <Text style={[typo.label, { marginTop: 2 }]}>{it.category.replace(/_/g, " ")} · {it.location || "—"}</Text>
-            </View>
-            <Pill color={it.available > 0 ? colors.success : colors.error} bg={it.available > 0 ? "#DCFCE7" : "#FEE2E2"}>
-              {it.available}/{it.quantity}
-            </Pill>
-          </Row>
-          <Row style={{ gap: spacing.md, marginTop: 8 }}>
-            <Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{it.condition}</Mono></Text>
-            <Text style={typo.label}>Rate <Mono style={{ fontSize: 13 }}>${it.daily_rate}/d</Mono></Text>
-          </Row>
-          <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
-            <View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(it)} variant="outline" testID={`edit-${it.sku}`} /></View>
-            <View style={{ flex: 1 }}><Button title="Delete" onPress={() => del(it.id)} variant="danger" testID={`delete-${it.sku}`} /></View>
-          </Row>
-        </Card>
-      ))}
+        <EmptyState icon="cube-outline" title="No equipment matches" subtitle={items.length === 0 ? "Add your first SKU to get started." : "Try a different filter or search."} actionLabel={items.length === 0 ? "Add Equipment" : undefined} onAction={items.length === 0 ? openNew : undefined} testID="equipment-empty" />
+      ) : isShellWide ? (
+        <View style={{ flex: 1, paddingHorizontal: spacing.xl }}>
+          <DataTable columns={columns} rows={filtered} keyExtractor={(it) => it.id} onRowPress={(it) => setSelectedId(it.id)} rowTestID={(it) => `equipment-row-${it.sku}`} selectedId={selectedId} />
+        </View>
+      ) : (
+        <PageBody scroll={false} testID="equipment-list">
+          {filtered.map((it) => (
+            <TouchableOpacity key={it.id} onPress={() => setSelectedId(it.id)} activeOpacity={0.7} testID={`equipment-row-${it.sku}`}>
+              <Card style={{ marginBottom: spacing.sm }}>
+                <Row style={{ marginBottom: 4, gap: 8, alignItems: "flex-start" }}>
+                  <View style={{ flex: 1 }}>
+                    <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{it.sku}</Mono>
+                    <H3>{it.name}</H3>
+                    <Text style={[typo.label, { marginTop: 2 }]}>{it.category.replace(/_/g, " ")} · {it.location || "—"}</Text>
+                  </View>
+                  <StatusBadge label={it.available > 0 ? `${it.available}/${it.quantity}` : "0 avail"} tone={it.available > 0 ? "success" : "error"} />
+                </Row>
+                <Row style={{ gap: spacing.md, marginTop: 8 }}>
+                  <Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{it.condition}</Mono></Text>
+                  <Text style={typo.label}>Rate <Mono style={{ fontSize: 13 }}>${it.daily_rate}/d</Mono></Text>
+                  {hasOpenService(it.id) ? <Row style={{ gap: 4 }}><Ionicons name="build" size={13} color={colors.warning} /><Text style={{ fontSize: 11, color: colors.warning, fontWeight: "700" }}>Service</Text></Row> : null}
+                </Row>
+              </Card>
+            </TouchableOpacity>
+          ))}
+        </PageBody>
+      )}
 
-      <Modal visible={!!editing} animationType="slide" onRequestClose={() => setEditing(null)}>
-        <Screen
-          title={editing?.id ? "Edit Equipment" : "Add Equipment"}
-          back
-          rightAction={{ icon: "close", onPress: () => setEditing(null), testID: "close-edit" }}
-          testID="equipment-edit-screen"
-        >
-          <Input label="SKU" value={editing?.sku || ""} onChangeText={(t) => setEditing((e) => ({ ...e!, sku: t }))} mono testID="edit-sku" />
-          <Input label="Name" value={editing?.name || ""} onChangeText={(t) => setEditing((e) => ({ ...e!, name: t }))} testID="edit-name" />
-          <SectionLabel>Category</SectionLabel>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>
-            {CATEGORIES.filter((c) => c.key !== "all").map((c) => (
-              <TouchableOpacity key={c.key} onPress={() => setEditing((e) => ({ ...e!, category: c.key }))} style={[styles.chip, editing?.category === c.key && styles.chipActive]} testID={`edit-cat-${c.key}`}>
-                <Text style={[styles.chipText, editing?.category === c.key && { color: "#FFF" }]}>{c.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <Input label="Condition" value={editing?.condition || ""} onChangeText={(t) => setEditing((e) => ({ ...e!, condition: t }))} testID="edit-condition" />
-          <Input label="Location" value={editing?.location || ""} onChangeText={(t) => setEditing((e) => ({ ...e!, location: t }))} testID="edit-location" />
-          <Row style={{ gap: spacing.md }}>
-            <View style={{ flex: 1 }}>
-              <Input label="Daily Rate" value={String(editing?.daily_rate ?? "")} onChangeText={(t) => setEditing((e) => ({ ...e!, daily_rate: Number(t) || 0 }))} keyboardType="decimal-pad" mono testID="edit-rate" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Input label="Quantity" value={String(editing?.quantity ?? "")} onChangeText={(t) => setEditing((e) => ({ ...e!, quantity: Number(t) || 0, available: Number(t) || 0 }))} keyboardType="number-pad" mono testID="edit-quantity" />
-            </View>
-          </Row>
-          <Input label="Available" value={String(editing?.available ?? "")} onChangeText={(t) => setEditing((e) => ({ ...e!, available: Number(t) || 0 }))} keyboardType="number-pad" mono testID="edit-available" />
-          <Input label="Notes" value={editing?.notes || ""} onChangeText={(t) => setEditing((e) => ({ ...e!, notes: t }))} testID="edit-notes" />
-          <Button title="Save" onPress={save} testID="save-equipment-btn" />
-        </Screen>
-      </Modal>
+      <EquipmentDetailDrawer
+        item={selected}
+        maintenance={maintenance}
+        rentalUsage={selected ? rentalUsage[selected.id] || [] : []}
+        onClose={() => { setSelectedId(null); if (params.open) router.setParams({ open: undefined }); }}
+        onEdit={openEdit}
+        onDelete={del}
+      />
+
+      <EquipmentForm
+        visible={formOpen}
+        editing={editing}
+        setEditing={setEditing}
+        onClose={() => { setFormOpen(false); setEditing(null); if (params.new) router.setParams({ new: undefined }); }}
+        onSave={async () => { await save(editing!); setFormOpen(false); setEditing(null); }}
+      />
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  chip: { paddingHorizontal: 14, height: 36, justifyContent: "center", borderWidth: 1, borderColor: colors.border, flexShrink: 0 },
-  chipActive: { backgroundColor: colors.ink, borderColor: colors.ink },
-  chipText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary },
-});
+const styles = {
+  menu: {
+    position: "absolute" as const, top: 44, right: 0, width: 180, zIndex: 100,
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md,
+    paddingVertical: 4,
+  },
+  menuItem: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, paddingHorizontal: 14, paddingVertical: 10 },
+  menuText: { fontSize: 13, color: colors.ink, fontWeight: "600" as const },
+};
