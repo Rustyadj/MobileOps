@@ -31,7 +31,6 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "operations",
     label: "Operations",
     items: [
-      { key: "operations", label: "Operations Overview", route: "/(app)/operations", icon: "speedometer-outline", testID: "nav-operations" },
       { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
       { key: "rentals", label: "Rentals", route: "/(app)/operations/rentals", icon: "receipt-outline", testID: "nav-rentals" },
       { key: "bookings", label: "Bookings", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },
@@ -55,15 +54,15 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    key: "partners",
-    label: "Partners",
+    key: "vendors",
+    label: "Vendors",
     items: [
       { key: "vendors", label: "Vendors", route: "/(app)/vendors", icon: "business-outline", testID: "nav-vendors" },
     ],
   },
   {
-    key: "administration",
-    label: "Administration",
+    key: "admin",
+    label: "Admin",
     items: [
       { key: "site-admin", label: "Site Admin", route: "/(app)/site-admin", icon: "settings-outline", testID: "nav-site-admin" },
     ],
@@ -87,8 +86,8 @@ export function activeSectionForPath(pathname: string): string {
   if (pathname.startsWith("/operations")) return "operations";
   if (pathname.startsWith("/assets")) return "assets";
   if (pathname.startsWith("/tools")) return "tools";
-  if (pathname.startsWith("/vendors")) return "partners";
-  if (pathname.startsWith("/site-admin")) return "administration";
+  if (pathname.startsWith("/vendors")) return "vendors";
+  if (pathname.startsWith("/site-admin")) return "admin";
   if (pathname.startsWith("/menu")) return "menu";
   return "overview";
 }
@@ -107,6 +106,6 @@ export function breadcrumbForPath(pathname: string): { section: string; page: st
   const last = segments[segments.length - 1] || "Dashboard";
   const humanized = last.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const sectionKey = activeSectionForPath(pathname);
-  const section = NAV_SECTIONS.find((s) => s.key === sectionKey || (sectionKey === "partners" && s.key === "partners") || (sectionKey === "administration" && s.key === "administration"));
+  const section = NAV_SECTIONS.find((s) => s.key === sectionKey);
   return { section: section?.label || "Overview", page: humanized };
 }

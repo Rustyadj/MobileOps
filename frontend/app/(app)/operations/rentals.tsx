@@ -1,37 +1,62 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
+import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
+import { SearchInput } from "@/src/components/data/SearchInput";
+import { FilterChips } from "@/src/components/data/FilterBar";
+import { StatusBadge } from "@/src/components/data/StatusBadge";
+import { PageToolbar } from "@/src/components/layout/PageToolbar";
+import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { LocationPicker, geocodeString, geocodeAddress, GeocodeResult } from "@/src/components/MapCanvas";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
-import { colors, spacing, type as typo } from "@/src/theme";
+import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Eq = { id: string; sku: string; name: string; daily_rate: number; available: number };
 type Line = { equipment_id: string; sku: string; name: string; qty: number; daily_rate: number; returned_qty: number };
 type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
-  job_site: string; start_date: string; deposit: number; notes: string;
+  job_site: string; start_date: string; due_date?: string | null; deposit: number; notes: string;
   lines: Line[]; status: string; delivered_by: string; received_by: string;
   lat?: number | null; lng?: number | null;
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
+type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "total";
+
+const STATUS_OPTIONS = [
+  { key: "all", label: "All statuses" },
+  { key: "active", label: "Active" },
+  { key: "returned", label: "Returned" },
+];
+
+const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + Math.max(0, line.qty - line.returned_qty), 0);
+const rentalDailyTotal = (rental: Rental) => rental.lines.reduce((total, line) => total + line.qty * line.daily_rate, 0);
+const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
 export default function RentalsScreen() {
+  const { isShellWide, width } = useBreakpoint();
+  const params = useLocalSearchParams<{ open?: string }>();
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [equipment, setEquipment] = useState<Eq[]>([]);
   const [site, setSite] = useState<Site | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
-  const [returning, setReturning] = useState<Rental | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
   const [addressQuery, setAddressQuery] = useState("");
   const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
   const [addressBusy, setAddressBusy] = useState(false);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
+  const [selected, setSelected] = useState<Rental | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<RentalSortKey>("start_date");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +69,10 @@ export default function RentalsScreen() {
     } catch (err) { console.warn(err); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!params.open || rentals.length === 0) return;
+    setSelected(rentals.find((rental) => rental.id === params.open) || null);
+  }, [params.open, rentals]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
@@ -277,12 +306,86 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     }
   };
 
+  const filteredRentals = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const rows = rentals.filter((rental) => {
+      if (statusFilter !== "all" && rental.status !== statusFilter) return false;
+      if (!query) return true;
+      return [rental.id, rental.customer_name, rental.job_site, rental.customer_phone, rental.customer_email, ...rental.lines.flatMap((line) => [line.sku, line.name])]
+        .some((value) => value?.toLowerCase().includes(query));
+    });
+    return [...rows].sort((a, b) => {
+      const values: Record<RentalSortKey, [string | number, string | number]> = {
+        status: [a.status, b.status],
+        customer_name: [a.customer_name, b.customer_name],
+        job_site: [a.job_site, b.job_site],
+        start_date: [+new Date(a.start_date), +new Date(b.start_date)],
+        due_date: [a.due_date ? +new Date(a.due_date) : Number.MAX_SAFE_INTEGER, b.due_date ? +new Date(b.due_date) : Number.MAX_SAFE_INTEGER],
+        units: [rentalUnits(a), rentalUnits(b)],
+        total: [rentalDailyTotal(a), rentalDailyTotal(b)],
+      };
+      const [left, right] = values[sortKey];
+      const result = typeof left === "number" && typeof right === "number" ? left - right : String(left).localeCompare(String(right));
+      return sortDirection === "asc" ? result : -result;
+    });
+  }, [rentals, search, sortDirection, sortKey, statusFilter]);
+
+  const columns = useMemo<ColumnDef<Rental>[]>(() => {
+    const identity: ColumnDef<Rental>[] = [
+      { key: "status", label: "Status", width: width < 1280 ? 88 : 104, render: (rental) => <StatusBadge label={rental.status} /> },
+      { key: "rental", label: "Rental", width: width < 1280 ? 96 : 116, render: (rental) => <Mono style={styles.tableLink}>{rental.id.slice(0, 12)}</Mono> },
+      { key: "customer_name", label: "Customer", flex: 1.15, render: (rental) => rental.customer_name },
+      { key: "job_site", label: "Job Site", flex: 1.35, render: (rental) => rental.job_site || "—" },
+    ];
+    if (width < 1280) {
+      return [...identity, { key: "units", label: "Units", width: 54, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rentalUnits(rental)}</Mono> }];
+    }
+    return [
+      ...identity,
+      { key: "start_date", label: "Start", width: 112, render: (rental) => shortDate(rental.start_date) },
+      { key: "due_date", label: "Due", width: 112, render: (rental) => shortDate(rental.due_date) },
+      { key: "units", label: "Units", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rentalUnits(rental)}</Mono> },
+      { key: "total", label: "Daily Total", width: 104, align: "right", render: (rental) => <Mono style={styles.tableMono}>${rentalDailyTotal(rental).toFixed(2)}</Mono> },
+    ];
+  }, [width]);
+
+  const handleSort = (key: string) => {
+    const nextKey = key === "rental" ? "customer_name" : key as RentalSortKey;
+    if (nextKey === sortKey) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setSortKey(nextKey); setSortDirection("asc"); }
+  };
+
   return (
     <Screen title="Rentals" subtitle={`${rentals.length} total · ${rentals.filter(r => r.status === "active").length} active`} back
       rightAction={{ icon: "add", onPress: newRental, testID: "new-rental-btn" }}
-      onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen">
+      onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
-      {rentals.length === 0 ? (
+      {isShellWide ? (
+        <View style={styles.desktopWorkspace}>
+          <PageToolbar>
+            <SearchInput value={search} onChangeText={setSearch} placeholder="Search rental, customer, site, equipment…" testID="rentals-search" style={{ flex: 1, maxWidth: 420 }} />
+            <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" />
+          </PageToolbar>
+          <View style={styles.filterRow}>
+            <FilterChips options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} testIDPrefix="rentals-status-filter" />
+            <Text style={styles.resultCount}>{filteredRentals.length} matching rentals</Text>
+          </View>
+          <View style={styles.tableWrap}>
+            <DataTable
+              columns={columns}
+              rows={filteredRentals}
+              keyExtractor={(rental) => rental.id}
+              rowTestID={(rental) => `rental-${rental.id}`}
+              onRowPress={setSelected}
+              selectedId={selected?.id}
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              onSort={handleSort}
+              emptyLabel="No rentals match these filters."
+            />
+          </View>
+        </View>
+      ) : rentals.length === 0 ? (
         <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No rentals yet. Tap + to create.</Text></Card>
       ) : rentals.map((r) => {
         const totalQty = r.lines.reduce((s, l) => s + l.qty, 0);
@@ -349,6 +452,57 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </Card>
         );
       })}
+
+      <DetailDrawer
+        visible={isShellWide && !!selected}
+        title={selected?.id || "Rental detail"}
+        subtitle={selected ? `${selected.customer_name} · ${selected.job_site || "No job site"}` : undefined}
+        onClose={() => setSelected(null)}
+        width={460}
+        testID="rental-detail-drawer"
+      >
+        {selected ? (
+          <View>
+            <View style={styles.detailStatusRow}>
+              <StatusBadge label={selected.status} />
+              <Text style={styles.detailMuted}>{rentalUnits(selected)} units currently deployed</Text>
+            </View>
+            <DetailSection label="Customer">
+              <Text style={styles.detailTitle}>{selected.customer_name}</Text>
+              <Text style={styles.detailText}>{selected.customer_phone || "No phone"}</Text>
+              <Text style={styles.detailText}>{selected.customer_email || "No email"}</Text>
+            </DetailSection>
+            <DetailSection label="Job site">
+              <Text style={styles.detailTitle}>{selected.job_site || "No job site"}</Text>
+              <Text style={styles.detailText}>{selected.lat != null && selected.lng != null ? `${selected.lat.toFixed(5)}, ${selected.lng.toFixed(5)}` : "Location not mapped"}</Text>
+            </DetailSection>
+            <View style={styles.detailPair}>
+              <DetailMetric label="Start" value={shortDate(selected.start_date)} />
+              <DetailMetric label="Due" value={shortDate(selected.due_date)} />
+              <DetailMetric label="Deposit" value={`$${selected.deposit.toFixed(2)}`} />
+              <DetailMetric label="Daily total" value={`$${rentalDailyTotal(selected).toFixed(2)}`} />
+            </View>
+            <DetailSection label={`Equipment (${selected.lines.length})`}>
+              {selected.lines.map((line) => (
+                <View key={line.equipment_id} style={styles.detailLine}>
+                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{line.sku}</Mono></View>
+                  <Mono style={styles.detailQty}>{line.returned_qty}/{line.qty}</Mono>
+                  <Mono style={styles.detailAmount}>${(line.qty * line.daily_rate).toFixed(2)}</Mono>
+                </View>
+              ))}
+            </DetailSection>
+            {selected.notes ? <DetailSection label="Notes"><Text style={styles.detailText}>{selected.notes}</Text></DetailSection> : null}
+            <View style={styles.drawerActions}>
+              <Button title="Edit Rental" onPress={() => editRental(selected)} testID={`edit-rental-${selected.id}`} />
+              <View style={styles.drawerActionRow}>
+                <View style={{ flex: 1 }}><Button title={selected.lat != null ? "Update location" : "Set location"} onPress={() => setPickerFor({ mode: "existing", id: selected.id, initial: selected.lat != null && selected.lng != null ? { lat: selected.lat, lng: selected.lng } : null })} variant="outline" testID={`set-location-${selected.id}`} /></View>
+                <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(selected)} variant="outline" testID={`pdf-${selected.id}`} /></View>
+              </View>
+              <Button title="Delete Rental" onPress={() => del(selected.id)} variant="danger" testID={`delete-rental-${selected.id}`} />
+            </View>
+          </View>
+        ) : null}
+      </DetailDrawer>
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen title={draft?.id ? "Edit Rental" : "New Rental"} back rightAction={{ icon: "close", onPress: () => { setCreating(false); setDraft(null); }, testID: "close-new-rental" }}>
@@ -524,7 +678,22 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
   );
 }
 
+const DetailSection: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <View style={styles.detailSection}><Text style={styles.detailLabel}>{label}</Text>{children}</View>
+);
+
+const DetailMetric: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+  <View style={styles.detailMetric}><Text style={styles.detailLabel}>{label}</Text><Mono style={styles.detailMetricValue}>{value}</Mono></View>
+);
+
 const styles = StyleSheet.create({
+  desktopWorkspace: { flex: 1, paddingTop: spacing.lg },
+  toolbarButton: { height: 40 },
+  filterRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingHorizontal: spacing.xl, paddingBottom: spacing.sm },
+  resultCount: { ...typo.bodySmall, fontSize: 12 },
+  tableWrap: { flex: 1, marginHorizontal: spacing.xl, marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden", backgroundColor: colors.bg },
+  tableLink: { fontSize: 12, color: colors.primary, fontWeight: "700" },
+  tableMono: { fontSize: 12 },
   lineRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8 },
   smallBtn: { paddingHorizontal: 10, height: 32, borderWidth: 1, borderColor: colors.ink, alignItems: "center", justifyContent: "center" },
   smallBtnText: { fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.6 },
@@ -535,4 +704,19 @@ const styles = StyleSheet.create({
   resultRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.bgMuted },
   qtyBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", alignItems: "center", justifyContent: "center", padding: 24 },
   qtyDialog: { backgroundColor: colors.bg, borderRadius: 8, padding: 20, width: "100%", maxWidth: 360 },
+  detailStatusRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
+  detailMuted: { ...typo.bodySmall, fontSize: 12 },
+  detailSection: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
+  detailLabel: { ...typo.caption, color: colors.inkSecondary, marginBottom: 6 },
+  detailTitle: { ...typo.body, fontWeight: "700" },
+  detailText: { ...typo.bodySmall, marginTop: 2 },
+  detailPair: { flexDirection: "row", flexWrap: "wrap", borderBottomWidth: 1, borderBottomColor: colors.border },
+  detailMetric: { width: "50%", paddingVertical: spacing.md, paddingRight: spacing.sm },
+  detailMetricValue: { fontSize: 13 },
+  detailLine: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  detailSku: { fontSize: 10.5, color: colors.inkMuted },
+  detailQty: { width: 48, textAlign: "right", fontSize: 12 },
+  detailAmount: { width: 74, textAlign: "right", fontSize: 12 },
+  drawerActions: { paddingTop: spacing.lg, gap: spacing.sm },
+  drawerActionRow: { flexDirection: "row", gap: spacing.sm },
 });

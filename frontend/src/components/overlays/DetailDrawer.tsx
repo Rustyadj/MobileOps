@@ -25,7 +25,7 @@ export const DetailDrawer: React.FC<{
 
   return (
     <Modal visible={visible} transparent animationType={isShellWide ? "fade" : "slide"} onRequestClose={onClose}>
-      <View style={styles.backdrop}>
+      <View style={[styles.backdrop, isShellWide && styles.backdropDesktop]}>
         <TouchableOpacity style={StyleSheet.absoluteFillObject as any} activeOpacity={1} onPress={onClose} />
         <View
           style={[
@@ -56,8 +56,9 @@ export const DetailDrawer: React.FC<{
 };
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.4)" },
-  panel: { position: "absolute", backgroundColor: colors.bg, borderColor: colors.border },
+  backdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.4)", zIndex: 1000 },
+  backdropDesktop: { backgroundColor: "transparent" },
+  panel: { position: "absolute", backgroundColor: colors.bg, borderColor: colors.border, zIndex: 1 },
   header: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.border },
   closeBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: radii.sm },
 });

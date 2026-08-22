@@ -21,7 +21,8 @@ export const MobileBottomNav: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
-  const activeSection = activeSectionForPath(pathname);
+  const rawSection = activeSectionForPath(pathname);
+  const activeSection = rawSection === "vendors" || rawSection === "admin" ? "menu" : rawSection;
 
   return (
     <View style={[styles.wrap, { height: 58 + insets.bottom, paddingBottom: insets.bottom }]} testID="mobile-bottom-nav">

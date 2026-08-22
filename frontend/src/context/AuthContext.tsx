@@ -17,6 +17,7 @@ type Ctx = {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  signup: (name: string, email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -152,6 +153,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(data.user);
   };
 
+  const signup = async (name: string, email: string, password: string) => {
+    const data = await api<{ access_token: string; refresh_token: string; user: User }>(
+      "/auth/signup",
+      { method: "POST", body: JSON.stringify({ name, email, password }), auth: false },
+    );
+    setAccessToken(data.access_token);
+    await storage.secureSet(REFRESH_KEY, data.refresh_token);
+    await storage.secureRemove(SESSION_KEY);
+    setUser(data.user);
+  };
+
   const loginWithGoogle = async () => {
     const redirectUrl =
       Platform.OS === "web" && typeof window !== "undefined"
@@ -202,7 +214,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, loginWithGoogle, logout, refreshUser }}>
+    <AuthCtx.Provider value={{ user, loading, login, signup, loginWithGoogle, logout, refreshUser }}>
       {children}
     </AuthCtx.Provider>
   );

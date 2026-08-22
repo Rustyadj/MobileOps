@@ -3,7 +3,8 @@
 // behaves identically on web and native. Rows render through FlatList for
 // large-dataset performance.
 import React, { useCallback } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, ListRenderItemInfo } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, ListRenderItemInfo, StyleProp, ViewStyle } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, type as typo } from "@/src/theme";
 
 export type ColumnDef<T> = {
@@ -23,6 +24,9 @@ function DataTableInner<T>({
   rowTestID,
   selectedId,
   emptyLabel = "No results.",
+  sortKey,
+  sortDirection = "asc",
+  onSort,
 }: {
   columns: ColumnDef<T>[];
   rows: T[];
@@ -31,6 +35,9 @@ function DataTableInner<T>({
   rowTestID?: (row: T) => string;
   selectedId?: string | null;
   emptyLabel?: string;
+  sortKey?: string;
+  sortDirection?: "asc" | "desc";
+  onSort?: (key: string) => void;
 }) {
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<T>) => {
@@ -61,11 +68,23 @@ function DataTableInner<T>({
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.headerRow}>
-        {columns.map((col) => (
-          <View key={col.key} style={[styles.cell, col.width ? { width: col.width, flexGrow: 0 } : { flex: col.flex ?? 1 }, col.align === "right" && { alignItems: "flex-end" }, col.align === "center" && { alignItems: "center" }]}>
-            <Text style={typo.label} numberOfLines={1}>{col.label}</Text>
-          </View>
-        ))}
+        {columns.map((col) => {
+          const active = sortKey === col.key;
+          const content = (
+            <View style={[styles.headerContent, col.align === "right" && { justifyContent: "flex-end" }, col.align === "center" && { justifyContent: "center" }]}>
+              <Text style={[typo.label, active && { color: colors.primary }]} numberOfLines={1}>{col.label}</Text>
+              {active ? <Ionicons name={sortDirection === "asc" ? "chevron-up" : "chevron-down"} size={12} color={colors.primary} /> : null}
+            </View>
+          );
+          const cellStyle: StyleProp<ViewStyle> = [styles.cell, col.width ? { width: col.width, flexGrow: 0 } : { flex: col.flex ?? 1 }, col.align === "right" && { alignItems: "flex-end" }, col.align === "center" && { alignItems: "center" }];
+          return onSort ? (
+            <TouchableOpacity key={col.key} style={cellStyle} onPress={() => onSort(col.key)} activeOpacity={0.65} testID={`sort-${col.key}`}>
+              {content}
+            </TouchableOpacity>
+          ) : (
+            <View key={col.key} style={cellStyle}>{content}</View>
+          );
+        })}
       </View>
       {rows.length === 0 ? (
         <View style={styles.emptyWrap}><Text style={[typo.body, { color: colors.inkMuted }]}>{emptyLabel}</Text></View>
@@ -101,5 +120,6 @@ const styles = StyleSheet.create({
   },
   rowSelected: { backgroundColor: colors.primarySoft },
   cell: { paddingRight: spacing.sm, justifyContent: "center" },
+  headerContent: { width: "100%", flexDirection: "row", alignItems: "center", gap: 4 },
   emptyWrap: { padding: spacing.xl, alignItems: "center" },
 });

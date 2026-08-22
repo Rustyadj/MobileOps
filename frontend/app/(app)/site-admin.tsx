@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { View, Text, Image, Alert, TouchableOpacity } from "react-native";
+import { View, Text, Image, Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, SectionLabel, Row } from "@/src/components/ui";

@@ -8,6 +8,7 @@ import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { ModuleRail } from "./ModuleRail";
 import { CommandMenu } from "@/src/components/overlays/CommandMenu";
 import { CommandMenuProvider } from "@/src/context/CommandMenuContext";
 
@@ -22,6 +23,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
             <Sidebar />
             <View style={{ flex: 1, minWidth: 0 }}>
               <TopBar />
+              <ModuleRail />
               <View style={{ flex: 1 }}>{children}</View>
             </View>
           </View>

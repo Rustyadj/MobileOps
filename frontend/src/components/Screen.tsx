@@ -51,7 +51,7 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
   );
 
   const body = (
-    <View style={clampWidth ? { maxWidth: maxContentWidth, width: "100%", alignSelf: "center" } : undefined}>
+    <View style={[!scroll && { flex: 1 }, clampWidth ? { maxWidth: maxContentWidth, width: "100%", alignSelf: "center" } : undefined]}>
       {children}
     </View>
   );

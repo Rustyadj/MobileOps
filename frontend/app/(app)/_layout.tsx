@@ -1,5 +1,4 @@
-import { Stack } from "expo-router";
-import { Redirect } from "expo-router";
+import { Redirect, Stack } from "expo-router";
 import { useAuth } from "@/src/context/AuthContext";
 import { AppShell } from "@/src/components/shell/AppShell";
 

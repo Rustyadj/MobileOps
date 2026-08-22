@@ -9,8 +9,8 @@ import { storage } from "@/src/utils/storage";
 import { NAV_SECTIONS } from "./nav-config";
 
 const COLLAPSE_KEY = "cf_sidebar_collapsed";
-export const SIDEBAR_EXPANDED_W = 232;
-export const SIDEBAR_COLLAPSED_W = 64;
+export const SIDEBAR_EXPANDED_W = 248;
+export const SIDEBAR_COLLAPSED_W = 68;
 
 export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concrete Form" }) => {
   const router = useRouter();
@@ -60,7 +60,7 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concret
                     activeOpacity={0.7}
                     testID={item.testID}
                   >
-                    <Ionicons name={item.icon} size={18} color={active ? colors.primary : colors.inkSecondary} />
+                    <Ionicons name={item.icon} size={18} color={active ? "#FFFFFF" : "#94A3B8"} />
                     {!collapsed ? (
                       <Text style={[styles.itemLabel, active && styles.itemLabelActive]} numberOfLines={1}>
                         {item.label}
@@ -81,7 +81,7 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "Concret
       </ScrollView>
 
       <TouchableOpacity onPress={toggle} style={styles.collapseBtn} testID="sidebar-toggle" activeOpacity={0.7}>
-        <Ionicons name={collapsed ? "chevron-forward" : "chevron-back"} size={16} color={colors.inkSecondary} />
+        <Ionicons name={collapsed ? "chevron-forward" : "chevron-back"} size={16} color="#94A3B8" />
         {!collapsed ? <Text style={styles.collapseText}>Collapse</Text> : null}
       </TouchableOpacity>
     </View>
@@ -96,9 +96,9 @@ function routeToPath(route: string): string {
 const styles = StyleSheet.create({
   wrap: {
     height: "100%",
-    backgroundColor: colors.bg,
+    backgroundColor: "#0B1835",
     borderRightWidth: 1,
-    borderRightColor: colors.border,
+    borderRightColor: "#172B52",
     ...(Platform.OS === "web" ? ({ transition: "width 150ms ease-out" } as any) : null),
   },
   brandRow: {
@@ -108,13 +108,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     height: 56,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: "#172B52",
   },
-  brandMark: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  brandMark: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" },
   brandLetter: { color: "#FFF", fontSize: 15, fontWeight: "700" },
-  brandText: { ...typo.h3, fontSize: 15 },
-  sectionLabel: { ...typo.caption, paddingHorizontal: 14, marginTop: spacing.sm, marginBottom: 6 },
-  collapsedDivider: { height: 1, backgroundColor: colors.border, marginHorizontal: 14, marginTop: spacing.sm, marginBottom: spacing.sm },
+  brandText: { ...typo.h3, fontSize: 15, color: "#F8FAFC" },
+  sectionLabel: { ...typo.caption, color: "#64748B", paddingHorizontal: 14, marginTop: spacing.sm, marginBottom: 6 },
+  collapsedDivider: { height: 1, backgroundColor: "#172B52", marginHorizontal: 14, marginTop: spacing.sm, marginBottom: spacing.sm },
   item: {
     flexDirection: "row",
     alignItems: "center",
@@ -125,10 +125,10 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   itemCollapsed: { justifyContent: "center", paddingHorizontal: 0, marginHorizontal: 8 },
-  itemActive: { backgroundColor: colors.primarySoft },
-  itemLabel: { ...typo.body, fontSize: 13.5, color: colors.inkSecondary, flex: 1 },
-  itemLabelActive: { color: colors.primary, fontWeight: "600" },
-  activeBar: { position: "absolute", left: -8, top: 6, bottom: 6, width: 3, borderRadius: 2, backgroundColor: colors.primary },
+  itemActive: { backgroundColor: "#1D3A70" },
+  itemLabel: { ...typo.body, fontSize: 13.5, color: "#CBD5E1", flex: 1 },
+  itemLabelActive: { color: "#FFFFFF", fontWeight: "700" },
+  activeBar: { position: "absolute", left: -8, top: 6, bottom: 6, width: 3, borderRadius: 2, backgroundColor: colors.accent },
   collapseBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -136,9 +136,9 @@ const styles = StyleSheet.create({
     height: 44,
     paddingHorizontal: 20,
     borderTopWidth: 1,
-    borderTopColor: colors.border,
+    borderTopColor: "#172B52",
   },
-  collapseText: { ...typo.label, color: colors.inkSecondary },
+  collapseText: { ...typo.label, color: "#94A3B8" },
   tooltip: {
     position: "absolute",
     left: SIDEBAR_COLLAPSED_W + 4,

@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
 import { Screen } from "@/src/components/Screen";
 import { Button, Card, H3, Input, Mono, SectionLabel, Pill, Row } from "@/src/components/ui";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
+import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 
 type WallRun = { name: string; corners: string; linear_ft: string; wall_height: string };
 type RunResult = {
@@ -20,6 +21,7 @@ type Result = {
 };
 
 export default function BracingScreen() {
+  const { isShellWide } = useBreakpoint();
   const [runs, setRuns] = useState<WallRun[]>([
     { name: "Run A", corners: "4", linear_ft: "60", wall_height: "9" },
   ]);
@@ -56,8 +58,8 @@ export default function BracingScreen() {
     }
   };
 
-  return (
-    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back testID="bracing-screen">
+  const inputs = (
+    <>
       <SectionLabel>Rule</SectionLabel>
       <Card style={{ marginBottom: spacing.md }}>
         <Text style={typo.body}>1 strongback per corner. 1 brace every 4 ft of wall (round up). Brace length set by wall height:
@@ -123,9 +125,11 @@ export default function BracingScreen() {
           <Text style={{ color: colors.error, fontWeight: "700" }}>{err}</Text>
         </View>
       ) : null}
+    </>
+  );
 
-      {result ? (
-        <View style={{ marginTop: spacing.lg }} testID="bracing-results">
+  const results = result ? (
+        <View style={!isShellWide ? { marginTop: spacing.lg } : undefined} testID="bracing-results">
           <SectionLabel>Totals</SectionLabel>
           <View style={styles.totalsRow}>
             <TotalTile label="Strongbacks" value={`${result.total_strongbacks}`} />
@@ -178,7 +182,22 @@ export default function BracingScreen() {
             </Card>
           ))}
         </View>
-      ) : null}
+      ) : isShellWide ? (
+        <View style={styles.resultsEmpty}>
+          <Ionicons name="calculator-outline" size={28} color={colors.inkMuted} />
+          <Text style={[typo.h3, { marginTop: spacing.sm }]}>Results stay visible here</Text>
+          <Text style={[typo.bodySmall, { textAlign: "center", marginTop: 4 }]}>Enter wall runs and calculate to build totals and the brace order list.</Text>
+        </View>
+      ) : null;
+
+  return (
+    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back testID="bracing-screen" scroll={!isShellWide}>
+      {isShellWide ? (
+        <View style={styles.workspace}>
+          <ScrollView style={styles.inputPane} contentContainerStyle={styles.paneContent} showsVerticalScrollIndicator={false}>{inputs}</ScrollView>
+          <ScrollView style={styles.resultPane} contentContainerStyle={styles.paneContent} showsVerticalScrollIndicator={false}>{results}</ScrollView>
+        </View>
+      ) : <>{inputs}{results}</>}
     </Screen>
   );
 }
@@ -191,6 +210,11 @@ const TotalTile: React.FC<{ label: string; value: string; accent?: boolean }> = 
 );
 
 const styles = StyleSheet.create({
+  workspace: { flex: 1, flexDirection: "row" },
+  inputPane: { flex: 1, minWidth: 0 },
+  resultPane: { width: "42%", minWidth: 360, maxWidth: 560, borderLeftWidth: 1, borderLeftColor: colors.border, backgroundColor: colors.bgMuted },
+  paneContent: { padding: spacing.xl, paddingBottom: spacing.xxl },
+  resultsEmpty: { minHeight: 280, alignItems: "center", justifyContent: "center", padding: spacing.xl, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
   totalsRow: { flexDirection: "row", gap: 12, marginBottom: spacing.lg },
   tile: { flex: 1, borderWidth: 2, borderColor: colors.ink, padding: 14, backgroundColor: colors.bg },
   warn: { flexDirection: "row", alignItems: "center", borderWidth: 2, borderColor: colors.warning, backgroundColor: "#FEF3C7", padding: spacing.md, marginBottom: spacing.md },

@@ -11,23 +11,52 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
-  const { login, loginWithGoogle } = useAuth();
+  const { login, signup, loginWithGoogle } = useAuth();
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const onSubmit = async () => {
     setErr(null);
+    const cleanEmail = email.trim().toLowerCase();
+    if (mode === "signup") {
+      if (name.trim().length < 2) {
+        setErr("Enter your full name.");
+        return;
+      }
+      if (password.length < 8) {
+        setErr("Password must be at least 8 characters.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setErr("Passwords do not match.");
+        return;
+      }
+    }
     setBusy(true);
     try {
-      await login(email.trim(), password);
+      if (mode === "signup") {
+        await signup(name.trim(), cleanEmail, password);
+      } else {
+        await login(cleanEmail, password);
+      }
     } catch (e: any) {
-      setErr(e.message || "Login failed");
+      setErr(e.message || (mode === "signup" ? "Account creation failed" : "Login failed"));
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleMode = () => {
+    setMode((current) => current === "signin" ? "signup" : "signin");
+    setErr(null);
+    setPassword("");
+    setConfirmPassword("");
   };
 
   const onGoogle = async () => {
@@ -56,9 +85,13 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.form}>
-            <H1 style={{ marginBottom: spacing.xs }}>Sign in</H1>
+            <H1 style={{ marginBottom: spacing.xs }}>
+              {mode === "signup" ? "Create your account" : "Sign in"}
+            </H1>
             <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>
-              Use your team credentials to continue.
+              {mode === "signup"
+                ? "Use your work email to get started."
+                : "Use your team credentials to continue."}
             </Text>
 
             <TouchableOpacity
@@ -76,10 +109,23 @@ export default function LoginScreen() {
 
             <View style={styles.dividerRow}>
               <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or sign in with email</Text>
+              <Text style={styles.dividerText}>
+                {mode === "signup" ? "or create with email" : "or sign in with email"}
+              </Text>
               <View style={styles.dividerLine} />
             </View>
 
+            {mode === "signup" ? (
+              <Input
+                label="Full name"
+                value={name}
+                onChangeText={setName}
+                autoCapitalize="words"
+                autoComplete="name"
+                textContentType="name"
+                testID="register-name-input"
+              />
+            ) : null}
             <Input
               label="Email"
               value={email}
@@ -94,9 +140,20 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
-              autoComplete="password"
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
               testID="login-password-input"
             />
+
+            {mode === "signup" ? (
+              <Input
+                label="Confirm password"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry
+                autoComplete="new-password"
+                testID="register-confirm-password-input"
+              />
+            ) : null}
 
             {err ? (
               <View style={styles.errBox} testID="login-error">
@@ -104,7 +161,26 @@ export default function LoginScreen() {
               </View>
             ) : null}
 
-            <Button title="Sign in" onPress={onSubmit} loading={busy} testID="login-submit-button" />
+            <Button
+              title={mode === "signup" ? "Create account" : "Sign in"}
+              onPress={onSubmit}
+              loading={busy}
+              testID={mode === "signup" ? "register-submit-button" : "login-submit-button"}
+            />
+
+            <TouchableOpacity
+              onPress={toggleMode}
+              disabled={busy || googleBusy}
+              style={styles.modeToggle}
+              testID="auth-mode-toggle"
+            >
+              <Text style={styles.modeToggleText}>
+                {mode === "signup" ? "Already have an account? " : "New to Concrete Form? "}
+                <Text style={styles.modeToggleAction}>
+                  {mode === "signup" ? "Sign in" : "Create account"}
+                </Text>
+              </Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -114,7 +190,7 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { flexGrow: 1, padding: spacing.lg },
+  scroll: { flexGrow: 1, padding: spacing.lg, width: "100%", maxWidth: 480, alignSelf: "center" },
   brandBlock: { alignItems: "center", marginTop: spacing.xl, marginBottom: spacing.xl },
   brandMark: {
     width: 64, height: 64,
@@ -144,4 +220,7 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerText: { fontSize: 11, color: colors.inkMuted, letterSpacing: 0.4, textTransform: "uppercase" },
   errBox: { borderWidth: 1, borderColor: colors.error, backgroundColor: colors.errorSoft, padding: spacing.md, marginBottom: spacing.md, borderRadius: radii.md },
+  modeToggle: { alignItems: "center", paddingVertical: spacing.lg },
+  modeToggleText: { fontSize: 14, color: colors.inkSecondary },
+  modeToggleAction: { color: colors.primary, fontWeight: "700" },
 });

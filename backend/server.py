@@ -147,6 +147,36 @@ class RegisterReq(BaseModel):
     role: Role = Role.crew
 
 
+class SignupReq(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        name = value.strip()
+        if len(name) < 2:
+            raise ValueError("Name must be at least 2 characters")
+        if len(name) > 100:
+            raise ValueError("Name must be 100 characters or fewer")
+        return name
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if len(value) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be 72 bytes or fewer")
+        return value
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
@@ -463,6 +493,29 @@ async def register(body: RegisterReq, _user: UserPublic = Depends(require_role(R
     }
     await db.users.insert_one(doc)
     return UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]))
+
+
+@api.post("/auth/signup", response_model=TokenPair, status_code=201)
+async def signup(body: SignupReq):
+    """Create a least-privileged account and sign it in immediately."""
+    existing = await db.users.find_one({"email": body.email})
+    if existing:
+        raise HTTPException(409, "Email already registered")
+    doc = {
+        "id": gen_id(),
+        "email": str(body.email),
+        "name": body.name,
+        "password_hash": hash_pwd(body.password),
+        "role": Role.crew.value,
+        "failed_attempts": 0,
+        "lock_until": None,
+        "created_at": now_utc(),
+    }
+    await db.users.insert_one(doc)
+    access = make_token(doc["id"], doc["role"], refresh=False)
+    refresh = make_token(doc["id"], doc["role"], refresh=True)
+    pub = UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]))
+    return TokenPair(access_token=access, refresh_token=refresh, user=pub)
 
 
 @api.post("/auth/login", response_model=TokenPair)
