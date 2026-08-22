@@ -14,32 +14,24 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
-
-type Equipment = { id: string; sku: string; name: string; category: string; quantity: number };
-type Rental = { id: string; status: string; lines: { equipment_id: string; qty: number; returned_qty: number }[] };
-type Booking = { id: string; status: string; start_date: string; end_date: string; items: { equipment_id: string; qty: number }[] };
-
-type CapRow = {
-  equipment_id: string; sku: string; name: string; category: string;
-  quantity: number; rented: number; booked: number; available: number; conflict: boolean;
-};
+import { computeCapacity, CapacityRow, CapEquipment, CapRental, CapBooking } from "@/src/features/capacity/computeCapacity";
 
 export default function CapacityScreen() {
   const params = useLocalSearchParams<{ date?: string }>();
   const { isShellWide } = useBreakpoint();
   const [date, setDate] = useState(params.date || new Date().toISOString().slice(0, 10));
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
-  const [rentals, setRentals] = useState<Rental[]>([]);
-  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [equipment, setEquipment] = useState<CapEquipment[]>([]);
+  const [rentals, setRentals] = useState<CapRental[]>([]);
+  const [bookings, setBookings] = useState<CapBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [e, r, b] = await Promise.all([
-        api<Equipment[]>("/equipment"),
-        api<Rental[]>("/rentals"),
-        api<Booking[]>("/bookings"),
+        api<CapEquipment[]>("/equipment"),
+        api<CapRental[]>("/rentals"),
+        api<CapBooking[]>("/bookings"),
       ]);
       setEquipment(e); setRentals(r); setBookings(b);
     } catch (err) { console.warn(err); }
@@ -47,42 +39,14 @@ export default function CapacityScreen() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const rows: CapRow[] = useMemo(() => {
-    const rented: Record<string, number> = {};
-    for (const r of rentals) {
-      if (!["active", "partially_returned"].includes(r.status)) continue;
-      for (const line of r.lines) {
-        const rem = line.qty - line.returned_qty;
-        if (rem > 0) rented[line.equipment_id] = (rented[line.equipment_id] || 0) + rem;
-      }
-    }
-    const booked: Record<string, number> = {};
-    const target = new Date(date + "T00:00:00");
-    const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const targetDay = dayOnly(target);
-    for (const b of bookings) {
-      if (!["tentative", "confirmed"].includes(b.status)) continue;
-      const sdDay = dayOnly(new Date(b.start_date));
-      const edDay = dayOnly(new Date(b.end_date));
-      if (sdDay <= targetDay && targetDay <= edDay) {
-        for (const item of b.items) booked[item.equipment_id] = (booked[item.equipment_id] || 0) + item.qty;
-      }
-    }
-    return equipment.map((e) => {
-      const rq = rented[e.id] || 0;
-      const bq = booked[e.id] || 0;
-      const available = Math.max(e.quantity - rq - bq, 0);
-      return {
-        equipment_id: e.id, sku: e.sku, name: e.name, category: e.category,
-        quantity: e.quantity, rented: rq, booked: bq, available,
-        conflict: rq + bq > e.quantity,
-      };
-    }).sort((a, b) => Number(b.conflict) - Number(a.conflict) || a.name.localeCompare(b.name));
-  }, [equipment, rentals, bookings, date]);
+  const rows: CapacityRow[] = useMemo(
+    () => computeCapacity(equipment, rentals, bookings, date).sort((a, b) => Number(b.conflict) - Number(a.conflict) || a.name.localeCompare(b.name)),
+    [equipment, rentals, bookings, date],
+  );
 
   const conflicts = rows.filter((r) => r.conflict);
 
-  const columns: ColumnDef<CapRow>[] = [
+  const columns: ColumnDef<CapacityRow>[] = [
     { key: "name", label: "Equipment", flex: 2, render: (r) => (
       <View>
         <Text style={typo.body} numberOfLines={1}>{r.name}</Text>
