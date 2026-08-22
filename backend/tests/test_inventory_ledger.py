@@ -20,7 +20,10 @@ import pytest
 
 from conftest import BASE_URL
 
-BUCKET_FIELDS = ["available", "reserved", "on_rental", "in_transit", "pending_inspection", "in_maintenance", "missing"]
+BUCKET_FIELDS = [
+    "available", "reserved", "staged", "outbound", "on_rental", "inbound",
+    "in_transit", "pending_inspection", "in_maintenance", "missing",
+]
 
 
 def assert_invariant(eq: dict):
@@ -76,7 +79,7 @@ class TestBucketInvariant:
     def test_fresh_equipment_invariant(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=50)
         assert eq["available"] == 50
-        assert eq["reserved"] == eq["on_rental"] == eq["in_transit"] == 0
+        assert eq["reserved"] == eq["staged"] == eq["outbound"] == eq["on_rental"] == eq["inbound"] == eq["in_transit"] == 0
         assert eq["pending_inspection"] == eq["in_maintenance"] == eq["missing"] == 0
 
 
