@@ -14,9 +14,13 @@ const ICON: Record<AttentionItem["kind"], React.ComponentProps<typeof Ionicons>[
   "damaged-maintenance": "build-outline",
   "count-variance": "clipboard-outline",
   "loadout-incomplete": "file-tray-stacked-outline",
+  "pickup-overdue": "time-outline",
+  "inbound-not-checked-in": "log-in-outline",
+  "dispatch-unassigned": "person-remove-outline",
+  "rental-no-pickup": "calendar-outline",
 };
 
-const URGENT: Set<AttentionItem["kind"]> = new Set(["rental-overdue", "shortage", "count-variance"]);
+const URGENT: Set<AttentionItem["kind"]> = new Set(["rental-overdue", "shortage", "count-variance", "pickup-overdue", "rental-no-pickup"]);
 
 export const NeedsAttention: React.FC<{
   items: AttentionItem[];
