@@ -1049,6 +1049,8 @@ async def list_inventory_counts(_: UserPublic = Depends(get_current_user)):
 
 @api.post("/inventory-counts/{count_id}/reconcile", response_model=InventoryCount)
 async def reconcile_inventory_count(count_id: str, body: ReconcileBody, user: UserPublic = Depends(require_role(Role.admin))):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required to reconcile a variance")
     doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Count not found")
