@@ -434,6 +434,40 @@ class TestReviewFixes:
         eq2 = get_equipment(api_client, auth_headers, eq["id"])
         assert eq2["available"] == 8, "a rejected dispatch must not touch inventory"
 
+    def test_negative_qty_line_cannot_mask_over_commitment_in_aggregation(self, api_client, auth_headers):
+        """apply_ledger_entry silently no-ops for qty<=0, so a dispatch with
+        two lines for the same equipment_id (10 and -5) would aggregate to a
+        net demand of 5 and pass an availability check against 5 available —
+        then apply the +10 line for real while the -5 line is silently
+        dropped, actually moving 10 units and driving available negative.
+        DispatchLine.qty must reject non-positive values outright."""
+        eq = create_equipment(api_client, auth_headers, qty=5)
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches", headers=auth_headers,
+            json={
+                "direction": "outbound", "customer_name": "Negative Qty Co", "job_site": "Test Site",
+                "lines": [
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 10},
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": -5},
+                ],
+            },
+        )
+        assert r.status_code == 422, f"a non-positive line qty must be rejected outright, got {r.status_code}: {r.text}"
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["available"] == 5, "a rejected dispatch must not touch inventory"
+
+    def test_dispatch_line_qty_must_be_positive(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=5)
+        for bad_qty in (0, -1):
+            r = api_client.post(
+                f"{BASE_URL}/api/dispatches", headers=auth_headers,
+                json={
+                    "direction": "outbound", "customer_name": "Bad Qty Co", "job_site": "Test Site",
+                    "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": bad_qty}],
+                },
+            )
+            assert r.status_code == 422, f"qty={bad_qty} must be rejected, got {r.status_code}"
+
     def test_inbound_dispatch_rejects_duplicate_live_pickup(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=10)
         r = api_client.post(

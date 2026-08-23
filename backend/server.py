@@ -375,7 +375,7 @@ class DispatchLine(BaseModel):
     equipment_id: str
     sku: str
     name: str
-    qty: int
+    qty: int = Field(gt=0)  # must be positive — see RentalLine.qty
 
 
 class Dispatch(BaseModel):
@@ -437,7 +437,8 @@ class RentalLine(BaseModel):
     equipment_id: str
     sku: str
     name: str
-    qty: int  # ordered
+    qty: int = Field(gt=0)  # ordered — must be positive: apply_ledger_entry silently no-ops on qty<=0, so a
+    # zero/negative line would let it slip past an aggregated availability check without being applied
     daily_rate: float
     delivered_qty: int = 0  # 0 means "not yet set" — resolved to qty by resolve_delivered_qty() below
     returned_qty: int = 0
