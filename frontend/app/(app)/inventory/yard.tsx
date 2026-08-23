@@ -1,5 +1,5 @@
 // Yard Inventory — what's physically on hand at each yard location, at a
-// glance. Groups the equipment list by location instead of by SKU, since
+// glance. Groups the equipment list by location instead of by asset, since
 // "what do we have at Yard B right now" is a different question than
 // "how many strongbacks do we own total" (that's Equipment).
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -8,9 +8,10 @@ import { Screen } from "@/src/components/Screen";
 import { Card, Mono, H3, Row } from "@/src/components/ui";
 import { FilterChips } from "@/src/components/data/FilterBar";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-type Equipment = { id: string; sku: string; name: string; category: string; location: string; available: number; quantity: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; name: string; category: string; location: string; available: number; quantity: number };
 
 export default function YardInventoryScreen() {
   const [equipment, setEquipment] = useState<Equipment[]>([]);
@@ -58,7 +59,7 @@ export default function YardInventoryScreen() {
             <Row key={item.id} style={styles.itemRow}>
               <View style={{ flex: 1 }}>
                 <Text style={typo.body} numberOfLines={1}>{item.name}</Text>
-                <Mono style={{ fontSize: 10.5, color: colors.inkMuted }}>{item.sku}</Mono>
+                <Mono style={{ fontSize: 10.5, color: colors.inkMuted }}>{equipmentIdentifier(item)}</Mono>
               </View>
               <Mono style={{ fontSize: 13, fontWeight: "700" }}>{item.available}</Mono>
             </Row>

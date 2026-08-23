@@ -1,8 +1,9 @@
 // Frontend aggregation for global search — no dedicated backend endpoint
 // exists, so we fan out to the existing list endpoints and rank matches
-// client-side. Covers equipment/SKUs, rentals (+ embedded customer/job
+// client-side. Covers equipment/QR codes, rentals (+ embedded customer/job
 // site), bookings, and vendors — every entity the nav surfaces.
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
 export type SearchResult = {
   id: string;
@@ -31,7 +32,7 @@ async function fetchAll(): Promise<SearchResult[]> {
       id: e.id,
       type: "equipment",
       title: e.name,
-      subtitle: `${e.sku} · ${e.category?.replace(/_/g, " ") || ""}`,
+      subtitle: `${equipmentIdentifier(e)} · ${e.category?.replace(/_/g, " ") || ""}`,
       route: `/(app)/inventory/equipment?open=${e.id}`,
     });
   }

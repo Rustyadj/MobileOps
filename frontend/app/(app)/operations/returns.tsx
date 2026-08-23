@@ -12,8 +12,9 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { api } from "@/src/api/client";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
-type Line = { equipment_id: string; sku: string; name: string; qty: number; delivered_qty: number; returned_qty: number; damaged_qty: number };
+type Line = { equipment_id: string; sku: string; qr_code?: string | null; name: string; qty: number; delivered_qty: number; returned_qty: number; damaged_qty: number };
 type Rental = { id: string; customer_name: string; job_site: string; start_date: string; status: string; lines: Line[] };
 type OutstandingRow = { rental: Rental; line: Line; onSite: number };
 
@@ -83,7 +84,7 @@ export default function ReturnsScreen() {
     { key: "customer", label: "Customer", flex: 1.3, render: (r) => r.rental.customer_name },
     { key: "job_site", label: "Job Site", flex: 1.2, render: (r) => r.rental.job_site || "—" },
     { key: "equipment", label: "Equipment", flex: 1.3, render: (r) => r.line.name },
-    { key: "sku", label: "SKU", width: 90, render: (r) => <Mono style={{ fontSize: 12 }}>{r.line.sku}</Mono> },
+    { key: "qr_code", label: "QR Code", width: 130, render: (r) => <Mono style={{ fontSize: 12 }}>{equipmentIdentifier(r.line)}</Mono> },
     { key: "start_date", label: "Since", width: 96, render: (r) => shortDate(r.rental.start_date) },
     { key: "on_site", label: "On Site", width: 84, align: "right", render: (r) => <Mono style={{ fontSize: 13, fontWeight: "700" }}>{r.onSite}</Mono> },
   ];

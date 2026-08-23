@@ -1,11 +1,12 @@
 // Shared exception feed for the TopBar alert badge and Dashboard panel.
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
 type RentalLine = { equipment_id: string; sku: string; name: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = { id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null; status: string; lines: RentalLine[] };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items: RentalLine[] };
-type Equipment = { id: string; sku: string; name: string; pending_inspection: number; in_maintenance: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; name: string; pending_inspection: number; in_maintenance: number };
 type Shortage = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
 type InventoryCount = { id: string; equipment_id: string; equipment_name: string; variance: number; status: string; counted_at: string };
 type ShopTask = {
@@ -118,11 +119,11 @@ export function useNeedsAttention(): AttentionData {
       }
       for (const item of equipment) {
         if (item.pending_inspection > 0) {
-          out.push({ id: `inspection-${item.id}`, kind: "pending-inspection", title: `${unitLabel(item.name, item.pending_inspection)} returned awaiting inspection`, subtitle: item.sku, route: "/(app)/shop/inspections" });
+          out.push({ id: `inspection-${item.id}`, kind: "pending-inspection", title: `${unitLabel(item.name, item.pending_inspection)} returned awaiting inspection`, subtitle: equipmentIdentifier(item), route: "/(app)/shop/inspections" });
         }
         if (item.in_maintenance > 0) {
           const repairTask = activeRepairByEquipment.get(item.id);
-          out.push({ id: `maintenance-${item.id}`, kind: "damaged-maintenance", title: `${unitLabel(item.name, item.in_maintenance)} ${item.in_maintenance === 1 ? "needs" : "need"} repair`, subtitle: `${item.sku} · repair queue`, route: repairTask ? `/(app)/shop/tasks?open=${repairTask.id}` : `/(app)/shop/maintenance?equipment=${item.id}` });
+          out.push({ id: `maintenance-${item.id}`, kind: "damaged-maintenance", title: `${unitLabel(item.name, item.in_maintenance)} ${item.in_maintenance === 1 ? "needs" : "need"} repair`, subtitle: `${equipmentIdentifier(item)} · repair queue`, route: repairTask ? `/(app)/shop/tasks?open=${repairTask.id}` : `/(app)/shop/maintenance?equipment=${item.id}` });
         }
       }
 

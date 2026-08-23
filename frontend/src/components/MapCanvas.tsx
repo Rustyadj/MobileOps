@@ -1,11 +1,12 @@
 // Map + LocationPicker components.
 // Native map via react-native-maps. On web we render a graceful placeholder.
 import React, { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Platform, TouchableOpacity, ActivityIndicator, Modal, Alert } from "react-native";
+import { View, Text, StyleSheet, Platform, TouchableOpacity, Modal, Alert } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, radii, type as typo } from "@/src/theme";
 import { Button, Row } from "@/src/components/ui";
+import { api } from "@/src/api/client";
 
 // Load native map lazily so web doesn't fail at import time.
 let MapView: any = null;
@@ -48,9 +49,27 @@ function statusColor(s?: string) {
 export const MapCanvas: React.FC<{
   pins: Pin[];
   onPinPress?: (p: Pin) => void;
+  onMapPress?: (coords: { lat: number; lng: number }) => void;
   center?: { lat: number; lng: number };
+  selectedId?: string | null;
   style?: any;
-}> = ({ pins, onPinPress, center, style }) => {
+}> = ({ pins, onPinPress, onMapPress, center, selectedId, style }) => {
+  const mapRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!mapRef.current || Platform.OS === "web") return;
+    if (center) {
+      mapRef.current.animateToRegion({ latitude: center.lat, longitude: center.lng, latitudeDelta: 0.08, longitudeDelta: 0.08 }, 350);
+    } else if (pins.length > 1) {
+      mapRef.current.fitToCoordinates(
+        pins.map((pin) => ({ latitude: pin.lat, longitude: pin.lng })),
+        { edgePadding: { top: 64, right: 64, bottom: 64, left: 64 }, animated: true },
+      );
+    } else if (pins.length === 1) {
+      mapRef.current.animateToRegion({ latitude: pins[0].lat, longitude: pins[0].lng, latitudeDelta: 0.1, longitudeDelta: 0.1 }, 350);
+    }
+  }, [center, pins]);
+
   if (Platform.OS === "web" || !MapView) {
     return (
       <View style={[styles.webFallback, style]}>
@@ -92,11 +111,16 @@ export const MapCanvas: React.FC<{
 
   return (
     <MapView
+      ref={mapRef}
       provider={PROVIDER_DEFAULT}
       style={[{ flex: 1 }, style]}
       initialRegion={initial}
       showsUserLocation
       showsMyLocationButton
+      onPress={(event: any) => {
+        const coordinate = event.nativeEvent.coordinate;
+        onMapPress?.({ lat: coordinate.latitude, lng: coordinate.longitude });
+      }}
     >
       {pins.map((p) => (
         <Marker
@@ -104,7 +128,7 @@ export const MapCanvas: React.FC<{
           coordinate={{ latitude: p.lat, longitude: p.lng }}
           title={p.title}
           description={p.subtitle}
-          pinColor={statusColor(p.status)}
+          pinColor={p.id === selectedId ? colors.accent : statusColor(p.status)}
           onPress={() => onPinPress?.(p)}
         />
       ))}
@@ -151,17 +175,6 @@ export const LocationPicker: React.FC<{
     } finally {
       setLocating(false);
     }
-  };
-
-  const geocodeAddress = async (addr: string) => {
-    if (!Location || !addr.trim()) return null;
-    try {
-      const perm = await Location.requestForegroundPermissionsAsync();
-      if (perm.status !== "granted") return null;
-      const res = await Location.geocodeAsync(addr);
-      if (res && res[0]) return { lat: res[0].latitude, lng: res[0].longitude };
-    } catch {}
-    return null;
   };
 
   const save = () => {
@@ -253,8 +266,6 @@ export const LocationPicker: React.FC<{
 
 // Named export used by callers that want to geocode a job-site string.
 // Calls the backend proxy (Nominatim) so this works on web AND native.
-import { api } from "@/src/api/client";
-
 export type GeocodeResult = { lat: number; lng: number; display_name: string };
 
 export async function geocodeAddress(addr: string): Promise<GeocodeResult[]> {

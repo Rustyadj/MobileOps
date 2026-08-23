@@ -15,10 +15,12 @@ import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { Ionicons } from "@expo/vector-icons";
 import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
+import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 const CATEGORIES = [
   { key: "all", label: "All" },
+  { key: "tool", label: "Tools" },
   { key: "strongback", label: "Strongback" },
   { key: "turnbuckle", label: "Turnbuckle" },
   { key: "walkboard_bracket", label: "Walkboard" },
@@ -29,9 +31,11 @@ const CATEGORIES = [
 
 type Equipment = {
   id: string; sku: string; name: string; category: string;
+  qr_code?: string | null; model: string; serial_number: string;
   condition: string; location: string; daily_rate: number;
   quantity: number; available: number; notes: string; created_at?: string;
   reserved: number; on_rental: number; in_transit: number;
+  checked_out: number; checked_out_to: string;
   pending_inspection: number; in_maintenance: number; missing: number;
   tracking_type: string;
 };
@@ -46,11 +50,11 @@ type Rental = {
   id: string; customer_name: string; job_site: string; status: string;
   start_date: string; lines: RentalLine[];
 };
-type SortKey = "sku" | "name" | "category" | "location" | "quantity" | "available" | "condition";
+type SortKey = "qr_code" | "name" | "category" | "location" | "quantity" | "available" | "condition";
 
 const blank: Partial<Equipment> = {
-  sku: "", name: "", category: "strongback", condition: "good",
-  location: "", daily_rate: 0, quantity: 1, available: 1, notes: "",
+  sku: "", qr_code: "", model: "", serial_number: "", name: "", category: "tool", condition: "good",
+  location: "Yard", daily_rate: 0, quantity: 1, available: 1, tracking_type: "serialized", notes: "",
 };
 const pretty = (value: string) => value.replace(/_/g, " ");
 
@@ -64,7 +68,7 @@ export default function EquipmentScreen() {
   const [condition, setCondition] = useState("all");
   const [availability, setAvailability] = useState("all");
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("sku");
+  const [sortKey, setSortKey] = useState<SortKey>("qr_code");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<Partial<Equipment> | null>(null);
@@ -73,6 +77,9 @@ export default function EquipmentScreen() {
   const [showFileMenu, setShowFileMenu] = useState(false);
   const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [breakdownLoading, setBreakdownLoading] = useState(false);
+  const [checkoutTarget, setCheckoutTarget] = useState<Equipment | null>(null);
+  const [checkoutAssignee, setCheckoutAssignee] = useState("");
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -117,7 +124,7 @@ export default function EquipmentScreen() {
       if (availability === "available" && item.available <= 0) return false;
       if (availability === "unavailable" && item.available > 0) return false;
       if (!query) return true;
-      return [item.sku, item.name, item.category, item.location, item.condition, item.notes]
+      return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
         .some((value) => value?.toLowerCase().includes(query));
     });
     return rows.sort((a, b) => {
@@ -139,10 +146,11 @@ export default function EquipmentScreen() {
     if (!editing) return;
     try {
       const body = {
-        sku: editing.sku || "", name: editing.name || "", category: editing.category || "strongback",
+        sku: editing.sku || "", qr_code: editing.qr_code || null, model: editing.model || "", serial_number: editing.serial_number || "",
+        name: editing.name || "", category: editing.category || "tool",
         condition: editing.condition || "good", location: editing.location || "",
         daily_rate: Number(editing.daily_rate) || 0, quantity: Number(editing.quantity) || 1,
-        available: Number(editing.available ?? editing.quantity ?? 1), notes: editing.notes || "",
+        available: Number(editing.available ?? editing.quantity ?? 1), tracking_type: editing.tracking_type || (editing.category === "tool" ? "serialized" : "bulk"), notes: editing.notes || "",
       };
       if (editing.id) await api(`/equipment/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/equipment", { method: "POST", body: JSON.stringify(body) });
@@ -155,6 +163,23 @@ export default function EquipmentScreen() {
       await api(`/equipment/${deleting.id}`, { method: "DELETE" });
       setDeleting(null); setSelected(null); load();
     } catch (e: any) { Alert.alert("Delete failed", e.message); }
+  };
+  const checkout = async () => {
+    if (!checkoutTarget || !checkoutAssignee.trim()) return;
+    setAssignmentSaving(true);
+    try {
+      const updated = await api<Equipment>(`/equipment/${checkoutTarget.id}/checkout`, { method: "POST", body: JSON.stringify({ checked_out_to: checkoutAssignee.trim(), qty: 1 }) });
+      setCheckoutTarget(null); setCheckoutAssignee(""); setSelected(updated); await load();
+    } catch (e: any) { Alert.alert("Checkout failed", e.message); }
+    finally { setAssignmentSaving(false); }
+  };
+  const checkin = async (item: Equipment) => {
+    setAssignmentSaving(true);
+    try {
+      const updated = await api<Equipment>(`/equipment/${item.id}/checkin`, { method: "POST", body: JSON.stringify({ qty: 1 }) });
+      setSelected(updated); await load();
+    } catch (e: any) { Alert.alert("Check-in failed", e.message); }
+    finally { setAssignmentSaving(false); }
   };
   const exportCSV = async () => {
     setShowFileMenu(false);
@@ -191,10 +216,14 @@ export default function EquipmentScreen() {
   };
 
   const columns = useMemo<ColumnDef<Equipment>[]>(() => [
-    { key: "sku", label: "SKU", width: 96, render: (item) => <Mono style={styles.tableMono}>{item.sku}</Mono> },
+    { key: "qr_code", label: "QR Code", width: 104, render: (item) => <Mono style={[styles.tableMono, !item.qr_code && styles.unassigned]}>{qrCodeDisplay(item)}</Mono> },
     { key: "name", label: "Equipment", flex: 1.4, render: (item) => item.name },
+    { key: "model", label: "Model", width: 104, render: (item) => <Mono style={styles.tableMono}>{item.model || "—"}</Mono> },
+    { key: "serial_number", label: "Serial", width: 112, render: (item) => <Mono style={styles.tableMono}>{item.serial_number || "—"}</Mono> },
     { key: "quantity", label: "Owned", width: 58, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.quantity}</Mono> },
     { key: "available", label: "Available", width: 62, align: "right", render: (item) => <Mono style={[styles.tableMono, { color: item.available > 0 ? colors.success : colors.error, fontWeight: "700" }]}>{item.available}</Mono> },
+    { key: "checked_out", label: "Checked Out", width: 82, align: "right", render: (item) => <Mono style={[styles.tableMono, item.checked_out > 0 && { color: colors.info, fontWeight: "700" }]}>{item.checked_out || 0}</Mono> },
+    { key: "checked_out_to", label: "Foreman / Project", width: 124, render: (item) => <Text style={typo.bodySmall} numberOfLines={1}>{item.checked_out_to || "—"}</Text> },
     { key: "reserved", label: "Reserved", width: 62, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.reserved || 0}</Mono> },
     { key: "on_rental", label: "On Rental", width: 68, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.on_rental || 0}</Mono> },
     { key: "in_transit", label: "In Transit", width: 62, align: "right", render: (item) => <Mono style={styles.tableMono}>{item.in_transit || 0}</Mono> },
@@ -206,13 +235,13 @@ export default function EquipmentScreen() {
   const selectedRentals = selected ? rentals.filter((rental) => rental.lines.some((line) => line.equipment_id === selected.id)) : [];
 
   return (
-    <Screen title="Equipment" subtitle={`${items.length} SKUs · ${items.reduce((sum, item) => sum + item.available, 0)} avail`} back
+    <Screen title="Equipment" subtitle={`${items.length} assets · ${items.reduce((sum, item) => sum + item.available, 0)} available`} back
       rightAction={{ icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" }}
       onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
-            <SearchInput value={search} onChangeText={setSearch} placeholder="Search SKU, equipment, location…" testID="equipment-search" style={{ flex: 1, maxWidth: 360 }} />
+            <SearchInput value={search} onChangeText={setSearch} placeholder="Search QR code, tool, model, serial…" testID="equipment-search" style={{ flex: 1, maxWidth: 380 }} />
             <Button title="Add Equipment" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-equipment-btn" />
             <View style={styles.menuWrap}>
               <TouchableOpacity onPress={() => setShowFileMenu((visible) => !visible)} style={styles.overflowButton} testID="equipment-file-menu"><Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} /></TouchableOpacity>
@@ -252,8 +281,10 @@ export default function EquipmentScreen() {
           {mobileItems.length === 0 ? <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No equipment in this category.</Text></Card> : mobileItems.map((item) => (
             <Card key={item.id} style={{ marginBottom: spacing.sm }} testID={`equipment-row-${item.sku}`}>
               <Row style={{ marginBottom: 4, gap: 8, alignItems: "flex-start" }}><View style={{ flex: 1 }}>
-                <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{item.sku}</Mono><H3>{item.name}</H3>
+                <Mono style={[{ fontSize: 11, color: colors.inkMuted }, !item.qr_code && styles.unassigned]}>{equipmentIdentifier(item)}</Mono><H3>{item.name}</H3>
+                {item.model || item.serial_number ? <Text style={[typo.bodySmall, { marginTop: 2 }]}>{item.model || "No model"}{item.serial_number ? ` · S/N ${item.serial_number}` : ""}</Text> : null}
                 <Text style={[typo.label, { marginTop: 2 }]}>{pretty(item.category)} · {item.location || "—"}</Text>
+                {item.checked_out_to ? <Text style={[typo.bodySmall, { color: colors.info, marginTop: 2 }]}>Checked out to {item.checked_out_to}</Text> : null}
               </View><Pill color={item.available > 0 ? colors.success : colors.error} bg={item.available > 0 ? colors.successSoft : colors.errorSoft}>{item.available}/{item.quantity}</Pill></Row>
               <Row style={{ gap: spacing.md, marginTop: 8 }}><Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{item.condition}</Mono></Text><Text style={typo.label}>Owned <Mono style={{ fontSize: 13 }}>{item.quantity}</Mono></Text></Row>
               <Row style={{ gap: spacing.md, marginTop: 6, flexWrap: "wrap" }}>
@@ -263,17 +294,26 @@ export default function EquipmentScreen() {
                 {item.missing > 0 ? <Text style={typo.label}>Missing <Mono style={{ fontSize: 13, color: colors.error }}>{item.missing}</Mono></Text> : null}
               </Row>
               <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}><View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View></Row>
+              {item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} loading={assignmentSaving} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
             </Card>
           ))}
         </>
       )}
 
-      <DetailDrawer visible={!!selected} title={selected?.name || "Equipment"} subtitle={selected ? `${selected.sku} · ${pretty(selected.category)}` : undefined}
-        onClose={() => setSelected(null)} testID="equipment-detail-drawer"
+      <DetailDrawer visible={!!selected} title={selected?.name || "Equipment"} subtitle={selected ? `${equipmentIdentifier(selected)} · ${pretty(selected.category)}` : undefined}
+        onClose={() => { setSelected(null); setCheckoutTarget(null); }} testID="equipment-detail-drawer"
         headerActions={selected ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID={`edit-${selected.sku}`}><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
         {selected ? <>
+          <SectionLabel>Tool identity</SectionLabel>
+          <View style={styles.detailGrid}><DetailStat label="QR Code" value={qrCodeDisplay(selected)} mono /><DetailStat label="Model" value={selected.model || "—"} mono /><DetailStat label="Serial number" value={selected.serial_number || "—"} mono /></View>
           <SectionLabel>Inventory</SectionLabel>
-          <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || "—"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Owned" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Reserved" value={String(selected.reserved || 0)} mono /><DetailStat label="On rental" value={String(selected.on_rental || 0)} mono /><DetailStat label="In transit" value={String(selected.in_transit || 0)} mono /><DetailStat label="Pending inspection" value={String(selected.pending_inspection || 0)} mono /><DetailStat label="Maintenance" value={String(selected.in_maintenance || 0)} mono /><DetailStat label="Missing" value={String(selected.missing || 0)} mono /></View>
+          <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || (selected.checked_out ? "Field" : "—")} /><DetailStat label="Foreman / project" value={selected.checked_out_to || "Not checked out"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Owned" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Checked out" value={String(selected.checked_out || 0)} mono /><DetailStat label="Reserved" value={String(selected.reserved || 0)} mono /><DetailStat label="On rental" value={String(selected.on_rental || 0)} mono /><DetailStat label="In transit" value={String(selected.in_transit || 0)} mono /><DetailStat label="Pending inspection" value={String(selected.pending_inspection || 0)} mono /><DetailStat label="Maintenance" value={String(selected.in_maintenance || 0)} mono /><DetailStat label="Missing" value={String(selected.missing || 0)} mono /></View>
+          {selected.category === "tool" ? selected.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(selected)} loading={assignmentSaving} variant="outline" testID={`checkin-${selected.sku}`} /> : checkoutTarget?.id === selected.id ? (
+            <View style={styles.checkoutForm} testID="tool-checkout-form">
+              <Input label="Project Foreman / Project" value={checkoutAssignee} onChangeText={setCheckoutAssignee} placeholder="Who is accountable for this tool?" testID="checkout-assignee" />
+              <Row style={{ gap: spacing.sm }}><View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setCheckoutTarget(null)} variant="outline" testID="cancel-tool-checkout" /></View><View style={{ flex: 1 }}><Button title="Confirm Checkout" onPress={checkout} loading={assignmentSaving} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" /></View></Row>
+            </View>
+          ) : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(selected); setCheckoutAssignee(""); }} variant="outline" disabled={selected.available <= 0} testID={`checkout-${selected.sku}`} /> : null}
           <SectionLabel>Where these units are</SectionLabel>
           {breakdownLoading ? <Text style={[typo.bodySmall, styles.detailText]}>Loading…</Text>
             : breakdown && breakdown.rows.length ? breakdown.rows.map((row, idx) => (
@@ -294,8 +334,10 @@ export default function EquipmentScreen() {
 
       <Modal visible={!!editing} animationType="slide" onRequestClose={() => setEditing(null)}>
         <Screen title={editing?.id ? "Edit Equipment" : "Add Equipment"} back rightAction={{ icon: "close", onPress: () => setEditing(null), testID: "close-edit" }} testID="equipment-edit-screen">
-          <Input label="SKU" value={editing?.sku || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, sku: text }))} mono testID="edit-sku" />
+          <Input label="QR Code" value={editing?.qr_code || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, qr_code: text }))} mono keyboardType="number-pad" testID="edit-sku" />
           <Input label="Name" value={editing?.name || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, name: text }))} testID="edit-name" />
+          <Input label="Model" value={editing?.model || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, model: text }))} mono testID="edit-model" />
+          <Input label="Serial Number" value={editing?.serial_number || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, serial_number: text }))} mono testID="edit-serial-number" />
           <SectionLabel>Category</SectionLabel>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{CATEGORIES.filter((category) => category.key !== "all").map((category) => <TouchableOpacity key={category.key} onPress={() => setEditing((entry) => ({ ...entry!, category: category.key }))} style={[styles.chip, editing?.category === category.key && styles.chipActive]} testID={`edit-cat-${category.key}`}><Text style={[styles.chipText, editing?.category === category.key && { color: colors.inverse }]}>{category.label}</Text></TouchableOpacity>)}</ScrollView>
           <Input label="Condition" value={editing?.condition || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, condition: text }))} testID="edit-condition" />
@@ -306,7 +348,13 @@ export default function EquipmentScreen() {
           <Button title="Save" onPress={save} testID="save-equipment-btn" />
         </Screen>
       </Modal>
-      <ConfirmDialog visible={!!deleting} title="Delete equipment?" message={deleting ? `${deleting.sku} — ${deleting.name} will be permanently removed.` : undefined} confirmLabel="Delete" onConfirm={del} onCancel={() => setDeleting(null)} testID="delete-equipment-confirm" />
+      <Modal visible={!!checkoutTarget && !isShellWide} animationType="slide" onRequestClose={() => setCheckoutTarget(null)}>
+        <Screen title="Check Out Tool" subtitle={checkoutTarget ? `${equipmentIdentifier(checkoutTarget)} · ${checkoutTarget.name}` : undefined} back rightAction={{ icon: "close", onPress: () => setCheckoutTarget(null), testID: "close-checkout" }} testID="tool-checkout-screen">
+          <Input label="Project Foreman / Project" value={checkoutAssignee} onChangeText={setCheckoutAssignee} placeholder="Who is accountable for this tool?" testID="checkout-assignee" />
+          <Button title="Confirm Checkout" onPress={checkout} loading={assignmentSaving} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" />
+        </Screen>
+      </Modal>
+      <ConfirmDialog visible={!!deleting} title="Delete equipment?" message={deleting ? `${equipmentIdentifier(deleting)} — ${deleting.name} will be permanently removed.` : undefined} confirmLabel="Delete" onConfirm={del} onCancel={() => setDeleting(null)} testID="delete-equipment-confirm" />
     </Screen>
   );
 }
@@ -316,11 +364,12 @@ const DetailStat = ({ label, value, mono, badge }: { label: string; value: strin
 );
 const styles = StyleSheet.create({
   desktopWorkspace: { flex: 1, paddingTop: spacing.lg }, toolbarButton: { height: 40 }, menuWrap: { position: "relative", zIndex: 10 },
+  checkoutForm: { marginTop: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.bgMuted },
   overflowButton: { width: 40, height: 40, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radii.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
   fileMenu: { position: "absolute", top: 44, right: 0, width: 168, paddingVertical: spacing.xs, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.bg, zIndex: 20 },
   fileMenuItem: { minHeight: 40, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   filterStack: { paddingHorizontal: spacing.xl, gap: spacing.xs, paddingBottom: spacing.md },
-  tableWrap: { flex: 1, marginHorizontal: spacing.xl, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" }, tableMono: { fontSize: 12 },
+  tableWrap: { flex: 1, marginHorizontal: spacing.xl, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" }, tableMono: { fontSize: 12 }, unassigned: { color: colors.warning, fontStyle: "italic" },
   chip: { paddingHorizontal: 14, height: 36, justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, flexShrink: 0 }, chipActive: { backgroundColor: colors.ink, borderColor: colors.ink }, chipText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary },
   drawerEdit: { height: 32, paddingHorizontal: spacing.sm, flexDirection: "row", alignItems: "center", gap: 4 }, drawerEditText: { ...typo.label, color: colors.primary },
   detailGrid: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -spacing.xs, marginBottom: spacing.lg }, detailStat: { width: "50%", padding: spacing.xs, gap: 4 }, detailText: { marginBottom: spacing.lg },

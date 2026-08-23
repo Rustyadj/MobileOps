@@ -11,9 +11,10 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-type Eq = { id: string; sku: string; name: string };
+type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string };
 type Maintenance = {
   id: string; equipment_id: string; equipment_name: string; issue: string;
   action_taken: string; cost: number; status: string;
@@ -103,7 +104,7 @@ export default function MaintenanceScreen() {
     { key: "cost", label: "Cost", width: 96, align: "right", render: (item) => <Mono style={styles.tableMono}>${item.cost.toFixed(2)}</Mono> },
     { key: "service", label: "Service Date", width: 108, align: "right", render: (item) => <Text style={typo.bodySmall}>{serviceDate(item.serviced_at)}</Text> },
   ], [equipment]);
-  const equipmentOptions = useMemo(() => [{ key: "all", label: "All equipment" }, ...equipment.map((item) => ({ key: item.id, label: item.sku }))], [equipment]);
+  const equipmentOptions = useMemo(() => [{ key: "all", label: "All equipment" }, ...equipment.map((item) => ({ key: item.id, label: equipmentIdentifier(item) }))], [equipment]);
 
   return (
     <Screen title="Maintenance" subtitle={`${items.length} entries`} back
@@ -164,7 +165,7 @@ const ServiceForm = ({ editing, setEditing, equipment, onSave }: { editing: Draf
   <>
     <SectionLabel>Equipment</SectionLabel>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>
-      {equipment.map((item) => <View key={item.id} style={{ flexShrink: 0 }}><Button title={`${item.sku} — ${item.name}`} onPress={() => setEditing({ ...editing, equipment_id: item.id, equipment_name: item.name })} variant={editing.equipment_id === item.id ? "primary" : "outline"} fullWidth={false} testID={`eq-pick-${item.sku}`} /></View>)}
+      {equipment.map((item) => <View key={item.id} style={{ flexShrink: 0 }}><Button title={`${equipmentIdentifier(item)} — ${item.name}`} onPress={() => setEditing({ ...editing, equipment_id: item.id, equipment_name: item.name })} variant={editing.equipment_id === item.id ? "primary" : "outline"} fullWidth={false} testID={`eq-pick-${item.sku}`} /></View>)}
     </ScrollView>
     <Input label="Issue" value={editing.issue || ""} onChangeText={(text) => setEditing({ ...editing, issue: text })} testID="maint-issue" />
     <Input label="Action Taken" value={editing.action_taken || ""} onChangeText={(text) => setEditing({ ...editing, action_taken: text })} testID="maint-action" />

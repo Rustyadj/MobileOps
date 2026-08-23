@@ -61,6 +61,7 @@ class Role(str, Enum):
 ROLE_ORDER = {Role.crew: 1, Role.foreman: 2, Role.admin: 3}
 
 EQUIPMENT_CATEGORIES = [
+    "tool",
     "strongback",
     "turnbuckle",
     "walkboard_bracket",
@@ -192,13 +193,17 @@ class RefreshReq(BaseModel):
 # one bucket at a time; `quantity` (owned) always equals the sum of all six.
 # Movements between buckets are the unit of truth (see LedgerEntry) —
 # available/reserved/etc. on the Equipment doc are a maintained cache of the
-# ledger, not the source of it.
-BUCKET_FIELDS = ["available", "reserved", "on_rental", "in_transit", "pending_inspection", "in_maintenance", "missing"]
+# ledger, not the source of it. Internal tool checkouts are tracked separately
+# from customer rentals so the accountable foreman/project stays visible.
+BUCKET_FIELDS = ["available", "reserved", "on_rental", "checked_out", "in_transit", "pending_inspection", "in_maintenance", "missing"]
 
 
 class Equipment(BaseModel):
     id: str = Field(default_factory=gen_id)
     sku: str
+    qr_code: Optional[str] = None
+    model: str = ""
+    serial_number: str = ""
     name: str
     category: str
     condition: str = "good"  # good, fair, poor, broken
@@ -208,6 +213,8 @@ class Equipment(BaseModel):
     available: int = 1
     reserved: int = 0
     on_rental: int = 0
+    checked_out: int = 0  # internal tool checkout, separate from customer rentals
+    checked_out_to: str = ""  # project foreman / project assignment label
     in_transit: int = 0
     pending_inspection: int = 0  # returned, awaiting inspection before going back to available
     in_maintenance: int = 0  # confirmed damaged / open maintenance ticket
@@ -218,7 +225,12 @@ class Equipment(BaseModel):
 
 
 class EquipmentCreate(BaseModel):
-    sku: str
+    # `sku` remains an internal compatibility key for rental/booking line
+    # snapshots. Operators identify serialized tools by `qr_code` instead.
+    sku: str = ""
+    qr_code: Optional[str] = None
+    model: str = ""
+    serial_number: str = ""
     name: str
     category: str
     condition: str = "good"
@@ -228,6 +240,17 @@ class EquipmentCreate(BaseModel):
     available: Optional[int] = None
     tracking_type: str = "bulk"
     notes: str = ""
+
+
+def equipment_identifier_sku(qr_code: Optional[str], serial_number: str = "", fallback: str = "") -> str:
+    """Build a stable internal key without exposing SKU as the tool identity."""
+    qr = (qr_code or "").strip()
+    serial = serial_number.strip()
+    if qr:
+        return f"QR-{qr}"
+    if serial:
+        return f"SER-{serial}"
+    return fallback or f"TOOL-{gen_id()[:8].upper()}"
 
 
 class LedgerEntry(BaseModel):
@@ -295,6 +318,15 @@ class ReconcileBody(BaseModel):
     reason: str
 
 
+class ToolCheckoutBody(BaseModel):
+    checked_out_to: str
+    qty: int = 1
+
+
+class ToolCheckinBody(BaseModel):
+    qty: int = 1
+
+
 class Transfer(BaseModel):
     id: str = Field(default_factory=gen_id)
     equipment_id: str
@@ -319,6 +351,7 @@ class TransferCreate(BaseModel):
 class RentalLine(BaseModel):
     equipment_id: str
     sku: str
+    qr_code: Optional[str] = None
     name: str
     qty: int  # ordered
     daily_rate: float
@@ -861,8 +894,13 @@ async def list_equipment(_: UserPublic = Depends(get_current_user)):
 
 @api.post("/equipment", response_model=Equipment, status_code=201)
 async def create_equipment(body: EquipmentCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    qr_code = (body.qr_code or "").strip() or None
+    if qr_code and await db.equipment.find_one({"qr_code": qr_code}):
+        raise HTTPException(409, "QR code already assigned")
     eq = Equipment(
-        sku=body.sku, name=body.name, category=body.category,
+        sku=body.sku.strip() or equipment_identifier_sku(qr_code, body.serial_number),
+        qr_code=qr_code, model=body.model.strip(), serial_number=body.serial_number.strip(),
+        name=body.name, category=body.category,
         condition=body.condition, location=body.location,
         daily_rate=body.daily_rate, quantity=body.quantity,
         available=body.available if body.available is not None else body.quantity,
@@ -885,6 +923,14 @@ async def update_equipment(eq_id: str, body: EquipmentCreate, _: UserPublic = De
     if not doc:
         raise HTTPException(404, "Equipment not found")
     upd = body.model_dump()
+    upd["qr_code"] = (body.qr_code or "").strip() or None
+    upd["model"] = body.model.strip()
+    upd["serial_number"] = body.serial_number.strip()
+    upd["sku"] = body.sku.strip() or doc["sku"]
+    if upd["qr_code"]:
+        duplicate = await db.equipment.find_one({"qr_code": upd["qr_code"], "id": {"$ne": eq_id}})
+        if duplicate:
+            raise HTTPException(409, "QR code already assigned")
     if upd.get("available") is None:
         upd["available"] = doc["available"]
     await db.equipment.update_one({"id": eq_id}, {"$set": upd})
@@ -905,11 +951,11 @@ async def export_equipment_csv(_: UserPublic = Depends(get_current_user)):
     docs = await db.equipment.find({}, {"_id": 0}).to_list(5000)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["sku", "name", "category", "condition", "location", "daily_rate", "quantity", "available", "notes"])
+    writer.writerow(["qr_code", "name", "model", "serial_number", "category", "condition", "location", "checked_out_to", "quantity", "available", "checked_out", "notes", "internal_sku"])
     for d in docs:
-        writer.writerow([d.get("sku",""), d.get("name",""), d.get("category",""), d.get("condition",""),
-                         d.get("location",""), d.get("daily_rate",0), d.get("quantity",0),
-                         d.get("available",0), d.get("notes","")])
+        writer.writerow([d.get("qr_code", ""), d.get("name", ""), d.get("model", ""), d.get("serial_number", ""),
+                         d.get("category", ""), d.get("condition", ""), d.get("location", ""), d.get("checked_out_to", ""),
+                         d.get("quantity", 0), d.get("available", 0), d.get("checked_out", 0), d.get("notes", ""), d.get("sku", "")])
     return PlainTextResponse(buf.getvalue(), media_type="text/csv")
 
 
@@ -920,22 +966,72 @@ async def import_equipment_csv(file: UploadFile = File(...), _: UserPublic = Dep
     count = 0
     for row in reader:
         try:
+            qr_code = (row.get("qr_code") or row.get("QR Code") or "").strip() or None
+            serial_number = (row.get("serial_number") or row.get("Serial Number") or "").strip()
+            internal_sku = (row.get("sku") or row.get("internal_sku") or "").strip() or equipment_identifier_sku(qr_code, serial_number)
+            checked_out_to = (row.get("checked_out_to") or "").strip()
+            quantity = int(float(row.get("quantity") or 1))
+            checked_out = int(float(row.get("checked_out") or (quantity if checked_out_to else 0)))
+            available = int(float(row.get("available") or (0 if checked_out else quantity)))
             eq = Equipment(
-                sku=row.get("sku","").strip() or gen_id()[:8],
-                name=row.get("name","").strip() or "Item",
-                category=row.get("category","strongback").strip(),
+                sku=internal_sku,
+                qr_code=qr_code,
+                model=(row.get("model") or row.get("Model") or "").strip(),
+                serial_number=serial_number,
+                name=(row.get("name") or row.get("Tool") or "").strip() or "Item",
+                category=row.get("category", "tool").strip() or "tool",
                 condition=row.get("condition","good").strip(),
                 location=row.get("location","").strip(),
                 daily_rate=float(row.get("daily_rate") or 0),
-                quantity=int(float(row.get("quantity") or 1)),
-                available=int(float(row.get("available") or row.get("quantity") or 1)),
+                quantity=quantity,
+                available=available,
+                checked_out=checked_out,
+                checked_out_to=checked_out_to,
+                tracking_type=row.get("tracking_type", "serialized").strip() or "serialized",
                 notes=row.get("notes","").strip(),
             )
-            await db.equipment.update_one({"sku": eq.sku}, {"$set": eq.model_dump()}, upsert=True)
+            selector = {"qr_code": qr_code} if qr_code else {"sku": eq.sku}
+            await db.equipment.update_one(selector, {"$set": eq.model_dump()}, upsert=True)
             count += 1
         except Exception as e:
             logger.warning("CSV row skipped: %s", e)
     return {"imported": count}
+
+
+@api.get("/equipment/qr/{qr_code}", response_model=Equipment)
+async def equipment_by_qr(qr_code: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.equipment.find_one({"qr_code": qr_code.strip()}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "QR code not assigned to equipment")
+    return Equipment(**doc)
+
+
+@api.post("/equipment/{eq_id}/checkout", response_model=Equipment)
+async def checkout_tool(eq_id: str, body: ToolCheckoutBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    assignee = body.checked_out_to.strip()
+    if not assignee:
+        raise HTTPException(400, "Project foreman is required")
+    if body.qty <= 0 or body.qty > eq.get("available", 0):
+        raise HTTPException(400, "qty exceeds available tools")
+    await apply_ledger_entry(eq_id, body.qty, "available", "checked_out", "tool_checkout", note=f"Checked out to {assignee}", created_by=user.name)
+    await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": assignee, "location": ""}})
+    return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
+
+
+@api.post("/equipment/{eq_id}/checkin", response_model=Equipment)
+async def checkin_tool(eq_id: str, body: ToolCheckinBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    if body.qty <= 0 or body.qty > eq.get("checked_out", 0):
+        raise HTTPException(400, "qty exceeds checked-out tools")
+    await apply_ledger_entry(eq_id, body.qty, "checked_out", "available", "tool_checkin", location="Yard", note=f"Checked in from {eq.get('checked_out_to') or 'field'}", created_by=user.name)
+    remaining = eq.get("checked_out", 0) - body.qty
+    await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": eq.get("checked_out_to", "") if remaining else "", "location": "Yard" if remaining == 0 else ""}})
+    return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
 
 
 @api.get("/equipment/{eq_id}/breakdown")
@@ -949,6 +1045,8 @@ async def equipment_breakdown(eq_id: str, _: UserPublic = Depends(get_current_us
     rows: List[dict] = []
     if eq.get("available", 0) > 0:
         rows.append({"qty": eq["available"], "label": eq.get("location") or "Yard", "kind": "yard"})
+    if eq.get("checked_out", 0) > 0:
+        rows.append({"qty": eq["checked_out"], "label": f"Checked out to {eq.get('checked_out_to') or 'project foreman'}", "kind": "checked_out"})
 
     rentals = await db.rentals.find(
         {"status": {"$in": ["active", "partially_returned"]}, "lines.equipment_id": eq_id}, {"_id": 0}
@@ -1400,7 +1498,7 @@ async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_u
     for e in equipment:
         committed = usage.get(e["id"], 0)
         out.append({
-            "equipment_id": e["id"], "sku": e["sku"], "name": e["name"],
+            "equipment_id": e["id"], "sku": e["sku"], "qr_code": e.get("qr_code"), "name": e["name"],
             "category": e["category"], "quantity": e["quantity"],
             "committed": committed, "available": max(e["quantity"] - committed, 0),
         })
@@ -1444,7 +1542,7 @@ async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_curren
             short = used - eq["quantity"]
             if short > 0:
                 shortages.append({
-                    "date": d.isoformat(), "equipment_id": eq_id, "sku": eq["sku"], "name": eq["name"],
+                    "date": d.isoformat(), "equipment_id": eq_id, "sku": eq["sku"], "qr_code": eq.get("qr_code"), "name": eq["name"],
                     "shortage": short, "demand": used, "owned": eq["quantity"],
                     "jobs": sorted(set(jobs.get(eq_id, []))),
                 })
@@ -1794,6 +1892,86 @@ async def send_push(recipients: List[str], data: dict) -> None:
 
 
 # ----------------------------- Startup seed -------------------------------
+async def seed_tool_inventory():
+    """Idempotently add the serialized tools normalized from Rusty's workbook.
+
+    Existing records are never overwritten. QR code is the primary match;
+    serial number is used only for tools that do not have a QR tag yet. Every
+    imported tool starts unassigned and available at Yard.
+    """
+    source = Path(__file__).with_name("tool_inventory_seed.csv")
+    if not source.exists():
+        logger.warning("Tool inventory seed missing: %s", source)
+        return
+
+    added = 0
+    corrected = 0
+    with source.open("r", encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            qr_code = (row.get("qr_code") or "").strip() or None
+            serial_number = (row.get("serial_number") or "").strip()
+            source_row = (row.get("source_row") or "").strip()
+            internal_sku = equipment_identifier_sku(qr_code, serial_number, f"TOOL-{source_row.zfill(3)}")
+            selectors = [{"sku": internal_sku}]
+            if qr_code:
+                selectors.append({"qr_code": qr_code})
+            elif serial_number:
+                selectors.append({"serial_number": serial_number})
+            existing = await db.equipment.find_one({"$or": selectors}, {"_id": 0})
+            if existing:
+                # Correct the two source-sheet location labels that were
+                # briefly interpreted as checkout assignees during import.
+                # Real later foreman/project assignments are never reset.
+                legacy_assignment = (existing.get("checked_out_to") or "").strip()
+                if (
+                    legacy_assignment in {"Yard", "Huffman"}
+                    and "Imported from tool inventory workbook" in existing.get("notes", "")
+                ):
+                    checked_out = existing.get("checked_out", 0)
+                    if checked_out > 0:
+                        await apply_ledger_entry(
+                            existing["id"], checked_out, "checked_out", "available", "tool_import_correction",
+                            location="Yard", note=f"Cleared legacy {legacy_assignment} assignment", created_by="System import",
+                        )
+                    await db.equipment.update_one(
+                        {"id": existing["id"]},
+                        {"$set": {"checked_out_to": "", "location": "Yard"}},
+                    )
+                    corrected += 1
+                continue
+
+            quantity = max(1, int(row.get("quantity") or 1))
+            eq = Equipment(
+                sku=internal_sku,
+                qr_code=qr_code,
+                model=(row.get("model") or "").strip(),
+                serial_number=serial_number,
+                name=(row.get("name") or "Tool").strip(),
+                category="tool",
+                condition="good",
+                location="Yard",
+                quantity=quantity,
+                available=quantity,
+                checked_out=0,
+                checked_out_to="",
+                tracking_type="serialized",
+                notes=f"Imported from tool inventory workbook · source row {source_row}",
+            )
+            await db.equipment.insert_one(eq.model_dump())
+            await db.ledger_entries.insert_one(LedgerEntry(
+                equipment_id=eq.id,
+                qty=quantity,
+                from_bucket="owned",
+                to_bucket="available",
+                reason="received",
+                location=eq.location,
+                note="Tool inventory workbook import · unassigned at Yard",
+                created_by="System import",
+            ).model_dump())
+            added += 1
+    logger.info("Seeded %d serialized tools and corrected %d legacy assignments from workbook", added, corrected)
+
+
 async def seed():
     existing = await db.users.find_one({"email": ADMIN_EMAIL})
     if not existing:
@@ -1818,6 +1996,8 @@ async def seed():
             await db.equipment.insert_one(eq.model_dump())
         logger.info("Seeded sample equipment")
 
+    await seed_tool_inventory()
+
     if await db.vendors.count_documents({}) == 0:
         await db.vendors.insert_one(Vendor(
             name="Acme ICF Supply", contact_name="John D.", phone="555-0100",
@@ -1834,6 +2014,7 @@ async def seed():
 async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.equipment.create_index("sku", unique=True)
+    await db.equipment.create_index("qr_code", unique=True, partialFilterExpression={"qr_code": {"$type": "string"}})
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)

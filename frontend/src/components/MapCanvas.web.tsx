@@ -1,12 +1,10 @@
-// Web stub for MapCanvas — react-native-maps has no web build.
-// Provides same public API used by callers: MapCanvas, LocationPicker, geocodeString, Pin.
-import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Alert } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { colors, spacing, radii, type as typo } from "@/src/theme";
-import { Button, Row, Input } from "@/src/components/ui";
-import { useState } from "react";
+import { api } from "@/src/api/client";
+import { Button, Input, Row } from "@/src/components/ui";
+import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 export type Pin = {
   id: string;
@@ -17,95 +15,222 @@ export type Pin = {
   status?: string;
 };
 
-function statusColor(s?: string) {
-  if (s === "returned") return colors.success;
-  if (s === "partially_returned") return colors.warning;
+type Coordinates = { lat: number; lng: number };
+
+declare global {
+  interface Window {
+    L?: any;
+    __mobileOpsLeafletPromise?: Promise<any>;
+  }
+}
+
+const LEAFLET_VERSION = "1.9.4";
+
+function ensureLeaflet(): Promise<any> {
+  if (window.L) return Promise.resolve(window.L);
+  if (window.__mobileOpsLeafletPromise) return window.__mobileOpsLeafletPromise;
+
+  window.__mobileOpsLeafletPromise = new Promise((resolve, reject) => {
+    const cssId = "mobileops-leaflet-css";
+    if (!document.getElementById(cssId)) {
+      const link = document.createElement("link");
+      link.id = cssId;
+      link.rel = "stylesheet";
+      link.href = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
+      document.head.appendChild(link);
+    }
+
+    const existing = document.getElementById("mobileops-leaflet-js") as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener("load", () => resolve(window.L), { once: true });
+      existing.addEventListener("error", () => reject(new Error("Map library failed to load.")), { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = "mobileops-leaflet-js";
+    script.src = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.js`;
+    script.async = true;
+    script.onload = () => resolve(window.L);
+    script.onerror = () => reject(new Error("Map library failed to load."));
+    document.head.appendChild(script);
+  });
+
+  return window.__mobileOpsLeafletPromise;
+}
+
+function statusColor(status?: string) {
+  if (status === "returned") return colors.success;
+  if (status === "partially_returned") return colors.warning;
   return colors.primary;
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#039;",
+    '"': "&quot;",
+  })[character] || character);
 }
 
 export const MapCanvas: React.FC<{
   pins: Pin[];
-  onPinPress?: (p: Pin) => void;
-  center?: { lat: number; lng: number };
+  onPinPress?: (pin: Pin) => void;
+  onMapPress?: (coords: Coordinates) => void;
+  center?: Coordinates;
+  selectedId?: string | null;
   style?: any;
-}> = ({ pins, onPinPress, center, style }) => {
-  const focus = center || (pins[0] ? { lat: pins[0].lat, lng: pins[0].lng } : null);
-  if (!focus) {
-    return (
-      <View style={[styles.webFallback, style]}>
-        <Ionicons name="location-outline" size={30} color={colors.inkMuted} />
-        <Text style={[typo.h3, { marginTop: 8 }]}>No rental locations yet</Text>
-        <Text style={[typo.bodySmall, { textAlign: "center", marginTop: 4 }]}>Add a job-site location to an active rental.</Text>
-      </View>
-    );
-  }
+}> = ({ pins, onPinPress, onMapPress, center, selectedId, style }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<any>(null);
+  const markerLayerRef = useRef<any>(null);
+  const onPinPressRef = useRef(onPinPress);
+  const onMapPressRef = useRef(onMapPress);
+  const [mapState, setMapState] = useState<"loading" | "ready" | "error">("loading");
 
-  const delta = 0.11;
-  const bbox = [focus.lng - delta, focus.lat - delta, focus.lng + delta, focus.lat + delta].join(",");
-  const src = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${focus.lat}%2C${focus.lng}`;
-  const iframe = React.createElement("iframe" as any, {
-    src,
-    title: "Live rental locations",
-    loading: "lazy",
-    style: { width: "100%", height: "100%", border: 0, backgroundColor: colors.bgMuted },
-  });
+  useEffect(() => { onPinPressRef.current = onPinPress; }, [onPinPress]);
+  useEffect(() => { onMapPressRef.current = onMapPress; }, [onMapPress]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!containerRef.current) return undefined;
+
+    ensureLeaflet()
+      .then((L) => {
+        if (cancelled || !containerRef.current || mapRef.current) return;
+        const map = L.map(containerRef.current, { zoomControl: true, attributionControl: true });
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19,
+        }).addTo(map);
+        markerLayerRef.current = L.layerGroup().addTo(map);
+        map.on("click", (event: any) => {
+          onMapPressRef.current?.({ lat: event.latlng.lat, lng: event.latlng.lng });
+        });
+        map.setView([39.8283, -98.5795], 4);
+        mapRef.current = map;
+        setMapState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setMapState("error");
+      });
+
+    return () => {
+      cancelled = true;
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markerLayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const L = window.L;
+    const map = mapRef.current;
+    const layer = markerLayerRef.current;
+    if (!L || !map || !layer || mapState !== "ready") return;
+
+    layer.clearLayers();
+    const bounds: [number, number][] = [];
+    pins.forEach((pin) => {
+      const selected = pin.id === selectedId;
+      const marker = L.circleMarker([pin.lat, pin.lng], {
+        radius: selected ? 11 : 8,
+        color: "#FFFFFF",
+        weight: selected ? 4 : 3,
+        fillColor: statusColor(pin.status),
+        fillOpacity: 1,
+      });
+      marker.bindTooltip(
+        `<strong>${escapeHtml(pin.title)}</strong>${pin.subtitle ? `<br>${escapeHtml(pin.subtitle)}` : ""}`,
+        { direction: "top", offset: [0, -8] },
+      );
+      marker.on("click", () => onPinPressRef.current?.(pin));
+      marker.addTo(layer);
+      bounds.push([pin.lat, pin.lng]);
+    });
+
+    if (center) map.flyTo([center.lat, center.lng], Math.max(map.getZoom(), 13), { duration: 0.5 });
+    else if (bounds.length > 1) map.fitBounds(bounds, { padding: [48, 48], maxZoom: 14 });
+    else if (bounds.length === 1) map.setView(bounds[0], 13);
+    else map.setView([39.8283, -98.5795], 4);
+    window.setTimeout(() => map.invalidateSize(), 0);
+  }, [center, mapState, pins, selectedId]);
 
   return (
     <View style={[styles.webMap, style]} testID="web-live-map">
-      {iframe}
-      <View style={styles.mapLegend}>
-        <View style={styles.legendHeader}>
-          <View style={styles.liveDot} />
-          <Text style={styles.legendTitle}>{pins.length} live location{pins.length === 1 ? "" : "s"}</Text>
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} data-testid="leaflet-map" />
+      {mapState === "loading" ? (
+        <View style={styles.mapMessage} pointerEvents="none">
+          <Ionicons name="map-outline" size={24} color={colors.primary} />
+          <Text style={[typo.bodySmall, { marginTop: 6 }]}>Loading live map…</Text>
         </View>
-        {pins.slice(0, 3).map((p) => (
-          <TouchableOpacity key={p.id} onPress={() => onPinPress?.(p)} style={styles.legendRow} testID={`pin-list-${p.id}`}>
-            <View style={[styles.pinDot, { backgroundColor: statusColor(p.status) }]} />
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={styles.legendName} numberOfLines={1}>{p.title}</Text>
-              <Text style={styles.legendSub} numberOfLines={1}>{p.subtitle || "No job-site name"}</Text>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
+      ) : null}
+      {mapState === "error" ? (
+        <View style={styles.mapMessage}>
+          <Ionicons name="cloud-offline-outline" size={24} color={colors.error} />
+          <Text style={[typo.h3, { marginTop: 6 }]}>Map unavailable</Text>
+          <Text style={[typo.bodySmall, styles.messageText]}>Rental locations and actions remain available in the list.</Text>
+        </View>
+      ) : null}
     </View>
   );
 };
 
 export const LocationPicker: React.FC<{
   visible: boolean;
-  initial?: { lat: number; lng: number } | null;
+  initial?: Coordinates | null;
   onClose: () => void;
-  onSave: (coords: { lat: number; lng: number }) => void;
+  onSave: (coords: Coordinates) => void;
 }> = ({ visible, initial, onClose, onSave }) => {
+  const [coords, setCoords] = useState<Coordinates | null>(initial || null);
   const [lat, setLat] = useState(initial?.lat != null ? String(initial.lat) : "");
   const [lng, setLng] = useState(initial?.lng != null ? String(initial.lng) : "");
+
+  useEffect(() => {
+    if (!visible) return;
+    setCoords(initial || null);
+    setLat(initial?.lat != null ? String(initial.lat) : "");
+    setLng(initial?.lng != null ? String(initial.lng) : "");
+  }, [initial, visible]);
+
+  const selectCoordinates = (next: Coordinates) => {
+    setCoords(next);
+    setLat(next.lat.toFixed(6));
+    setLng(next.lng.toFixed(6));
+  };
+
   const save = () => {
-    const la = parseFloat(lat);
-    const ln = parseFloat(lng);
-    if (Number.isNaN(la) || Number.isNaN(ln)) {
-      Alert.alert("Invalid coordinates", "Enter numeric latitude and longitude.");
+    const next = { lat: Number(lat), lng: Number(lng) };
+    if (!Number.isFinite(next.lat) || !Number.isFinite(next.lng) || next.lat < -90 || next.lat > 90 || next.lng < -180 || next.lng > 180) {
+      Alert.alert("Invalid coordinates", "Latitude must be -90 to 90 and longitude must be -180 to 180.");
       return;
     }
-    onSave({ lat: la, lng: ln });
+    onSave(next);
   };
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
+      <SafeAreaView style={styles.picker} edges={["top"]}>
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} style={styles.iconBtn} testID="loc-close">
             <Ionicons name="close" size={22} color={colors.ink} />
           </TouchableOpacity>
-          <Text style={typo.h2}>Pick location</Text>
-        </View>
-        <View style={{ padding: spacing.lg, flex: 1 }}>
-          <View style={{ alignItems: "center", marginBottom: spacing.lg }}>
-            <Ionicons name="map-outline" size={40} color={colors.inkMuted} />
-            <Text style={[typo.h3, { marginTop: 6 }]}>Interactive picker requires a device</Text>
-            <Text style={[typo.bodySmall, { textAlign: "center", marginTop: 4 }]}>
-              On web, enter coordinates manually. On your phone you will get a tap-to-drop map.
-            </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={typo.h2}>Set rental location</Text>
+            <Text style={typo.bodySmall}>Click the map or enter coordinates.</Text>
           </View>
+        </View>
+        <View style={styles.pickerMap}>
+          <MapCanvas
+            pins={coords ? [{ id: "location", ...coords, title: "Selected location" }] : []}
+            center={coords || undefined}
+            selectedId="location"
+            onMapPress={selectCoordinates}
+          />
+        </View>
+        <View style={styles.pickerFooter}>
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}>
               <Input label="Latitude" value={lat} onChangeText={setLat} keyboardType="numeric" mono testID="loc-lat-input" />
@@ -121,8 +246,6 @@ export const LocationPicker: React.FC<{
   );
 };
 
-import { api } from "@/src/api/client";
-
 export type GeocodeResult = { lat: number; lng: number; display_name: string };
 
 export async function geocodeAddress(addr: string): Promise<GeocodeResult[]> {
@@ -134,32 +257,27 @@ export async function geocodeAddress(addr: string): Promise<GeocodeResult[]> {
   }
 }
 
-export async function geocodeString(addr: string): Promise<{ lat: number; lng: number } | null> {
+export async function geocodeString(addr: string): Promise<Coordinates | null> {
   const results = await geocodeAddress(addr);
   return results[0] ? { lat: results[0].lat, lng: results[0].lng } : null;
 }
 
 const styles = StyleSheet.create({
   webMap: { flex: 1, minHeight: 240, overflow: "hidden", backgroundColor: colors.bgMuted },
-  webFallback: {
-    flex: 1,
+  mapMessage: {
+    position: "absolute",
+    top: "42%",
+    alignSelf: "center",
     alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: spacing.xxl,
-    backgroundColor: colors.bgMuted,
+    maxWidth: 280,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radii.md,
+    backgroundColor: "rgba(255,255,255,0.96)",
   },
-  mapLegend: {
-    position: "absolute", left: 12, bottom: 12, width: 230,
-    backgroundColor: "rgba(255,255,255,0.96)", borderWidth: 1, borderColor: colors.border,
-    borderRadius: radii.md, padding: 9,
-  },
-  legendHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 5, borderBottomWidth: 1, borderBottomColor: colors.border },
-  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.success },
-  legendTitle: { fontSize: 10.5, fontWeight: "800", color: colors.inkSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
-  legendRow: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 7, borderBottomWidth: 1, borderBottomColor: colors.border },
-  legendName: { fontSize: 10.5, fontWeight: "700", color: colors.ink },
-  legendSub: { fontSize: 9.5, color: colors.inkMuted, marginTop: 1 },
+  messageText: { textAlign: "center", marginTop: 4 },
+  picker: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -169,13 +287,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   iconBtn: { padding: 8, minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" },
-  pinListRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    gap: 10,
-  },
-  pinDot: { width: 12, height: 12, borderRadius: 6 },
+  pickerMap: { flex: 1, minHeight: 280 },
+  pickerFooter: { borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.md, backgroundColor: colors.bg },
 });

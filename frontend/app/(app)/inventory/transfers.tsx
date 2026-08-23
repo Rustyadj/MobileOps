@@ -1,6 +1,6 @@
 // Transfers — move available stock from one yard to another. Initiating a
 // transfer takes units out of Available into In Transit; receiving it at
-// the destination puts them back into Available and updates the SKU's
+// the destination puts them back into Available and updates the asset's
 // location of record. This is a whole-yard relocation (bulk equipment
 // tracks one location for its whole available pool, not per-unit).
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -10,9 +10,10 @@ import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/componen
 import { SearchInput } from "@/src/components/data/SearchInput";
 import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-type Equipment = { id: string; sku: string; name: string; location: string; available: number; in_transit: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; location: string; available: number; in_transit: number };
 type Transfer = {
   id: string; equipment_id: string; equipment_name: string; qty: number;
   from_location: string; to_location: string; status: string; note: string;
@@ -46,12 +47,12 @@ export default function TransfersScreen() {
   const eqMatches = useMemo(() => {
     const q = eqSearch.trim().toLowerCase();
     if (!q) return equipment.slice(0, 8);
-    return equipment.filter((e) => `${e.sku} ${e.name}`.toLowerCase().includes(q)).slice(0, 8);
+    return equipment.filter((e) => `${e.qr_code || ""} ${e.name}`.toLowerCase().includes(q)).slice(0, 8);
   }, [equipment, eqSearch]);
   const inTransit = useMemo(() => transfers.filter((t) => t.status === "in_transit"), [transfers]);
 
   const submitTransfer = async () => {
-    if (!selectedEq) { Alert.alert("Select equipment", "Choose an equipment SKU to transfer."); return; }
+    if (!selectedEq) { Alert.alert("Select equipment", "Choose equipment to transfer."); return; }
     const parsed = Number.parseInt(qty, 10);
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > selectedEq.available) {
       Alert.alert("Invalid quantity", `Enter between 1 and ${selectedEq.available}.`);
@@ -76,13 +77,13 @@ export default function TransfersScreen() {
     <Screen title="Transfers" subtitle={`${inTransit.length} in transit`} back onRefresh={onRefresh} refreshing={refreshing} testID="transfers-screen">
       <Card style={{ marginBottom: spacing.lg }} testID="new-transfer-form">
         <SectionLabel>MOVE STOCK</SectionLabel>
-        <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search SKU or equipment…" testID="transfer-eq-search" style={{ marginBottom: spacing.sm }} />
+        <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search QR code or equipment…" testID="transfer-eq-search" style={{ marginBottom: spacing.sm }} />
         <View style={styles.eqResults}>
           {eqMatches.map((item) => {
             const active = item.id === selectedEqId;
             return (
               <TouchableOpacity key={item.id} onPress={() => setSelectedEqId(item.id)} style={[styles.eqRow, active && styles.eqRowActive]} testID={`transfer-eq-${item.sku}`}>
-                <View style={{ flex: 1, minWidth: 0 }}><Text style={typo.body} numberOfLines={1}>{item.name}</Text><Mono style={{ fontSize: 10.5, color: colors.inkMuted }}>{item.sku} · {item.location || "no location"}</Mono></View>
+                <View style={{ flex: 1, minWidth: 0 }}><Text style={typo.body} numberOfLines={1}>{item.name}</Text><Mono style={{ fontSize: 10.5, color: colors.inkMuted }}>{equipmentIdentifier(item)} · {item.location || "no location"}</Mono></View>
                 <Mono style={{ fontSize: 13, fontWeight: "700" }}>{item.available} avail</Mono>
               </TouchableOpacity>
             );

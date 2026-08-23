@@ -17,6 +17,7 @@ import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type ChecklistItem = { text: string; done: boolean };
@@ -27,7 +28,7 @@ type ShopTask = {
   related_rental_id: string | null; related_booking_id: string | null; related_equipment_id: string | null;
   created_by: string; completed_by: string; completed_at: string | null; created_at: string;
 };
-type Equipment = { id: string; sku: string; name: string };
+type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string };
 type Rental = { id: string; customer_name: string; job_site: string };
 type Booking = { id: string; customer_name: string; job_site: string };
 
@@ -116,7 +117,7 @@ export default function ShopTasksScreen() {
   const eqMatches = useMemo(() => {
     const q = eqSearch.trim().toLowerCase();
     if (!q) return equipment.slice(0, 6);
-    return equipment.filter((e) => `${e.sku} ${e.name}`.toLowerCase().includes(q)).slice(0, 6);
+    return equipment.filter((e) => `${e.qr_code || ""} ${e.name}`.toLowerCase().includes(q)).slice(0, 6);
   }, [equipment, eqSearch]);
 
   const save = async () => {
@@ -289,14 +290,14 @@ export default function ShopTasksScreen() {
           ) : null}
 
           <SectionLabel>Related equipment</SectionLabel>
-          <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search SKU or equipment…" testID="task-eq-search" style={{ marginBottom: spacing.sm }} />
+          <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search QR code or equipment…" testID="task-eq-search" style={{ marginBottom: spacing.sm }} />
           <View style={styles.eqResults}>
             {eqMatches.map((item) => {
               const active = editing?.related_equipment_id === item.id;
               return (
                 <TouchableOpacity key={item.id} onPress={() => setEditing((e) => ({ ...e!, related_equipment_id: active ? null : item.id }))} style={[styles.eqRow, active && styles.eqRowActive]} testID={`task-eq-${item.sku}`}>
                   <Text style={typo.body} numberOfLines={1}>{item.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{item.sku}</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(item)}</Mono>
                 </TouchableOpacity>
               );
             })}

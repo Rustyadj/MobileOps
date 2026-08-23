@@ -29,7 +29,7 @@ export default function InventoryIndex() {
   useEffect(() => { load(); }, [load]);
 
   const items = [
-    { label: "Equipment", sub: `${equipCount ?? "—"} SKUs owned`, route: "/(app)/inventory/equipment", icon: "cube-outline" as const, testID: "inventory-equipment" },
+    { label: "Equipment", sub: `${equipCount ?? "—"} assets tracked`, route: "/(app)/inventory/equipment", icon: "cube-outline" as const, testID: "inventory-equipment" },
     { label: "Yard Inventory", sub: `${locationCount ?? "—"} yard locations`, route: "/(app)/inventory/yard", icon: "business-outline" as const, testID: "inventory-yard" },
     { label: "Transfers", sub: "Move stock between yards", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline" as const, testID: "inventory-transfers" },
     { label: "Inventory Counts", sub: `${pendingCounts ?? "—"} physical counts pending`, route: "/(app)/inventory/counts", icon: "clipboard-outline" as const, testID: "inventory-counts" },

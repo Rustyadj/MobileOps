@@ -9,10 +9,11 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-type Equipment = { id: string; sku: string; name: string; available: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; available: number };
 type InventoryCount = {
   id: string;
   equipment_id: string;
@@ -71,13 +72,13 @@ export default function InventoryCountsScreen() {
   const equipmentMatches = useMemo(() => {
     const query = equipmentSearch.trim().toLowerCase();
     if (!query) return equipment.slice(0, 8);
-    return equipment.filter((item) => `${item.sku} ${item.name}`.toLowerCase().includes(query)).slice(0, 8);
+    return equipment.filter((item) => `${item.qr_code || ""} ${item.name}`.toLowerCase().includes(query)).slice(0, 8);
   }, [equipment, equipmentSearch]);
   const pendingCounts = useMemo(() => counts.filter((count) => count.status === "pending"), [counts]);
 
   const submitCount = async () => {
     if (!selectedEquipment) {
-      Alert.alert("Select equipment", "Choose an equipment SKU before recording a count.");
+      Alert.alert("Select equipment", "Choose an equipment item before recording a count.");
       return;
     }
     const quantity = Number.parseInt(countedQty, 10);
@@ -143,14 +144,14 @@ export default function InventoryCountsScreen() {
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
           <SectionLabel>RECORD PHYSICAL COUNT</SectionLabel>
-          <Text style={styles.panelTitle}>Select an equipment SKU</Text>
-          <SearchInput value={equipmentSearch} onChangeText={setEquipmentSearch} placeholder="Search SKU or equipment…" testID="count-equipment-search" style={{ marginTop: spacing.sm }} />
+          <Text style={styles.panelTitle}>Select equipment</Text>
+          <SearchInput value={equipmentSearch} onChangeText={setEquipmentSearch} placeholder="Search QR code or equipment…" testID="count-equipment-search" style={{ marginTop: spacing.sm }} />
           <View style={styles.equipmentResults}>
             {equipmentMatches.map((item) => {
               const active = item.id === selectedEquipmentId;
               return (
                 <TouchableOpacity key={item.id} onPress={() => setSelectedEquipmentId(item.id)} style={[styles.equipmentRow, active && styles.equipmentRowActive]} testID={`count-equipment-${item.sku}`}>
-                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.equipmentName} numberOfLines={1}>{item.name}</Text><Mono style={styles.equipmentSku}>{item.sku}</Mono></View>
+                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.equipmentName} numberOfLines={1}>{item.name}</Text><Mono style={styles.equipmentSku}>{equipmentIdentifier(item)}</Mono></View>
                   <View style={{ alignItems: "flex-end" }}><Mono style={styles.availableNumber}>{item.available}</Mono><Text style={styles.availableLabel}>expected</Text></View>
                 </TouchableOpacity>
               );
@@ -158,7 +159,7 @@ export default function InventoryCountsScreen() {
           </View>
           {selectedEquipment ? (
             <View style={styles.countEntry}>
-              <View style={{ flex: 1 }}><Input label={`Physical count · ${selectedEquipment.sku}`} value={countedQty} onChangeText={(value) => setCountedQty(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="physical-count-qty" /></View>
+              <View style={{ flex: 1 }}><Input label={`Physical count · ${equipmentIdentifier(selectedEquipment)}`} value={countedQty} onChangeText={(value) => setCountedQty(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="physical-count-qty" /></View>
               <Button title="Record Count" onPress={submitCount} loading={savingCount} fullWidth={false} style={styles.recordButton} testID="record-count" />
             </View>
           ) : null}

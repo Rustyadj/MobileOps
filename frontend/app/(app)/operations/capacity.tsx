@@ -14,13 +14,14 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
-type Equipment = { id: string; sku: string; name: string; category: string; quantity: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; name: string; category: string; quantity: number };
 type Rental = { id: string; status: string; lines: { equipment_id: string; qty: number; returned_qty: number }[] };
 type Booking = { id: string; status: string; start_date: string; end_date: string; items: { equipment_id: string; qty: number }[] };
 
 type CapRow = {
-  equipment_id: string; sku: string; name: string; category: string;
+  equipment_id: string; sku: string; qr_code?: string | null; name: string; category: string;
   quantity: number; rented: number; booked: number; available: number; conflict: boolean;
 };
 
@@ -73,7 +74,7 @@ export default function CapacityScreen() {
       const bq = booked[e.id] || 0;
       const available = Math.max(e.quantity - rq - bq, 0);
       return {
-        equipment_id: e.id, sku: e.sku, name: e.name, category: e.category,
+        equipment_id: e.id, sku: e.sku, qr_code: e.qr_code, name: e.name, category: e.category,
         quantity: e.quantity, rented: rq, booked: bq, available,
         conflict: rq + bq > e.quantity,
       };
@@ -86,7 +87,7 @@ export default function CapacityScreen() {
     { key: "name", label: "Equipment", flex: 2, render: (r) => (
       <View>
         <Text style={typo.body} numberOfLines={1}>{r.name}</Text>
-        <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{r.sku}</Mono>
+        <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(r)}</Mono>
       </View>
     ) },
     { key: "quantity", label: "Total", width: 70, align: "right", render: (r) => <Mono>{r.quantity}</Mono> },

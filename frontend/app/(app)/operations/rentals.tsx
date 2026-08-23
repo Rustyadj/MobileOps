@@ -14,13 +14,15 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { LocationPicker, geocodeString, geocodeAddress, GeocodeResult } from "@/src/components/MapCanvas";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
+import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
-type Eq = { id: string; sku: string; name: string; daily_rate: number; available: number };
+type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
 type Line = {
   equipment_id: string;
   sku: string;
+  qr_code?: string | null;
   name: string;
   qty: number;
   daily_rate: number;
@@ -215,7 +217,7 @@ export default function RentalsScreen() {
       if (existingLine) {
         return { ...d, lines: d.lines.map((l: Line) => l.equipment_id === eq.id ? { ...l, qty: parsed } : l) };
       }
-      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, name: eq.name, qty: parsed, daily_rate: eq.daily_rate, delivered_qty: 0, returned_qty: 0, damaged_qty: 0 }] };
+      return { ...d, lines: [...d.lines, { equipment_id: eq.id, sku: eq.sku, qr_code: eq.qr_code, name: eq.name, qty: parsed, daily_rate: eq.daily_rate, delivered_qty: 0, returned_qty: 0, damaged_qty: 0 }] };
     });
     setQtyPrompt(null);
   };
@@ -239,7 +241,7 @@ export default function RentalsScreen() {
         deposit: Number(draft.deposit) || 0,
         notes: draft.notes || "",
         lines: draft.lines.map((l: Line) => ({
-          equipment_id: l.equipment_id, sku: l.sku, name: l.name,
+          equipment_id: l.equipment_id, sku: l.sku, qr_code: l.qr_code, name: l.name,
           qty: l.qty, daily_rate: l.daily_rate, delivered_qty: l.delivered_qty || 0,
           returned_qty: l.returned_qty || 0, damaged_qty: l.damaged_qty || 0,
         })),
@@ -295,7 +297,7 @@ export default function RentalsScreen() {
 
   const generatePDF = async (r: Rental) => {
     const lineRows = r.lines.map((l) =>
-      `<tr><td>${l.sku}</td><td>${l.name}</td><td style="text-align:right">${l.qty}</td></tr>`
+      `<tr><td>${l.qr_code || "Not assigned"}</td><td>${l.name}</td><td style="text-align:right">${l.qty}</td></tr>`
     ).join("");
 
     const logoHtml = site?.logo_base64
@@ -329,7 +331,7 @@ th { background:#F8FAFC; text-transform:uppercase; font-size:10px; letter-spacin
   <div style="font-size:14px;margin-top:4px">${new Date(r.start_date).toLocaleDateString()}</div>
 </div>
 <table>
-  <thead><tr><th>SKU</th><th>Description</th><th style="text-align:right">Qty</th></tr></thead>
+  <thead><tr><th>QR Code</th><th>Description</th><th style="text-align:right">Qty</th></tr></thead>
   <tbody>${lineRows}</tbody>
 </table>
 ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</div><div style="font-size:13px;margin-top:4px">${r.notes}</div></div>` : ""}
@@ -372,7 +374,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     const rows = directionRentals.filter((rental) => {
       if (statusFilter !== "all" && rental.status !== statusFilter) return false;
       if (!query) return true;
-      return [rental.id, rental.customer_name, rental.job_site, rental.customer_phone, rental.customer_email, ...rental.lines.flatMap((line) => [line.sku, line.name])]
+      return [rental.id, rental.customer_name, rental.job_site, rental.customer_phone, rental.customer_email, ...rental.lines.flatMap((line) => [line.qr_code, line.name])]
         .some((value) => value?.toLowerCase().includes(query));
     });
     return [...rows].sort((a, b) => {
@@ -493,7 +495,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <Row>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={typo.body}>{l.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{l.sku}</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(l)}</Mono>
                 </View>
                 {lineLifecycle(l).onSite > 0 && r.status !== "returned" ? (
                   <TouchableOpacity onPress={() => openReturn(r, l)} style={styles.smallBtn} testID={`return-${r.id}-${l.equipment_id}`}>
@@ -561,7 +563,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               {selected.lines.map((line) => (
                 <View key={line.equipment_id} style={styles.detailLine}>
                   <Row style={{ width: "100%" }}>
-                    <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{line.sku}</Mono></View>
+                    <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{equipmentIdentifier(line)}</Mono></View>
                     <Mono style={styles.detailAmount}>{line.qty} ordered</Mono>
                     {lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
                       <TouchableOpacity onPress={() => openReturn(selected, line)} style={styles.smallBtn} testID={`return-${selected.id}-${line.equipment_id}`}>
@@ -674,7 +676,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <Row style={{ justifyContent: "space-between" }}>
                 <View style={{ flex: 1 }}>
                   <Text style={typo.body}>{l.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{l.sku}</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(l)}</Mono>
                 </View>
                 <TouchableOpacity onPress={() => updateQty(l.equipment_id, l.qty - 1)} style={styles.qtyBtn} testID={`qty-minus-${l.sku}`}><Text style={styles.qtyText}>−</Text></TouchableOpacity>
                 <Mono style={{ marginHorizontal: 12, fontSize: 18 }}>{l.qty}</Mono>
@@ -689,7 +691,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <TouchableOpacity key={e.id} onPress={() => addLine(e)} style={styles.eqRow} testID={`add-eq-${e.sku}`}>
                 <View style={{ flex: 1 }}>
                   <Text style={typo.body}>{e.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{e.sku} · {e.available} avail</Mono>
+                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(e)} · {e.available} avail</Mono>
                 </View>
                 <Ionicons name="add-circle" size={26} color={colors.orange} />
               </TouchableOpacity>
@@ -729,7 +731,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <>
                 <H3>{qtyPrompt.eq.name}</H3>
                 <Text style={[typo.bodySmall, { marginTop: 4, marginBottom: spacing.md }]}>
-                  {qtyPrompt.eq.sku} · {qtyPrompt.eq.available} available
+                  {equipmentIdentifier(qtyPrompt.eq)} · {qtyPrompt.eq.available} available
                 </Text>
                 <Input
                   label="Quantity"
@@ -764,7 +766,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <H3>Receive returned equipment</H3>
                 <Text style={[typo.bodySmall, { marginTop: 4 }]}>{returnPrompt.rental.customer_name}</Text>
                 <Text style={[typo.body, { fontWeight: "700", marginTop: spacing.md }]}>{returnPrompt.line.name}</Text>
-                <Mono style={styles.detailSku}>{returnPrompt.line.sku} · {lineLifecycle(returnPrompt.line).onSite} currently on site</Mono>
+                <Mono style={styles.detailSku}>{equipmentIdentifier(returnPrompt.line)} · {lineLifecycle(returnPrompt.line).onSite} currently on site</Mono>
                 <View style={styles.returnFields}>
                   <View style={{ flex: 1 }}>
                     <Input label="Return quantity" value={returnPrompt.qty} onChangeText={(qty) => setReturnPrompt({ ...returnPrompt, qty: qty.replace(/[^0-9]/g, "") })} keyboardType="number-pad" mono testID="return-qty" />
