@@ -64,6 +64,24 @@ def advance(api_client, auth_headers, d_id, status):
     return r.json()
 
 
+def create_booking(api_client, auth_headers, eq, qty, **overrides):
+    body = {
+        "customer_name": f"Dispatch Booking {uuid.uuid4().hex[:4]}", "job_site": "Test Site",
+        "start_date": "2026-09-01T00:00:00Z", "end_date": "2026-09-03T00:00:00Z",
+        "items": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": qty, "daily_rate": 0}],
+    }
+    body.update(overrides)
+    r = api_client.post(f"{BASE_URL}/api/bookings", headers=auth_headers, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def get_dispatches(api_client, auth_headers, **params):
+    r = api_client.get(f"{BASE_URL}/api/dispatches", headers=auth_headers, params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 class TestOutboundLifecycle:
     def test_full_outbound_flow_moves_through_every_bucket(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=10)
@@ -340,3 +358,181 @@ class TestBookingLinkedDispatch:
         bk2 = next(b for b in r.json() if b["id"] == bk["id"])
         assert bk2["status"] == "dispatched"
         assert bk2["dispatched_rental_id"] == rental["id"]
+
+
+class TestReviewFixes:
+    """Regression coverage for issues found reviewing the merged Dispatch PR:
+    booking cancel/delete didn't account for a linked Dispatch that had
+    already moved units out of 'reserved', booking/dispatch creation skipped
+    availability checks other reservation paths already had, and a dispatch
+    with two lines for the same equipment_id was checked against stale
+    per-line availability instead of aggregated demand."""
+
+    def test_cancel_confirmed_booking_after_dispatch_progressed_past_staging(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        bk = create_booking(api_client, auth_headers, eq, 6, status="confirmed")
+
+        d = get_dispatches(api_client, auth_headers, booking_id=bk["id"])[0]
+        advance(api_client, auth_headers, d["id"], "staging")
+        advance(api_client, auth_headers, d["id"], "ready")
+        advance(api_client, auth_headers, d["id"], "loaded")
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["staged"] == 6 and eq2["reserved"] == 0
+
+        r = api_client.patch(
+            f"{BASE_URL}/api/bookings/{bk['id']}/status", headers=auth_headers, json={"status": "cancelled"}
+        )
+        assert r.status_code == 200, r.text
+
+        eq3 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq3["available"] == 10, f"cancelling must release all the way back to available, got {eq3}"
+        assert eq3["reserved"] == 0 and eq3["staged"] == 0
+
+        d2 = get_dispatches(api_client, auth_headers, booking_id=bk["id"])[0]
+        assert d2["status"] == "cancelled"
+
+    def test_delete_confirmed_booking_after_dispatch_progressed_past_staging(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        bk = create_booking(api_client, auth_headers, eq, 4, status="confirmed")
+        d = get_dispatches(api_client, auth_headers, booking_id=bk["id"])[0]
+        advance(api_client, auth_headers, d["id"], "staging")
+        advance(api_client, auth_headers, d["id"], "ready")
+
+        r = api_client.delete(f"{BASE_URL}/api/bookings/{bk['id']}", headers=auth_headers)
+        assert r.status_code == 200, r.text
+
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["available"] == 10, f"deleting must release all the way back to available, got {eq2}"
+
+    def test_booking_over_capacity_rejected(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=5)
+        r = api_client.post(
+            f"{BASE_URL}/api/bookings", headers=auth_headers,
+            json={
+                "customer_name": "Over Capacity Co", "job_site": "Test Site",
+                "start_date": "2026-09-01T00:00:00Z", "end_date": "2026-09-03T00:00:00Z",
+                "items": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 50, "daily_rate": 0}],
+            },
+        )
+        assert r.status_code == 400, r.text
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["available"] == 5, "a rejected over-capacity booking must not touch inventory"
+
+    def test_standalone_dispatch_duplicate_lines_aggregated_not_checked_independently(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=8)
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches", headers=auth_headers,
+            json={
+                "direction": "outbound", "customer_name": "Dup Line Co", "job_site": "Test Site",
+                "lines": [
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 5},
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 5},
+                ],
+            },
+        )
+        assert r.status_code == 400, f"combined demand (10) exceeds available (8), must be rejected: {r.text}"
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["available"] == 8, "a rejected dispatch must not touch inventory"
+
+    def test_negative_qty_line_cannot_mask_over_commitment_in_aggregation(self, api_client, auth_headers):
+        """apply_ledger_entry silently no-ops for qty<=0, so a dispatch with
+        two lines for the same equipment_id (10 and -5) would aggregate to a
+        net demand of 5 and pass an availability check against 5 available —
+        then apply the +10 line for real while the -5 line is silently
+        dropped, actually moving 10 units and driving available negative.
+        DispatchLine.qty must reject non-positive values outright."""
+        eq = create_equipment(api_client, auth_headers, qty=5)
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches", headers=auth_headers,
+            json={
+                "direction": "outbound", "customer_name": "Negative Qty Co", "job_site": "Test Site",
+                "lines": [
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 10},
+                    {"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": -5},
+                ],
+            },
+        )
+        assert r.status_code == 422, f"a non-positive line qty must be rejected outright, got {r.status_code}: {r.text}"
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["available"] == 5, "a rejected dispatch must not touch inventory"
+
+    def test_dispatch_line_qty_must_be_positive(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=5)
+        for bad_qty in (0, -1):
+            r = api_client.post(
+                f"{BASE_URL}/api/dispatches", headers=auth_headers,
+                json={
+                    "direction": "outbound", "customer_name": "Bad Qty Co", "job_site": "Test Site",
+                    "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": bad_qty}],
+                },
+            )
+            assert r.status_code == 422, f"qty={bad_qty} must be rejected, got {r.status_code}"
+
+    def test_inbound_dispatch_rejects_duplicate_live_pickup(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals", headers=auth_headers,
+            json={
+                "customer_name": "Dup Pickup Co", "job_site": "Test Site", "start_date": "2026-08-01T00:00:00Z",
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 6, "daily_rate": 0}],
+            },
+        )
+        rental = r.json()
+        body = {
+            "direction": "inbound", "customer_name": "Dup Pickup Co", "job_site": "Test Site",
+            "rental_id": rental["id"],
+            "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 6}],
+        }
+        r1 = api_client.post(f"{BASE_URL}/api/dispatches", headers=auth_headers, json=body)
+        assert r1.status_code == 201, r1.text
+        r2 = api_client.post(f"{BASE_URL}/api/dispatches", headers=auth_headers, json=body)
+        assert r2.status_code == 400, "a second live pickup for the same rental must be rejected"
+
+    def test_inbound_dispatch_rejects_qty_over_outstanding(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals", headers=auth_headers,
+            json={
+                "customer_name": "Over Pickup Co", "job_site": "Test Site", "start_date": "2026-08-01T00:00:00Z",
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 6, "daily_rate": 0}],
+            },
+        )
+        rental = r.json()
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches", headers=auth_headers,
+            json={
+                "direction": "inbound", "customer_name": "Over Pickup Co", "job_site": "Test Site",
+                "rental_id": rental["id"],
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 99}],
+            },
+        )
+        assert r.status_code == 400, "pickup qty exceeding what's outstanding on the rental must be rejected"
+
+    def test_booking_created_directly_confirmed_still_gets_staging_and_dispatch(self, api_client, auth_headers):
+        """A booking created with status='confirmed' in one call (never
+        transitioning through 'tentative') must get the same staging task +
+        linked outbound Dispatch as one confirmed via PATCH — the frontend's
+        New Booking form allows picking 'confirmed' directly."""
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        bk = create_booking(api_client, auth_headers, eq, 4, status="confirmed")
+
+        tasks = api_client.get(f"{BASE_URL}/api/shop-tasks", headers=auth_headers).json()
+        staging = [t for t in tasks if t.get("related_booking_id") == bk["id"] and t["task_type"] == "staging"]
+        assert len(staging) == 1, "directly-confirmed booking must get a staging task"
+
+        dispatches = get_dispatches(api_client, auth_headers, booking_id=bk["id"])
+        assert len(dispatches) == 1, "directly-confirmed booking must get a linked outbound dispatch"
+        assert dispatches[0]["status"] == "scheduled"
+        assert dispatches[0]["lines"][0]["qty"] == 4
+
+    def test_equipment_breakdown_surfaces_standalone_dispatch_units(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        d = create_outbound_dispatch(api_client, auth_headers, eq, 3)
+        advance(api_client, auth_headers, d["id"], "staging")
+
+        r = api_client.get(f"{BASE_URL}/api/equipment/{eq['id']}/breakdown", headers=auth_headers)
+        assert r.status_code == 200, r.text
+        rows = r.json()["rows"]
+        dispatch_rows = [row for row in rows if row.get("dispatch_id") == d["id"]]
+        assert len(dispatch_rows) == 1, f"standalone dispatch must appear in the breakdown, got rows={rows}"
+        assert dispatch_rows[0]["qty"] == 3

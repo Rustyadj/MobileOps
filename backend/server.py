@@ -407,7 +407,7 @@ class DispatchLine(BaseModel):
     equipment_id: str
     sku: str
     name: str
-    qty: int
+    qty: int = Field(gt=0)  # must be positive — see RentalLine.qty
 
 
 class Dispatch(BaseModel):
@@ -470,7 +470,8 @@ class RentalLine(BaseModel):
     sku: str
     qr_code: Optional[str] = None
     name: str
-    qty: int  # ordered
+    qty: int = Field(gt=0)  # ordered — must be positive: apply_ledger_entry silently no-ops on qty<=0, so a
+    # zero/negative line would let it slip past an aggregated availability check without being applied
     daily_rate: float
     delivered_qty: int = 0  # 0 means "not yet set" — resolved to qty by resolve_delivered_qty() below
     returned_qty: int = 0
@@ -1205,6 +1206,24 @@ async def equipment_breakdown(eq_id: str, _: UserPublic = Depends(get_current_us
             label = f"Reserved / {b.get('job_site') or b['customer_name']}" + (f" / {date_label}" if date_label else "")
             rows.append({"qty": item["qty"], "label": label, "kind": "reserved", "booking_id": b["id"]})
 
+    # Booking-linked outbound dispatches are already fully represented by the
+    # booking row above (its qty comes from booking.items, independent of
+    # which bucket the units currently sit in) — adding a raw staged/outbound
+    # bucket row for those would double-count them. Inbound dispatches always
+    # require a rental_id, so they're always covered by a rental row the same
+    # way. The one gap is a *standalone* outbound dispatch (no booking_id) —
+    # nothing else accounts for those units, so surface them explicitly.
+    standalone_dispatches = await db.dispatches.find(
+        {"direction": "outbound", "booking_id": None, "status": {"$nin": ["completed", "cancelled"]}, "lines.equipment_id": eq_id},
+        {"_id": 0},
+    ).to_list(1000)
+    for d in standalone_dispatches:
+        for line in d.get("lines", []):
+            if line["equipment_id"] != eq_id or line["qty"] <= 0:
+                continue
+            label = f"Dispatch / {d.get('job_site') or d.get('customer_name', '')}"
+            rows.append({"qty": line["qty"], "label": label, "kind": "outbound", "dispatch_id": d["id"]})
+
     if eq.get("in_transit", 0) > 0:
         rows.append({"qty": eq["in_transit"], "label": "In Transit", "kind": "in_transit"})
     if eq.get("pending_inspection", 0) > 0:
@@ -1468,8 +1487,27 @@ async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(requi
         raise HTTPException(400, "direction must be 'outbound' or 'inbound'")
     if not body.lines:
         raise HTTPException(400, "Dispatch needs at least one equipment line")
-    if body.direction == "inbound" and not body.rental_id:
-        raise HTTPException(400, "Inbound dispatch requires rental_id — it can only pick up units already on that rental")
+    if body.direction == "inbound":
+        if not body.rental_id:
+            raise HTTPException(400, "Inbound dispatch requires rental_id — it can only pick up units already on that rental")
+        existing = await db.dispatches.find_one(
+            {"rental_id": body.rental_id, "direction": "inbound", "status": {"$nin": ["completed", "cancelled"]}}, {"_id": 0}
+        )
+        if existing:
+            raise HTTPException(400, "A pickup is already scheduled for this rental")
+        rdoc = await db.rentals.find_one({"id": body.rental_id}, {"_id": 0})
+        if not rdoc:
+            raise HTTPException(404, "Rental not found")
+        rental = Rental(**rdoc)
+        outstanding_by_eq: dict = {}
+        for rline in rental.lines:
+            outstanding_by_eq[rline.equipment_id] = outstanding_by_eq.get(rline.equipment_id, 0) + max(0, resolve_delivered_qty(rline) - rline.returned_qty)
+        needed: dict = {}
+        for line in body.lines:
+            needed[line.equipment_id] = needed.get(line.equipment_id, 0) + line.qty
+        for eq_id, qty in needed.items():
+            if qty > outstanding_by_eq.get(eq_id, 0):
+                raise HTTPException(400, f"Pickup qty for {eq_id} exceeds what's still outstanding on that rental")
 
     dispatch = Dispatch(**body.model_dump(), created_by=user.name)
     starting_bucket = dispatch_bucket_for_status(dispatch.direction, dispatch.status)
@@ -1478,10 +1516,15 @@ async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(requi
         # No booking behind this dispatch to have already reserved the units
         # — reserve them from available right now, so the dispatch's own
         # bucket (starting_bucket == "reserved") is actually backed by stock.
+        # Aggregate qty per equipment_id first — two lines for the same SKU
+        # must be checked against their combined demand, not independently.
+        needed: dict = {}
         for line in dispatch.lines:
-            eq = await db.equipment.find_one({"id": line.equipment_id}, {"_id": 0})
-            if not eq or eq.get("available", 0) < line.qty:
-                raise HTTPException(400, f"Not enough available {line.name} to schedule this dispatch")
+            needed[line.equipment_id] = needed.get(line.equipment_id, 0) + line.qty
+        for eq_id, qty in needed.items():
+            eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+            if not eq or eq.get("available", 0) < qty:
+                raise HTTPException(400, f"Not enough available {eq.get('name', eq_id) if eq else eq_id} to schedule this dispatch")
         for line in dispatch.lines:
             await apply_ledger_entry(
                 line.equipment_id, line.qty, "available", starting_bucket, "dispatch_scheduled",
@@ -1553,6 +1596,42 @@ async def _create_outbound_dispatch_for_booking(doc: dict, user: UserPublic) -> 
     )
     await db.dispatches.insert_one(dispatch.model_dump())
     return dispatch.model_dump()
+
+
+async def _on_booking_confirmed(doc: dict, user: UserPublic) -> None:
+    """Side effects of a booking becoming confirmed: a staging ShopTask and
+    the linked outbound Dispatch. Shared by update_booking_status (the
+    tentative/cancelled -> confirmed transition) and create_booking (a
+    booking created directly with status='confirmed', which never goes
+    through that transition) so neither path silently skips it."""
+    bk_id = doc["id"]
+    existing = await db.shop_tasks.find_one({"related_booking_id": bk_id, "task_type": "staging"})
+    if not existing and doc.get("items"):
+        job = doc.get("job_site") or doc.get("customer_name", "")
+        checklist = [ChecklistItem(text=f"{item['qty']} {item['name']}") for item in doc["items"]]
+        task = ShopTask(
+            title=f"Stage {job} rental", task_type="staging", priority="normal",
+            due_date=doc.get("start_date"), checklist=checklist,
+            related_booking_id=bk_id, created_by=user.name,
+        )
+        await db.shop_tasks.insert_one(task.model_dump())
+    await _create_outbound_dispatch_for_booking(doc, user)
+
+
+async def _cancel_linked_outbound_dispatch(bk_id: str, user: UserPublic) -> None:
+    """If a booking has a live (non-completed/cancelled) linked outbound
+    Dispatch, cancel it first. A booking staying 'confirmed' does not mean
+    its units are still sitting in 'reserved' — the linked Dispatch may have
+    already moved them into staged/outbound/on_rental. Cancelling the
+    Dispatch here rolls them back to 'reserved' from whatever bucket they're
+    actually in (the same rollback _set_dispatch_status already does for any
+    dispatch cancellation), so the caller's own reserved -> available release
+    is then operating on units that are genuinely in 'reserved'."""
+    doc = await db.dispatches.find_one(
+        {"booking_id": bk_id, "direction": "outbound", "status": {"$nin": ["completed", "cancelled"]}}, {"_id": 0}
+    )
+    if doc:
+        await _set_dispatch_status(doc, "cancelled", user)
 
 
 # ----------------------------- Serialized units -----------------------------
@@ -1790,6 +1869,14 @@ async def list_bookings(_: UserPublic = Depends(get_current_user)):
 @api.post("/bookings", response_model=Booking, status_code=201)
 async def create_booking(body: BookingCreate, user: UserPublic = Depends(require_role(Role.foreman))):
     bk = Booking(**body.model_dump())
+    if bk.status != "cancelled":
+        needed: dict = {}
+        for item in bk.items:
+            needed[item.equipment_id] = needed.get(item.equipment_id, 0) + item.qty
+        for eq_id, qty in needed.items():
+            eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+            if not eq or eq.get("available", 0) < qty:
+                raise HTTPException(400, f"Not enough available {eq.get('name', eq_id) if eq else eq_id} to reserve this booking")
     await db.bookings.insert_one(bk.model_dump())
     if bk.status != "cancelled":
         for item in bk.items:
@@ -1797,6 +1884,8 @@ async def create_booking(body: BookingCreate, user: UserPublic = Depends(require
                 item.equipment_id, item.qty, "available", "reserved", "booking_reserved",
                 location=bk.job_site, booking_id=bk.id, created_by=user.name,
             )
+    if bk.status == "confirmed":
+        await _on_booking_confirmed(bk.model_dump(), user)
     return bk
 
 
@@ -1812,6 +1901,7 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
     was_active = doc.get("status") != "cancelled"
     will_be_active = body.status != "cancelled"
     if was_active and not will_be_active:
+        await _cancel_linked_outbound_dispatch(bk_id, user)
         for item in doc.get("items", []):
             await apply_ledger_entry(
                 item["equipment_id"], item["qty"], "reserved", "available", "booking_released",
@@ -1824,17 +1914,7 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
                 location=doc.get("job_site", ""), booking_id=bk_id, created_by=user.name,
             )
     if body.status == "confirmed" and doc.get("status") != "confirmed":
-        existing = await db.shop_tasks.find_one({"related_booking_id": bk_id, "task_type": "staging"})
-        if not existing and doc.get("items"):
-            job = doc.get("job_site") or doc.get("customer_name", "")
-            checklist = [ChecklistItem(text=f"{item['qty']} {item['name']}") for item in doc["items"]]
-            task = ShopTask(
-                title=f"Stage {job} rental", task_type="staging", priority="normal",
-                due_date=doc.get("start_date"), checklist=checklist,
-                related_booking_id=bk_id, created_by=user.name,
-            )
-            await db.shop_tasks.insert_one(task.model_dump())
-        await _create_outbound_dispatch_for_booking(doc, user)
+        await _on_booking_confirmed(doc, user)
     await db.bookings.update_one({"id": bk_id}, {"$set": {"status": body.status}})
     new_doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     return Booking(**new_doc)
@@ -1846,6 +1926,7 @@ async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Rol
     # A dispatched booking's units already moved reserved -> on_rental under
     # the rental it created — nothing is left in "reserved" to release.
     if doc and doc.get("status") not in ("cancelled", "dispatched"):
+        await _cancel_linked_outbound_dispatch(bk_id, user)
         for item in doc.get("items", []):
             await apply_ledger_entry(
                 item["equipment_id"], item["qty"], "reserved", "available", "booking_released",

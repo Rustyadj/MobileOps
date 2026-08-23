@@ -178,8 +178,17 @@ export function useNeedsAttention(): AttentionData {
       const rentalsWithLivePickup = new Set(liveDispatches.filter((d) => d.direction === "inbound" && d.rental_id).map((d) => d.rental_id));
       for (const rental of rentals) {
         if (rental.status === "returned" || rentalsWithLivePickup.has(rental.id)) continue;
-        if (!rental.due_date || new Date(rental.due_date) >= now) continue;
-        out.push({ id: `no-pickup-${rental.id}`, kind: "rental-no-pickup", title: `${rental.customer_name} rental overdue with no pickup scheduled`, subtitle: `${rental.job_site || "No job site"} · due ${new Date(rental.due_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`, route: `/(app)/operations/rentals?open=${rental.id}` });
+        // Rentals created by an outbound Dispatch completing (the primary
+        // Booking -> Dispatch -> Rental path) never get a due_date — fall
+        // back to the same 30-active-day threshold rental-overdue uses,
+        // otherwise those rentals could sit overdue forever with no pickup
+        // scheduled and never surface here.
+        const threshold = rental.due_date ? new Date(rental.due_date) : new Date(new Date(rental.start_date).getTime() + ACTIVE_RENTAL_OVERDUE_DAYS * DAY_MS);
+        if (threshold >= now) continue;
+        const dueLabel = rental.due_date
+          ? `due ${new Date(rental.due_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+          : `active since ${new Date(rental.start_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+        out.push({ id: `no-pickup-${rental.id}`, kind: "rental-no-pickup", title: `${rental.customer_name} rental overdue with no pickup scheduled`, subtitle: `${rental.job_site || "No job site"} · ${dueLabel}`, route: `/(app)/operations/rentals?open=${rental.id}` });
       }
 
       setItems(out);
