@@ -9,6 +9,7 @@ import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, SectionLabel, Row } from "@/src/components/ui";
 import { PageHeader } from "@/src/components/layout/PageHeader";
 import { ErrorState } from "@/src/components/feedback/ErrorState";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { api } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
@@ -63,7 +64,7 @@ export default function SiteAdminScreen() {
       title="Site Admin"
       subtitle="Brand · Logo · Company contact"
       actions={
-        isAdmin ? <Button title="Save Settings" onPress={save} loading={busy} fullWidth={false} style={{ paddingHorizontal: 20, height: 38 }} testID="save-site-btn" /> : undefined
+        isAdmin ? <RequiresOnline><Button title="Save Settings" onPress={save} loading={busy} fullWidth={false} style={{ paddingHorizontal: 20, height: 38 }} testID="save-site-btn" /></RequiresOnline> : undefined
       }
     />
   );
@@ -119,7 +120,7 @@ export default function SiteAdminScreen() {
                 </Row>
               </Card>
 
-              {!isShellWide && isAdmin ? <Button title="Save Settings" onPress={save} loading={busy} testID="save-site-btn" /> : null}
+              {!isShellWide && isAdmin ? <RequiresOnline><Button title="Save Settings" onPress={save} loading={busy} testID="save-site-btn" /></RequiresOnline> : null}
             </View>
           </View>
         </View>

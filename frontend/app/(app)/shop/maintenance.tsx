@@ -11,6 +11,7 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
@@ -172,7 +173,7 @@ const ServiceForm = ({ editing, setEditing, equipment, onSave, canEdit }: { edit
     <Input label="Action Taken" value={editing.action_taken || ""} onChangeText={(text) => setEditing({ ...editing, action_taken: text })} editable={canEdit} testID="maint-action" />
     <SectionLabel>Status</SectionLabel>
     <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>{["open", "in_progress", "resolved"].map((value) => <View key={value} style={{ flex: 1 }}><Button title={value.replace("_", " ")} onPress={() => canEdit && setEditing({ ...editing, status: value })} variant={editing.status === value ? "primary" : "outline"} disabled={!canEdit} testID={`maint-status-${value}`} /></View>)}</Row>
-    {canEdit ? <Button title="Save" onPress={onSave} testID="save-maint-btn" /> : null}
+    {canEdit ? <RequiresOnline><Button title="Save" onPress={onSave} testID="save-maint-btn" /></RequiresOnline> : null}
   </>
 );
 

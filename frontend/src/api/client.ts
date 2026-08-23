@@ -1,6 +1,35 @@
 // API client with auth token attach + silent refresh on 401.
 import { storage } from "@/src/utils/storage";
 
+// The sync engine and useCachedResource need to tell "never reached the
+// server" (offline, DNS failure, timeout — retry later, not an error to
+// show anyone) apart from "the server responded and said no" (4xx/5xx —
+// a real error, potentially terminal). A raw `fetch` throw collapses both
+// into the same untyped exception, so wrap them.
+export class ApiNetworkError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Network request failed");
+    this.name = "ApiNetworkError";
+  }
+}
+
+export class ApiHttpError extends Error {
+  status: number;
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = "ApiHttpError";
+    this.status = status;
+  }
+}
+
+async function doFetch(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (e) {
+    throw new ApiNetworkError(e);
+  }
+}
+
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL!;
 const API = `${BASE}/api`;
 
@@ -39,20 +68,21 @@ async function doRefresh(): Promise<string | null> {
 
 export async function api<T = any>(
   path: string,
-  opts: RequestInit & { auth?: boolean } = {},
+  opts: RequestInit & { auth?: boolean; idempotencyKey?: string } = {},
 ): Promise<T> {
-  const { auth = true, headers, ...rest } = opts;
+  const { auth = true, headers, idempotencyKey, ...rest } = opts;
   const h: Record<string, string> = { "Content-Type": "application/json", ...(headers as any) };
   if (auth && accessToken) h["Authorization"] = `Bearer ${accessToken}`;
+  if (idempotencyKey) h["Idempotency-Key"] = idempotencyKey;
 
-  let resp = await fetch(`${API}${path}`, { ...rest, headers: h });
+  let resp = await doFetch(`${API}${path}`, { ...rest, headers: h });
   if (resp.status === 401 && auth) {
     if (!refreshing) refreshing = doRefresh();
     const newTok = await refreshing;
     refreshing = null;
     if (newTok) {
       h["Authorization"] = `Bearer ${newTok}`;
-      resp = await fetch(`${API}${path}`, { ...rest, headers: h });
+      resp = await doFetch(`${API}${path}`, { ...rest, headers: h });
     }
   }
   if (!resp.ok) {
@@ -61,7 +91,7 @@ export async function api<T = any>(
       const j = await resp.json();
       detail = j.detail || JSON.stringify(j);
     } catch {}
-    throw new Error(detail);
+    throw new ApiHttpError(resp.status, detail);
   }
   const text = await resp.text();
   if (!text) return undefined as unknown as T;
@@ -75,8 +105,8 @@ export async function api<T = any>(
 export async function apiUpload<T = any>(path: string, formData: FormData): Promise<T> {
   const h: Record<string, string> = {};
   if (accessToken) h["Authorization"] = `Bearer ${accessToken}`;
-  const resp = await fetch(`${API}${path}`, { method: "POST", headers: h, body: formData as any });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const resp = await doFetch(`${API}${path}`, { method: "POST", headers: h, body: formData as any });
+  if (!resp.ok) throw new ApiHttpError(resp.status, `HTTP ${resp.status}`);
   return resp.json();
 }
 

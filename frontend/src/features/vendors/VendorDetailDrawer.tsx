@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Mono, Row, Pill, Button } from "@/src/components/ui";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { colors, spacing, type as typo } from "@/src/theme";
 import type { Vendor } from "./useVendors";
 
@@ -63,7 +64,7 @@ export const VendorDetailDrawer: React.FC<{
         <View style={{ height: spacing.lg }} />
         <Row style={{ gap: spacing.sm }}>
           <View style={{ flex: 1 }}><Button title="Edit" onPress={() => onEdit(vendor)} variant="outline" testID="drawer-edit-vendor" /></View>
-          <View style={{ flex: 1 }}><Button title="Delete" onPress={() => setConfirmDelete(true)} variant="danger" testID="drawer-delete-vendor" /></View>
+          <View style={{ flex: 1 }}><RequiresOnline><Button title="Delete" onPress={() => setConfirmDelete(true)} variant="danger" testID="drawer-delete-vendor" /></RequiresOnline></View>
         </Row>
       </DetailDrawer>
 

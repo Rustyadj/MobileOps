@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { View, Alert } from "react-native";
 import { Input, Button, SectionLabel, Row } from "@/src/components/ui";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { spacing } from "@/src/theme";
 import { CATEGORY_OPTIONS, Vendor } from "./useVendors";
 
@@ -56,7 +57,7 @@ export const VendorForm: React.FC<{
         <View style={{ flex: 1 }}><Input label="Lead (days)" value={String(editing.lead_time_days ?? 0)} onChangeText={(t) => setEditing((v: any) => ({ ...v, lead_time_days: Number(t) || 0 }))} keyboardType="number-pad" mono testID="v-lead" /></View>
       </Row>
       <Input label="Notes" value={editing.notes || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, notes: t }))} testID="v-notes" />
-      <Button title="Save" onPress={handleSave} loading={saving} testID="save-vendor-btn" />
+      <RequiresOnline><Button title="Save" onPress={handleSave} loading={saving} testID="save-vendor-btn" /></RequiresOnline>
     </DetailDrawer>
   );
 };

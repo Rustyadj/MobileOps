@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
@@ -13,6 +13,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Direction = "outbound" | "inbound";
@@ -71,11 +73,16 @@ export default function DispatchScreen() {
   const { isShellWide, width } = useBreakpoint();
   const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
-  const [dispatches, setDispatches] = useState<Dispatch[]>([]);
-  const [equipment, setEquipment] = useState<Eq[]>([]);
-  const [rentals, setRentals] = useState<RentalLite[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [selected, setSelected] = useState<Dispatch | null>(null);
+  const dispatchesRes = useCachedResource<Dispatch>("dispatches", () => api<Dispatch[]>("/dispatches"));
+  const equipmentRes = useCachedResource<Eq>("equipment", () => api<Eq[]>("/equipment"));
+  const rentalsRes = useCachedResource<RentalLite>("rentals", () => api<RentalLite[]>("/rentals"));
+  const dispatches = dispatchesRes.data;
+  const equipment = equipmentRes.data;
+  const rentals = rentalsRes.data;
+  const refreshing = dispatchesRes.refreshing || equipmentRes.refreshing || rentalsRes.refreshing;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = dispatches.find((d) => d.id === selectedId) || null;
+  const setSelected = (d: Dispatch | null) => setSelectedId(d?.id ?? null);
   const [tab, setTab] = useState<Tab>("all");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -88,22 +95,10 @@ export default function DispatchScreen() {
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
   const [pickupRentalId, setPickupRentalId] = useState<string>("");
 
-  const load = useCallback(async () => {
-    try {
-      const [d, e, r] = await Promise.all([
-        api<Dispatch[]>("/dispatches"),
-        api<Eq[]>("/equipment"),
-        api<RentalLite[]>("/rentals"),
-      ]);
-      setDispatches(d); setEquipment(e); setRentals(r);
-      setSelected((current) => current ? d.find((x) => x.id === current.id) || null : null);
-    } catch (err) { console.warn(err); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (!params.open || dispatches.length === 0) return;
-    setSelected(dispatches.find((d) => d.id === params.open) || null);
-  }, [params.open, dispatches]);
+    setSelectedId(params.open);
+  }, [params.open, dispatches.length]);
 
   const openNew = () => {
     setNewDirection("outbound");
@@ -117,7 +112,7 @@ export default function DispatchScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.new]);
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  const onRefresh = () => { dispatchesRes.onRefresh(); equipmentRes.onRefresh(); rentalsRes.onRefresh(); };
 
   useEffect(() => {
     if (selected) setAssignDraft({
@@ -126,16 +121,28 @@ export default function DispatchScreen() {
     });
   }, [selected?.id]);
 
-  const advance = async (d: Dispatch, status: string) => {
-    setBusy(true);
-    try {
-      await api(`/dispatches/${d.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
-      await load();
-    } catch (e: any) {
-      Alert.alert("Update failed", e.message);
-    } finally {
-      setBusy(false);
-    }
+  // Queues offline — this is the button a driver/crew taps standing at the
+  // truck or job site. The optimistic patch only updates the dispatch's own
+  // status/timestamp fields; the equipment bucket movement that status
+  // change triggers server-side (_set_dispatch_status) is more involved
+  // than a single-field patch, so the equipment list's numbers catch up
+  // once this syncs rather than updating instantly — the dispatch's own
+  // status (what this screen is about) updates immediately either way.
+  const advance = (d: Dispatch, status: string) => {
+    const now = new Date().toISOString();
+    const patch: Partial<Dispatch> = { status };
+    if (status === "dispatched" && !d.started_at) patch.started_at = now;
+    if (status === "arrived" && !d.arrived_at) patch.arrived_at = now;
+    if (status === "completed" || status === "cancelled") patch.completed_at = now;
+    mutate<Dispatch>({
+      kind: "command",
+      entityType: "dispatches",
+      entityId: d.id,
+      path: `/dispatches/${d.id}/status`,
+      method: "PATCH",
+      body: { status },
+      optimisticPatch: patch,
+    });
   };
 
   const cancelDispatch = (d: Dispatch) => {
@@ -154,7 +161,7 @@ export default function DispatchScreen() {
         method: "PATCH",
         body: JSON.stringify({ ...rest, scheduled_date: scheduled_date ? new Date(scheduled_date).toISOString() : null }),
       });
-      await load();
+      dispatchesRes.onRefresh();
     } catch (e: any) {
       Alert.alert("Save failed", e.message);
     } finally {
@@ -207,7 +214,7 @@ export default function DispatchScreen() {
         await api(`/rentals/${pickupRentalId}/schedule-pickup`, { method: "POST", body: JSON.stringify({}) });
       }
       setCreating(false);
-      await load();
+      dispatchesRes.onRefresh(); rentalsRes.onRefresh();
     } catch (e: any) {
       Alert.alert("Create failed", e.message);
     }
@@ -357,7 +364,7 @@ export default function DispatchScreen() {
             {selected.rental_id ? <DetailSection label="Linked rental"><Mono style={styles.detailText}>{selected.rental_id.slice(0, 12)}</Mono></DetailSection> : null}
             <View style={styles.drawerActions}>
               {canEdit && isLive(selected) && nextStep(selected) ? (
-                <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} loading={busy} testID="dispatch-advance-btn" />
+                <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} testID="dispatch-advance-btn" />
               ) : null}
               {canEdit && isLive(selected) ? (
                 <Button title="Cancel Dispatch" onPress={() => cancelDispatch(selected)} variant="danger" testID="dispatch-cancel-btn" />

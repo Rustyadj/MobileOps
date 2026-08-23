@@ -20,8 +20,10 @@ from typing import Any, List, Optional
 import httpx
 from bson import ObjectId  # noqa: F401  (kept for type hints)
 from dotenv import load_dotenv
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request, UploadFile, File, status
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, UploadFile, File, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import PlainTextResponse
+from pymongo.errors import DuplicateKeyError
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
@@ -884,6 +886,51 @@ async def run_in_transaction(fn):
         raise
 
 
+# ----------------------------- Idempotency (offline sync) -------------------
+# The mobile app's offline mutation queue retries a request whenever it
+# can't confirm the previous attempt landed (dropped response, app killed
+# mid-request, reconnect racing a timeout) — without a dedup key, that retry
+# would create a second rental, double-apply a checkout, etc. A client that
+# opts in sends a stable `Idempotency-Key` header (the queued mutation's own
+# id, unique for the life of that queue entry); this stores the first
+# successful response keyed on (key, endpoint) and replays it verbatim on
+# a repeat, without re-running the handler's side effects.
+IDEMPOTENCY_TTL_SECONDS = 7 * 24 * 3600  # long enough to outlast any realistic offline session
+
+
+async def idem_key(idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")) -> Optional[str]:
+    return idempotency_key
+
+
+async def idempotent(key: Optional[str], endpoint: str, fn):
+    """Run `fn()` (a zero-arg async callable) with idempotency-key dedup.
+
+    No key -> just runs `fn()`, same as before this existed (opt-in, not a
+    behavior change for any existing caller). With a key: a stored response
+    for (key, endpoint) is returned verbatim without re-running `fn`;
+    otherwise `fn` runs and, only on success, its result is cached. A
+    request that raises is never cached — a genuine failure should be
+    retryable on its own terms, not permanently pinned to an error.
+    """
+    if not key:
+        return await fn()
+    existing = await db.idempotency_keys.find_one({"key": key, "endpoint": endpoint})
+    if existing:
+        return existing["response_body"]
+    result = await fn()
+    try:
+        await db.idempotency_keys.insert_one({
+            "key": key, "endpoint": endpoint,
+            "response_body": jsonable_encoder(result),
+            "created_at": now_utc(),
+        })
+    except DuplicateKeyError:
+        # Lost a race with a concurrent identical request — that request's
+        # cached response is equally valid; nothing to do.
+        pass
+    return result
+
+
 # ----------------------------- Auth Deps ----------------------------------
 async def _user_from_session_token(token: str) -> Optional[dict]:
     sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
@@ -1261,31 +1308,43 @@ async def equipment_by_qr(qr_code: str, _: UserPublic = Depends(get_current_user
 
 
 @api.post("/equipment/{eq_id}/checkout", response_model=Equipment)
-async def checkout_tool(eq_id: str, body: ToolCheckoutBody, user: UserPublic = Depends(require_role(Role.foreman))):
-    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-    if not eq:
-        raise HTTPException(404, "Equipment not found")
-    assignee = body.checked_out_to.strip()
-    if not assignee:
-        raise HTTPException(400, "Project foreman is required")
-    if body.qty <= 0 or body.qty > eq.get("available", 0):
-        raise HTTPException(400, "qty exceeds available tools")
-    await apply_ledger_entry(eq_id, body.qty, "available", "checked_out", "tool_checkout", note=f"Checked out to {assignee}", created_by=user.name)
-    await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": assignee, "location": ""}})
-    return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
+async def checkout_tool(
+    eq_id: str, body: ToolCheckoutBody, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+        if not eq:
+            raise HTTPException(404, "Equipment not found")
+        assignee = body.checked_out_to.strip()
+        if not assignee:
+            raise HTTPException(400, "Project foreman is required")
+        if body.qty <= 0 or body.qty > eq.get("available", 0):
+            raise HTTPException(400, "qty exceeds available tools")
+        await apply_ledger_entry(eq_id, body.qty, "available", "checked_out", "tool_checkout", note=f"Checked out to {assignee}", created_by=user.name)
+        await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": assignee, "location": ""}})
+        return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
+
+    return await idempotent(idempotency_key, "checkout_tool", _run)
 
 
 @api.post("/equipment/{eq_id}/checkin", response_model=Equipment)
-async def checkin_tool(eq_id: str, body: ToolCheckinBody, user: UserPublic = Depends(require_role(Role.foreman))):
-    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-    if not eq:
-        raise HTTPException(404, "Equipment not found")
-    if body.qty <= 0 or body.qty > eq.get("checked_out", 0):
-        raise HTTPException(400, "qty exceeds checked-out tools")
-    await apply_ledger_entry(eq_id, body.qty, "checked_out", "available", "tool_checkin", location="Yard", note=f"Checked in from {eq.get('checked_out_to') or 'field'}", created_by=user.name)
-    remaining = eq.get("checked_out", 0) - body.qty
-    await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": eq.get("checked_out_to", "") if remaining else "", "location": "Yard" if remaining == 0 else ""}})
-    return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
+async def checkin_tool(
+    eq_id: str, body: ToolCheckinBody, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+        if not eq:
+            raise HTTPException(404, "Equipment not found")
+        if body.qty <= 0 or body.qty > eq.get("checked_out", 0):
+            raise HTTPException(400, "qty exceeds checked-out tools")
+        await apply_ledger_entry(eq_id, body.qty, "checked_out", "available", "tool_checkin", location="Yard", note=f"Checked in from {eq.get('checked_out_to') or 'field'}", created_by=user.name)
+        remaining = eq.get("checked_out", 0) - body.qty
+        await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": eq.get("checked_out_to", "") if remaining else "", "location": "Yard" if remaining == 0 else ""}})
+        return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
+
+    return await idempotent(idempotency_key, "checkin_tool", _run)
 
 
 @api.get("/equipment/{eq_id}/breakdown")
@@ -1381,45 +1440,57 @@ async def equipment_ledger(eq_id: str, _: UserPublic = Depends(get_current_user)
 
 
 @api.post("/equipment/{eq_id}/inspect", response_model=Equipment)
-async def inspect_equipment(eq_id: str, body: InspectBody, user: UserPublic = Depends(require_role(Role.foreman))):
-    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-    if not eq:
-        raise HTTPException(404, "Equipment not found")
-    if body.qty <= 0 or body.qty > eq.get("pending_inspection", 0):
-        raise HTTPException(400, "qty exceeds units pending inspection")
-    if body.outcome not in ("available", "damaged"):
-        raise HTTPException(400, "outcome must be 'available' or 'damaged'")
-    to_bucket = "available" if body.outcome == "available" else "in_maintenance"
-    reason = "inspection_pass" if body.outcome == "available" else "damage_reported"
-    await apply_ledger_entry(eq_id, body.qty, "pending_inspection", to_bucket, reason, note=body.note, created_by=user.name)
-    if body.outcome == "damaged":
-        task = ShopTask(
-            title=f"Repair {body.qty} {eq.get('name', '')}", task_type="repair", priority="high",
-            qty=body.qty, related_equipment_id=eq_id,
-            notes=body.note or "Failed inspection after return.", created_by=user.name,
-        )
-        await db.shop_tasks.insert_one(task.model_dump())
-    new_doc = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-    return Equipment(**new_doc)
+async def inspect_equipment(
+    eq_id: str, body: InspectBody, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+        if not eq:
+            raise HTTPException(404, "Equipment not found")
+        if body.qty <= 0 or body.qty > eq.get("pending_inspection", 0):
+            raise HTTPException(400, "qty exceeds units pending inspection")
+        if body.outcome not in ("available", "damaged"):
+            raise HTTPException(400, "outcome must be 'available' or 'damaged'")
+        to_bucket = "available" if body.outcome == "available" else "in_maintenance"
+        reason = "inspection_pass" if body.outcome == "available" else "damage_reported"
+        await apply_ledger_entry(eq_id, body.qty, "pending_inspection", to_bucket, reason, note=body.note, created_by=user.name)
+        if body.outcome == "damaged":
+            task = ShopTask(
+                title=f"Repair {body.qty} {eq.get('name', '')}", task_type="repair", priority="high",
+                qty=body.qty, related_equipment_id=eq_id,
+                notes=body.note or "Failed inspection after return.", created_by=user.name,
+            )
+            await db.shop_tasks.insert_one(task.model_dump())
+        new_doc = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+        return Equipment(**new_doc)
+
+    return await idempotent(idempotency_key, "inspect_equipment", _run)
 
 
 # ----------------------------- Physical inventory counts -------------------
 @api.post("/equipment/{eq_id}/count", response_model=InventoryCount, status_code=201)
-async def create_inventory_count(eq_id: str, body: InventoryCountCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+async def create_inventory_count(
+    eq_id: str, body: InventoryCountCreate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
     """Record a physical yard count against the system's expected available
     count. This never changes inventory by itself — it only creates a
     Variance for an authorized person to reconcile with a reason."""
-    eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-    if not eq:
-        raise HTTPException(404, "Equipment not found")
-    expected = eq.get("available", 0)
-    count = InventoryCount(
-        equipment_id=eq_id, equipment_name=eq.get("name", ""),
-        counted_qty=body.counted_qty, expected_qty=expected,
-        variance=body.counted_qty - expected, counted_by=user.name,
-    )
-    await db.inventory_counts.insert_one(count.model_dump())
-    return count
+    async def _run():
+        eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
+        if not eq:
+            raise HTTPException(404, "Equipment not found")
+        expected = eq.get("available", 0)
+        count = InventoryCount(
+            equipment_id=eq_id, equipment_name=eq.get("name", ""),
+            counted_qty=body.counted_qty, expected_qty=expected,
+            variance=body.counted_qty - expected, counted_by=user.name,
+        )
+        await db.inventory_counts.insert_one(count.model_dump())
+        return count
+
+    return await idempotent(idempotency_key, "create_inventory_count", _run)
 
 
 @api.get("/inventory-counts", response_model=List[InventoryCount])
@@ -1429,33 +1500,39 @@ async def list_inventory_counts(_: UserPublic = Depends(get_current_user)):
 
 
 @api.post("/inventory-counts/{count_id}/reconcile", response_model=InventoryCount)
-async def reconcile_inventory_count(count_id: str, body: ReconcileBody, user: UserPublic = Depends(require_role(Role.admin))):
-    if not body.reason.strip():
-        raise HTTPException(400, "A reason is required to reconcile a variance")
-    doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Count not found")
-    if doc["status"] == "reconciled":
-        raise HTTPException(400, "Already reconciled")
-    variance = doc["variance"]
-    if variance < 0:
-        # counted fewer than expected — the shortfall is unaccounted, not gone from ownership.
-        await apply_ledger_entry(
-            doc["equipment_id"], -variance, "available", "missing", "reconciliation",
-            note=body.reason, created_by=user.name,
+async def reconcile_inventory_count(
+    count_id: str, body: ReconcileBody, user: UserPublic = Depends(require_role(Role.admin)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        if not body.reason.strip():
+            raise HTTPException(400, "A reason is required to reconcile a variance")
+        doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Count not found")
+        if doc["status"] == "reconciled":
+            raise HTTPException(400, "Already reconciled")
+        variance = doc["variance"]
+        if variance < 0:
+            # counted fewer than expected — the shortfall is unaccounted, not gone from ownership.
+            await apply_ledger_entry(
+                doc["equipment_id"], -variance, "available", "missing", "reconciliation",
+                note=body.reason, created_by=user.name,
+            )
+        elif variance > 0:
+            # counted more than expected — surplus stock that was never logged as received.
+            await apply_ledger_entry(
+                doc["equipment_id"], variance, "owned", "available", "reconciliation",
+                note=body.reason, created_by=user.name,
+            )
+        await db.inventory_counts.update_one(
+            {"id": count_id},
+            {"$set": {"status": "reconciled", "reason": body.reason, "reconciled_by": user.name, "reconciled_at": now_utc()}},
         )
-    elif variance > 0:
-        # counted more than expected — surplus stock that was never logged as received.
-        await apply_ledger_entry(
-            doc["equipment_id"], variance, "owned", "available", "reconciliation",
-            note=body.reason, created_by=user.name,
-        )
-    await db.inventory_counts.update_one(
-        {"id": count_id},
-        {"$set": {"status": "reconciled", "reason": body.reason, "reconciled_by": user.name, "reconciled_at": now_utc()}},
-    )
-    new_doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
-    return InventoryCount(**new_doc)
+        new_doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
+        return InventoryCount(**new_doc)
+
+    return await idempotent(idempotency_key, "reconcile_inventory_count", _run)
 
 
 # ----------------------------- Transfers ------------------------------------
@@ -1512,47 +1589,53 @@ async def create_transfer(eq_id: str, body: TransferCreate, user: UserPublic = D
 
 
 @api.post("/transfers/{transfer_id}/receive", response_model=Transfer)
-async def receive_transfer(transfer_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
-    doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Transfer not found")
-    if doc["status"] == "received":
-        raise HTTPException(400, "Already received")
-    to_location = doc["to_location"]
+async def receive_transfer(
+    transfer_id: str, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Transfer not found")
+        if doc["status"] == "received":
+            raise HTTPException(400, "Already received")
+        to_location = doc["to_location"]
 
-    async def _do(session):
-        await apply_ledger_entry(
-            doc["equipment_id"], doc["qty"], "in_transit", "available", "transfer",
-            location=to_location, note=f"Received at {to_location}", created_by=user.name, session=session,
-        )
-        # Credit the destination location's own balance — the units that
-        # left one yard land in this one; every other location's balance
-        # (including any still in transit) is untouched.
-        await db.equipment.update_one(
-            {"id": doc["equipment_id"]},
-            {"$inc": {f"location_balances.{to_location}": doc["qty"]}},
-            session=session,
-        )
-        await db.transfers.update_one(
-            {"id": transfer_id},
-            {"$set": {"status": "received", "received_by": user.name, "received_at": now_utc()}},
-            session=session,
-        )
+        async def _do(session):
+            await apply_ledger_entry(
+                doc["equipment_id"], doc["qty"], "in_transit", "available", "transfer",
+                location=to_location, note=f"Received at {to_location}", created_by=user.name, session=session,
+            )
+            # Credit the destination location's own balance — the units that
+            # left one yard land in this one; every other location's balance
+            # (including any still in transit) is untouched.
+            await db.equipment.update_one(
+                {"id": doc["equipment_id"]},
+                {"$inc": {f"location_balances.{to_location}": doc["qty"]}},
+                session=session,
+            )
+            await db.transfers.update_one(
+                {"id": transfer_id},
+                {"$set": {"status": "received", "received_by": user.name, "received_at": now_utc()}},
+                session=session,
+            )
 
-    await run_in_transaction(_do)
+        await run_in_transaction(_do)
 
-    # `location` (the single display/default location) tracks whichever
-    # location now holds the most available stock — informational only;
-    # location_balances is the source of truth for "what's where".
-    eq = await db.equipment.find_one({"id": doc["equipment_id"]}, {"_id": 0})
-    balances: dict[str, int] = eq.get("location_balances") or {}
-    if balances:
-        top_location = max(balances, key=lambda loc: balances[loc])
-        if top_location != eq.get("location"):
-            await db.equipment.update_one({"id": doc["equipment_id"]}, {"$set": {"location": top_location}})
+        # `location` (the single display/default location) tracks whichever
+        # location now holds the most available stock — informational only;
+        # location_balances is the source of truth for "what's where".
+        eq = await db.equipment.find_one({"id": doc["equipment_id"]}, {"_id": 0})
+        balances: dict[str, int] = eq.get("location_balances") or {}
+        if balances:
+            top_location = max(balances, key=lambda loc: balances[loc])
+            if top_location != eq.get("location"):
+                await db.equipment.update_one({"id": doc["equipment_id"]}, {"$set": {"location": top_location}})
 
-    new_doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-    return Transfer(**new_doc)
+        new_doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
+        return Transfer(**new_doc)
+
+    return await idempotent(idempotency_key, "receive_transfer", _run)
 
 
 # ----------------------------- Dispatch / Movements --------------------------
@@ -1729,26 +1812,32 @@ async def assign_dispatch(d_id: str, body: DispatchAssignUpdate, _: UserPublic =
 
 
 @api.patch("/dispatches/{d_id}/status", response_model=Dispatch)
-async def update_dispatch_status(d_id: str, body: DispatchStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman))):
-    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Dispatch not found")
-    current = doc["status"]
-    if current in ("completed", "cancelled"):
-        raise HTTPException(400, f"Dispatch already {current}")
+async def update_dispatch_status(
+    d_id: str, body: DispatchStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Dispatch not found")
+        current = doc["status"]
+        if current in ("completed", "cancelled"):
+            raise HTTPException(400, f"Dispatch already {current}")
 
-    flow = DISPATCH_FLOWS[doc["direction"]]
-    new_status = body.status
-    if new_status != "cancelled":
-        if new_status not in flow:
-            raise HTTPException(400, f"Invalid status for a {doc['direction']} dispatch")
-        cur_idx = flow.index(current)
-        new_idx = flow.index(new_status)
-        if new_idx != cur_idx + 1:
-            raise HTTPException(400, f"Cannot jump from '{current}' to '{new_status}' — next step is '{flow[cur_idx + 1]}'")
+        flow = DISPATCH_FLOWS[doc["direction"]]
+        new_status = body.status
+        if new_status != "cancelled":
+            if new_status not in flow:
+                raise HTTPException(400, f"Invalid status for a {doc['direction']} dispatch")
+            cur_idx = flow.index(current)
+            new_idx = flow.index(new_status)
+            if new_idx != cur_idx + 1:
+                raise HTTPException(400, f"Cannot jump from '{current}' to '{new_status}' — next step is '{flow[cur_idx + 1]}'")
 
-    updated = await _set_dispatch_status(doc, new_status, user)
-    return Dispatch(**updated)
+        updated = await _set_dispatch_status(doc, new_status, user)
+        return Dispatch(**updated)
+
+    return await idempotent(idempotency_key, "update_dispatch_status", _run)
 
 
 async def _create_outbound_dispatch_for_booking(doc: dict, user: UserPublic) -> Optional[dict]:
@@ -1859,63 +1948,75 @@ async def list_rentals(user: UserPublic = Depends(get_current_user)):
 
 
 @api.post("/rentals", response_model=Rental, status_code=201)
-async def create_rental(body: RentalCreate, user: UserPublic = Depends(require_role(Role.foreman))):
-    rental = Rental(**body.model_dump())
+async def create_rental(
+    body: RentalCreate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        rental = Rental(**body.model_dump())
 
-    async def _do(session):
-        for line in rental.lines:
-            await apply_ledger_entry(
-                line.equipment_id, line.qty, "available", "on_rental", "rental_created",
-                location=rental.job_site, rental_id=rental.id, created_by=user.name, session=session,
-            )
-        await db.rentals.insert_one(rental.model_dump(), session=session)
+        async def _do(session):
+            for line in rental.lines:
+                await apply_ledger_entry(
+                    line.equipment_id, line.qty, "available", "on_rental", "rental_created",
+                    location=rental.job_site, rental_id=rental.id, created_by=user.name, session=session,
+                )
+            await db.rentals.insert_one(rental.model_dump(), session=session)
 
-    # All lines allocate or none do — otherwise a shortfall on line 2 of 3
-    # would leave line 1's stock already committed with no rental to show
-    # for it (over-allocation with no paper trail).
-    await run_in_transaction(_do)
-    return rental
+        # All lines allocate or none do — otherwise a shortfall on line 2 of 3
+        # would leave line 1's stock already committed with no rental to show
+        # for it (over-allocation with no paper trail).
+        await run_in_transaction(_do)
+        return rental
+
+    return await idempotent(idempotency_key, "create_rental", _run)
 
 
 @api.post("/rentals/{rental_id}/return", response_model=Rental)
-async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), user: UserPublic = Depends(require_role(Role.foreman))):
-    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Rental not found")
-    rental = Rental(**doc)
-    for ret in returns:
-        for line in rental.lines:
-            if line.equipment_id == ret.equipment_id:
-                # returned_qty already counts every physically-returned unit,
-                # damaged or not — damaged_qty is a subset marker, not an
-                # additional deduction.
-                remaining = resolve_delivered_qty(line) - line.returned_qty
-                qty_back = min(ret.qty, remaining)
-                damaged = min(ret.damaged_qty, qty_back)
-                clean = qty_back - damaged
-                line.returned_qty += qty_back
-                line.damaged_qty += damaged
-                if clean > 0:
-                    await apply_ledger_entry(
-                        line.equipment_id, clean, "on_rental", "pending_inspection", "rental_returned",
-                        rental_id=rental_id, created_by=user.name,
-                    )
-                if damaged > 0:
-                    await apply_ledger_entry(
-                        line.equipment_id, damaged, "on_rental", "in_maintenance", "damage_reported",
-                        rental_id=rental_id, created_by=user.name,
-                    )
-                    task = ShopTask(
-                        title=f"Repair {damaged} {line.name}", task_type="repair", priority="high",
-                        qty=damaged, related_rental_id=rental_id, related_equipment_id=line.equipment_id,
-                        notes=f"Reported damaged on return from {rental.customer_name}.", created_by=user.name,
-                    )
-                    await db.shop_tasks.insert_one(task.model_dump())
-    all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
-    any_returned = any(l.returned_qty > 0 for l in rental.lines)
-    rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
-    await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
-    return rental
+async def partial_return(
+    rental_id: str, returns: List[ReturnLine] = Body(...), user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Rental not found")
+        rental = Rental(**doc)
+        for ret in returns:
+            for line in rental.lines:
+                if line.equipment_id == ret.equipment_id:
+                    # returned_qty already counts every physically-returned unit,
+                    # damaged or not — damaged_qty is a subset marker, not an
+                    # additional deduction.
+                    remaining = resolve_delivered_qty(line) - line.returned_qty
+                    qty_back = min(ret.qty, remaining)
+                    damaged = min(ret.damaged_qty, qty_back)
+                    clean = qty_back - damaged
+                    line.returned_qty += qty_back
+                    line.damaged_qty += damaged
+                    if clean > 0:
+                        await apply_ledger_entry(
+                            line.equipment_id, clean, "on_rental", "pending_inspection", "rental_returned",
+                            rental_id=rental_id, created_by=user.name,
+                        )
+                    if damaged > 0:
+                        await apply_ledger_entry(
+                            line.equipment_id, damaged, "on_rental", "in_maintenance", "damage_reported",
+                            rental_id=rental_id, created_by=user.name,
+                        )
+                        task = ShopTask(
+                            title=f"Repair {damaged} {line.name}", task_type="repair", priority="high",
+                            qty=damaged, related_rental_id=rental_id, related_equipment_id=line.equipment_id,
+                            notes=f"Reported damaged on return from {rental.customer_name}.", created_by=user.name,
+                        )
+                        await db.shop_tasks.insert_one(task.model_dump())
+        all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
+        any_returned = any(l.returned_qty > 0 for l in rental.lines)
+        rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
+        await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
+        return rental
+
+    return await idempotent(idempotency_key, "partial_return", _run)
 
 
 @api.post("/rentals/{rental_id}/schedule-pickup", response_model=Dispatch, status_code=201)
@@ -2310,36 +2411,42 @@ async def update_shop_task(task_id: str, body: ShopTaskCreate, _: UserPublic = D
 
 
 @api.patch("/shop-tasks/{task_id}/status", response_model=ShopTask)
-async def update_shop_task_status(task_id: str, body: ShopTaskStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman))):
-    doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Task not found")
-    if body.status not in SHOP_TASK_STATUSES:
-        raise HTTPException(400, "Invalid status")
-    was_done = doc["status"] == "done"
-    will_be_done = body.status == "done"
-    upd: dict = {"status": body.status}
-    if will_be_done and not was_done:
-        upd["completed_by"] = user.name
-        upd["completed_at"] = now_utc()
-        # Repair complete -> the units it took out of service go back to available.
-        # Clamp to what's actually sitting in maintenance so a task whose qty
-        # doesn't line up with real inventory (e.g. a manually-entered task)
-        # can never drive the bucket negative.
-        if doc.get("task_type") == "repair" and doc.get("related_equipment_id") and doc.get("qty", 0) > 0:
-            eq = await db.equipment.find_one({"id": doc["related_equipment_id"]}, {"_id": 0})
-            movable = min(doc["qty"], eq.get("in_maintenance", 0)) if eq else 0
-            if movable > 0:
-                await apply_ledger_entry(
-                    doc["related_equipment_id"], movable, "in_maintenance", "available", "maintenance_resolved",
-                    note=f"Shop task: {doc.get('title', '')}", created_by=user.name,
-                )
-    elif was_done and not will_be_done:
-        upd["completed_by"] = ""
-        upd["completed_at"] = None
-    await db.shop_tasks.update_one({"id": task_id}, {"$set": upd})
-    new_doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
-    return ShopTask(**new_doc)
+async def update_shop_task_status(
+    task_id: str, body: ShopTaskStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Task not found")
+        if body.status not in SHOP_TASK_STATUSES:
+            raise HTTPException(400, "Invalid status")
+        was_done = doc["status"] == "done"
+        will_be_done = body.status == "done"
+        upd: dict = {"status": body.status}
+        if will_be_done and not was_done:
+            upd["completed_by"] = user.name
+            upd["completed_at"] = now_utc()
+            # Repair complete -> the units it took out of service go back to available.
+            # Clamp to what's actually sitting in maintenance so a task whose qty
+            # doesn't line up with real inventory (e.g. a manually-entered task)
+            # can never drive the bucket negative.
+            if doc.get("task_type") == "repair" and doc.get("related_equipment_id") and doc.get("qty", 0) > 0:
+                eq = await db.equipment.find_one({"id": doc["related_equipment_id"]}, {"_id": 0})
+                movable = min(doc["qty"], eq.get("in_maintenance", 0)) if eq else 0
+                if movable > 0:
+                    await apply_ledger_entry(
+                        doc["related_equipment_id"], movable, "in_maintenance", "available", "maintenance_resolved",
+                        note=f"Shop task: {doc.get('title', '')}", created_by=user.name,
+                    )
+        elif was_done and not will_be_done:
+            upd["completed_by"] = ""
+            upd["completed_at"] = None
+        await db.shop_tasks.update_one({"id": task_id}, {"$set": upd})
+        new_doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+        return ShopTask(**new_doc)
+
+    return await idempotent(idempotency_key, "update_shop_task_status", _run)
 
 
 @api.delete("/shop-tasks/{task_id}")
@@ -2705,6 +2812,8 @@ async def on_startup():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.idempotency_keys.create_index([("key", 1), ("endpoint", 1)], unique=True)
+    await db.idempotency_keys.create_index("created_at", expireAfterSeconds=IDEMPOTENCY_TTL_SECONDS)
     await seed()
     logger.info("Concrete Form API ready")
 

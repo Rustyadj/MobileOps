@@ -13,6 +13,7 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -204,7 +205,7 @@ export default function BookingsScreen() {
           <Card key={booking.id} style={{ marginBottom: spacing.sm }} testID={`booking-${booking.id}`}>
             <Row style={{ justifyContent: "space-between" }}><View style={{ flex: 1 }}><H3>{booking.customer_name}</H3><Text style={[typo.label, { marginTop: 2 }]}>{booking.job_site || "—"}</Text></View><Pill color={booking.status === "confirmed" ? colors.success : booking.status === "cancelled" ? colors.error : colors.warning} bg={booking.status === "confirmed" ? colors.successSoft : booking.status === "cancelled" ? colors.errorSoft : colors.warningSoft}>{booking.status}</Pill></Row>
             <Mono style={{ fontSize: 12, marginTop: 8 }}>{new Date(booking.start_date).toLocaleDateString()} → {new Date(booking.end_date).toLocaleDateString()}</Mono>
-            {canEdit ? <Button title="Delete" onPress={() => setDeleting(booking)} variant="outline" testID={`del-booking-${booking.id}`} /> : null}
+            {canEdit ? <RequiresOnline><Button title="Delete" onPress={() => setDeleting(booking)} variant="outline" testID={`del-booking-${booking.id}`} /></RequiresOnline> : null}
           </Card>
         ))
       ) : (
@@ -224,7 +225,7 @@ export default function BookingsScreen() {
           {selected.status === "dispatched" && selected.dispatched_rental_id ? (
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />
           ) : null}
-          {canEdit ? <Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /> : null}
+          {canEdit ? <RequiresOnline><Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /></RequiresOnline> : null}
         </> : null}
       </DetailDrawer>
 
@@ -277,7 +278,7 @@ export default function BookingsScreen() {
           </View>
 
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(text) => setDraft({ ...draft, notes: text })} testID="bk-notes" />
-          <Button title="Save Booking" onPress={save} testID="save-booking-btn" />
+          <RequiresOnline><Button title="Save Booking" onPress={save} testID="save-booking-btn" /></RequiresOnline>
         </Screen>
       </Modal>
       <ConfirmDialog visible={!!deleting} title="Delete booking?" message={deleting ? `${deleting.customer_name}'s booking will be permanently removed.` : undefined} confirmLabel="Delete" onConfirm={del} onCancel={() => setDeleting(null)} testID="delete-booking-confirm" />

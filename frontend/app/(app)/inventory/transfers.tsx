@@ -4,7 +4,7 @@
 // destination's own balance. The backend tracks available stock per
 // location (location_balances), so a partial transfer only moves the units
 // that actually left — it doesn't relabel the whole SKU's pool.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/components/ui";
@@ -13,6 +13,10 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useAuth } from "@/src/context/AuthContext";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
+import { patchCached } from "@/src/db/cacheTables";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; location: string; available: number; in_transit: number };
@@ -27,24 +31,20 @@ const shortDate = (v: string) => new Date(v).toLocaleString(undefined, { month: 
 
 export default function TransfersScreen() {
   const { canEdit } = usePermissions();
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const { user } = useAuth();
+  const equipmentRes = useCachedResource<Equipment>("equipment", () => api<Equipment[]>("/equipment"));
+  const transfersRes = useCachedResource<Transfer>("transfers", () => api<Transfer[]>("/transfers"));
+  const equipment = equipmentRes.data;
+  const transfers = transfersRes.data;
   const [eqSearch, setEqSearch] = useState("");
   const [selectedEqId, setSelectedEqId] = useState("");
   const [qty, setQty] = useState("");
   const [toLocation, setToLocation] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [e, t] = await Promise.all([api<Equipment[]>("/equipment"), api<Transfer[]>("/transfers")]);
-      setEquipment(e); setTransfers(t);
-    } catch (error) { console.warn(error); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  const refreshing = equipmentRes.refreshing || transfersRes.refreshing;
+  const onRefresh = () => { equipmentRes.onRefresh(); transfersRes.onRefresh(); };
 
   const selectedEq = equipment.find((e) => e.id === selectedEqId) || null;
   const eqMatches = useMemo(() => {
@@ -66,14 +66,40 @@ export default function TransfersScreen() {
     try {
       await api(`/equipment/${selectedEq.id}/transfer`, { method: "POST", body: JSON.stringify({ qty: parsed, to_location: toLocation.trim(), note }) });
       setQty(""); setToLocation(""); setNote("");
-      load();
+      equipmentRes.onRefresh();
+      transfersRes.onRefresh();
     } catch (error: unknown) { Alert.alert("Transfer failed", messageFor(error)); }
     finally { setSubmitting(false); }
   };
 
-  const receive = async (transfer: Transfer) => {
-    try { await api(`/transfers/${transfer.id}/receive`, { method: "POST" }); load(); }
-    catch (error: unknown) { Alert.alert("Receive failed", messageFor(error)); }
+  // Receiving is the yard/truck-side half of a transfer — queues offline.
+  // Starting a transfer stays online (it's the source yard confirming a
+  // shipment left, typically done at a desk before the truck departs).
+  const receive = (transfer: Transfer) => {
+    mutate<Transfer>({
+      kind: "command",
+      entityType: "transfers",
+      entityId: transfer.id,
+      path: `/transfers/${transfer.id}/receive`,
+      method: "POST",
+      body: {},
+      optimisticPatch: {
+        status: "received",
+        received_by: user?.name || "",
+        received_at: new Date().toISOString(),
+      },
+    });
+    // The transfer's own record is the queued mutation's target; the
+    // equipment side effect (available/in_transit) is a second, best-effort
+    // local patch so the equipment list doesn't look stale until this syncs
+    // — the server response on sync is still the authoritative correction.
+    const eq = equipment.find((e) => e.id === transfer.equipment_id);
+    if (eq) {
+      patchCached<Equipment>("equipment", eq.id, {
+        available: eq.available + transfer.qty,
+        in_transit: Math.max(0, eq.in_transit - transfer.qty),
+      });
+    }
   };
 
   return (

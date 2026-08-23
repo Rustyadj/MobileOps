@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
@@ -17,6 +17,8 @@ import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
@@ -70,47 +72,41 @@ export default function RentalsScreen() {
   const { canEdit, canAdmin } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
-  const [rentals, setRentals] = useState<Rental[]>([]);
-  const [equipment, setEquipment] = useState<Eq[]>([]);
+  const rentalsRes = useCachedResource<Rental>("rentals", () => api<Rental[]>("/rentals"));
+  const equipmentRes = useCachedResource<Eq>("equipment", () => api<Eq[]>("/equipment"));
+  const dispatchesRes = useCachedResource<Dispatch>("dispatches", () => api<Dispatch[]>("/dispatches").catch(() => []));
+  const rentals = rentalsRes.data;
+  const equipment = equipmentRes.data;
+  const dispatches = dispatchesRes.data;
+  // Site (brand/contact info for the PDF ticket) changes rarely and isn't a
+  // phase-1 write flow — plain fetch, not cached.
   const [site, setSite] = useState<Site | null>(null);
-  const [dispatches, setDispatches] = useState<Dispatch[]>([]);
+  useEffect(() => { api<Site>("/site").then(setSite).catch((e) => console.warn(e)); }, []);
   const [pickupBusy, setPickupBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
   const [addressQuery, setAddressQuery] = useState("");
   const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
   const [addressBusy, setAddressBusy] = useState(false);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
   const [returnPrompt, setReturnPrompt] = useState<ReturnPrompt | null>(null);
-  const [returnBusy, setReturnBusy] = useState(false);
-  const [selected, setSelected] = useState<Rental | null>(null);
+  const [selectedRaw, setSelectedRaw] = useState<Rental | null>(null);
+  const selected = selectedRaw ? rentals.find((r) => r.id === selectedRaw.id) || selectedRaw : null;
+  const setSelected = setSelectedRaw;
   const [search, setSearch] = useState("");
   const [direction, setDirection] = useState<RentalDirection>("outbound");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortKey, setSortKey] = useState<RentalSortKey>("start_date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
-  const load = useCallback(async () => {
-    try {
-      const [r, e, s, d] = await Promise.all([
-        api<Rental[]>("/rentals"),
-        api<Eq[]>("/equipment"),
-        api<Site>("/site"),
-        api<Dispatch[]>("/dispatches").catch(() => []),
-      ]);
-      setRentals(r); setEquipment(e); setSite(s); setDispatches(d);
-      setSelected((current) => current ? r.find((rental) => rental.id === current.id) || null : null);
-    } catch (err) { console.warn(err); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (!params.open || rentals.length === 0) return;
     setSelected(rentals.find((rental) => rental.id === params.open) || null);
-  }, [params.open, rentals]);
+  }, [params.open, rentals.length]);
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  const refreshing = rentalsRes.refreshing || equipmentRes.refreshing || dispatchesRes.refreshing;
+  const onRefresh = () => { rentalsRes.onRefresh(); equipmentRes.onRefresh(); dispatchesRes.onRefresh(); };
 
   const draftGeocode = async () => {
     if (!draft?.job_site?.trim()) {
@@ -161,7 +157,7 @@ export default function RentalsScreen() {
           method: "PATCH",
           body: JSON.stringify(coords),
         });
-        load();
+        rentalsRes.onRefresh();
       } catch (e: any) {
         Alert.alert("Save failed", e.message);
       }
@@ -240,39 +236,58 @@ export default function RentalsScreen() {
     setDraft((d: any) => ({ ...d, lines: d.lines.map((l: Line) => l.equipment_id === id ? { ...l, qty: Math.max(0, qty) } : l).filter((l: Line) => l.qty > 0) }));
   };
 
+  // Creating a new rental queues offline (delivered on-site); editing an
+  // existing one (full replace, ledger-rebalancing PUT) stays online — it's
+  // desk work and, unlike a fresh create, has no natural client-side id to
+  // build an optimistic doc against safely.
   const save = async () => {
     if (!draft.customer_name || draft.lines.length === 0) {
       Alert.alert("Required", "Customer name and at least one line item.");
       return;
     }
-    try {
-      const body = {
-        customer_name: draft.customer_name,
-        customer_phone: draft.customer_phone || "",
-        customer_email: draft.customer_email || "",
-        job_site: draft.job_site || "",
-        start_date: draft.start_date,
-        deposit: Number(draft.deposit) || 0,
-        notes: draft.notes || "",
-        lines: draft.lines.map((l: Line) => ({
-          equipment_id: l.equipment_id, sku: l.sku, qr_code: l.qr_code, name: l.name,
-          qty: l.qty, daily_rate: l.daily_rate, delivered_qty: l.delivered_qty || 0,
-          returned_qty: l.returned_qty || 0, damaged_qty: l.damaged_qty || 0,
-        })),
-        lat: draft.lat ?? null,
-        lng: draft.lng ?? null,
-      };
-      if (draft.id) {
+    const body = {
+      customer_name: draft.customer_name,
+      customer_phone: draft.customer_phone || "",
+      customer_email: draft.customer_email || "",
+      job_site: draft.job_site || "",
+      start_date: draft.start_date,
+      deposit: Number(draft.deposit) || 0,
+      notes: draft.notes || "",
+      lines: draft.lines.map((l: Line) => ({
+        equipment_id: l.equipment_id, sku: l.sku, qr_code: l.qr_code, name: l.name,
+        qty: l.qty, daily_rate: l.daily_rate, delivered_qty: l.delivered_qty || 0,
+        returned_qty: l.returned_qty || 0, damaged_qty: l.damaged_qty || 0,
+      })),
+      lat: draft.lat ?? null,
+      lng: draft.lng ?? null,
+    };
+    if (draft.id) {
+      try {
         await api(`/rentals/${draft.id}`, { method: "PUT", body: JSON.stringify(body) });
-      } else {
-        await api("/rentals", { method: "POST", body: JSON.stringify(body) });
-      }
-      setCreating(false); setDraft(null); load();
-    } catch (e: any) { Alert.alert("Save failed", e.message); }
+        rentalsRes.onRefresh();
+        equipmentRes.onRefresh();
+      } catch (e: any) { Alert.alert("Save failed", e.message); return; }
+    } else {
+      mutate<Rental>({
+        kind: "create",
+        entityType: "rentals",
+        path: "/rentals",
+        method: "POST",
+        body,
+        optimisticDoc: (tempId) => ({
+          id: tempId,
+          customer_name: body.customer_name, customer_phone: body.customer_phone, customer_email: body.customer_email,
+          job_site: body.job_site, start_date: body.start_date, due_date: null, deposit: body.deposit, notes: body.notes,
+          lines: body.lines, status: "active", delivered_by: "", received_by: "",
+          lat: body.lat, lng: body.lng,
+        }),
+      });
+    }
+    setCreating(false); setDraft(null);
   };
 
   const del = async (id: string) => {
-    try { await api(`/rentals/${id}`, { method: "DELETE" }); load(); }
+    try { await api(`/rentals/${id}`, { method: "DELETE" }); rentalsRes.onRefresh(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
 
@@ -280,17 +295,25 @@ export default function RentalsScreen() {
     (d) => d.direction === "inbound" && d.rental_id === rentalId && d.status !== "completed" && d.status !== "cancelled"
   );
 
-  const schedulePickup = async (rentalId: string) => {
-    setPickupBusy(true);
-    try {
-      const dispatch = await api<Dispatch>(`/rentals/${rentalId}/schedule-pickup`, { method: "POST", body: JSON.stringify({}) });
-      await load();
-      router.push(`/(app)/operations/dispatch?open=${dispatch.id}` as any);
-    } catch (e: any) {
-      Alert.alert("Schedule pickup failed", e.message);
-    } finally {
-      setPickupBusy(false);
-    }
+  // Queues offline — scheduled from the job site once the crew knows a
+  // pickup is needed. The optimistic Dispatch doc is enough for the
+  // dispatch list/detail to show it right away; the server fills in the
+  // real lines (derived from what's actually outstanding) on sync.
+  const schedulePickup = (rentalId: string) => {
+    const rental = rentals.find((r) => r.id === rentalId);
+    const dispatch = mutate<Dispatch>({
+      kind: "create",
+      entityType: "dispatches",
+      path: `/rentals/${rentalId}/schedule-pickup`,
+      method: "POST",
+      body: {},
+      optimisticDoc: (tempId) => ({
+        id: tempId, direction: "inbound", status: "scheduled",
+        rental_id: rentalId, scheduled_date: null,
+        driver_name: "", customer_name: rental?.customer_name || "", job_site: rental?.job_site || "",
+      } as Dispatch),
+    });
+    if (dispatch) router.push(`/(app)/operations/dispatch?open=${dispatch.id}` as any);
   };
 
   const openReturn = (rental: Rental, line: Line) => {
@@ -298,7 +321,11 @@ export default function RentalsScreen() {
     setReturnPrompt({ rental, line, qty: String(onSite), damagedQty: "0" });
   };
 
-  const submitReturn = async () => {
+  // Queues offline — recorded standing at the truck/job site as units come
+  // back. Optimistic patch mirrors the server's returned_qty/damaged_qty +
+  // status recompute (partial_return in backend/server.py) for this one
+  // line; other lines on the rental are untouched.
+  const submitReturn = () => {
     if (!returnPrompt) return;
     const qty = Number.parseInt(returnPrompt.qty, 10);
     const damagedQty = Number.parseInt(returnPrompt.damagedQty || "0", 10);
@@ -311,19 +338,27 @@ export default function RentalsScreen() {
       Alert.alert("Invalid damaged quantity", "Damaged units must be between 0 and the return quantity.");
       return;
     }
-    setReturnBusy(true);
-    try {
-      await api(`/rentals/${returnPrompt.rental.id}/return`, {
-        method: "POST",
-        body: JSON.stringify([{ equipment_id: returnPrompt.line.equipment_id, qty, damaged_qty: damagedQty }]),
-      });
-      setReturnPrompt(null);
-      await load();
-    } catch (e: any) {
-      Alert.alert("Return failed", e.message);
-    } finally {
-      setReturnBusy(false);
-    }
+    const rental = returnPrompt.rental;
+    const nextLines = rental.lines.map((l) =>
+      l.equipment_id === returnPrompt.line.equipment_id
+        ? { ...l, returned_qty: l.returned_qty + qty, damaged_qty: l.damaged_qty + damagedQty }
+        : l,
+    );
+    const allReturned = nextLines.every((l) => l.returned_qty >= (l.delivered_qty > 0 ? l.delivered_qty : l.qty));
+    const anyReturned = nextLines.some((l) => l.returned_qty > 0);
+    mutate<Rental>({
+      kind: "command",
+      entityType: "rentals",
+      entityId: rental.id,
+      path: `/rentals/${rental.id}/return`,
+      method: "POST",
+      body: [{ equipment_id: returnPrompt.line.equipment_id, qty, damaged_qty: damagedQty }],
+      optimisticPatch: {
+        lines: nextLines,
+        status: allReturned ? "returned" : anyReturned ? "partially_returned" : "active",
+      },
+    });
+    setReturnPrompt(null);
   };
 
   const generatePDF = async (r: Rental) => {
@@ -829,7 +864,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <Text style={styles.returnHelp}>Damaged units are included in the return quantity and move directly to maintenance.</Text>
                 <Row style={{ gap: spacing.sm, marginTop: spacing.md }}>
                   <View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setReturnPrompt(null)} variant="outline" testID="return-cancel" /></View>
-                  <View style={{ flex: 1 }}><Button title="Receive" onPress={submitReturn} loading={returnBusy} testID="return-confirm" /></View>
+                  <View style={{ flex: 1 }}><Button title="Receive" onPress={submitReturn} testID="return-confirm" /></View>
                 </Row>
               </>
             ) : null}
