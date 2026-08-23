@@ -24,7 +24,7 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function CalculatorScreen() {
   const [tab, setTab] = useState<TabKey>("icf");
   return (
-    <Screen title="Calculator" subtitle="Construction Master · Imperial" back testID="calculator-screen">
+    <Screen title="Calculator" subtitle="Construction Master · Imperial" back clampWidth testID="calculator-screen">
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -64,18 +64,20 @@ function ICFTab() {
     parseFloat(core || "0"), parseFloat(waste || "0"),
   ), [length, height, core, waste]);
   return (
-    <>
-      <SectionLabel>ICF wall concrete</SectionLabel>
-      <ResponsivePair
-        primary={<Card style={{ marginBottom: spacing.md }}>
-          <Input label="Wall length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="icf-length" />
-          <Input label="Wall height (ft)" value={height} onChangeText={setHeight} keyboardType="decimal-pad" mono testID="icf-height" />
-          <Input label="Core thickness (in)" value={core} onChangeText={setCore} keyboardType="decimal-pad" mono testID="icf-core" />
-          <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="icf-waste" />
-        </Card>}
-        secondary={<ResultTile label="Concrete required" value={`${cy.toFixed(2)} cy`} testID="icf-result" />}
-      />
-    </>
+    <TwoColTab
+      inputs={
+        <>
+          <SectionLabel>ICF wall concrete</SectionLabel>
+          <Card>
+            <Input label="Wall length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="icf-length" />
+            <Input label="Wall height (ft)" value={height} onChangeText={setHeight} keyboardType="decimal-pad" mono testID="icf-height" />
+            <Input label="Core thickness (in)" value={core} onChangeText={setCore} keyboardType="decimal-pad" mono testID="icf-core" />
+            <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="icf-waste" />
+          </Card>
+        </>
+      }
+      result={<ResultTile label="Concrete required" value={`${cy.toFixed(2)} cy`} testID="icf-result" />}
+    />
   );
 }
 
@@ -111,17 +113,19 @@ function AreaTab() {
   const [waste, setWaste] = useState("5");
   const sqft = areaSqFt(parseFloat(length || "0"), parseFloat(width || "0"), parseFloat(waste || "0"));
   return (
-    <>
-      <SectionLabel>Area</SectionLabel>
-      <ResponsivePair
-        primary={<Card style={{ marginBottom: spacing.md }}>
-          <Input label="Length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="area-length" />
-          <Input label="Width (ft)" value={width} onChangeText={setWidth} keyboardType="decimal-pad" mono testID="area-width" />
-          <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="area-waste" />
-        </Card>}
-        secondary={<ResultTile label="Area" value={`${sqft.toFixed(2)} sq ft`} testID="area-result" />}
-      />
-    </>
+    <TwoColTab
+      inputs={
+        <>
+          <SectionLabel>Area</SectionLabel>
+          <Card>
+            <Input label="Length (ft)" value={length} onChangeText={setLength} keyboardType="decimal-pad" mono testID="area-length" />
+            <Input label="Width (ft)" value={width} onChangeText={setWidth} keyboardType="decimal-pad" mono testID="area-width" />
+            <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="area-waste" />
+          </Card>
+        </>
+      }
+      result={<ResultTile label="Area" value={`${sqft.toFixed(2)} sq ft`} testID="area-result" />}
+    />
   );
 }
 
@@ -156,7 +160,7 @@ function BlocksTab() {
           </TouchableOpacity>
         ))}
       </ScrollView>
-      <ResponsivePair primary={<Card style={{ marginBottom: spacing.md }}>
+      <Card style={{ marginBottom: spacing.md }}>
         {isCustom && (
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}>
@@ -171,7 +175,8 @@ function BlocksTab() {
         <Input label="Wall height (ft)" value={height} onChangeText={setHeight} keyboardType="decimal-pad" mono testID="block-height" />
         <Input label="Openings (sq ft)" value={openings} onChangeText={setOpenings} keyboardType="decimal-pad" mono testID="block-openings" />
         <Input label="Waste %" value={waste} onChangeText={setWaste} keyboardType="decimal-pad" mono testID="block-waste" />
-      </Card>} secondary={<ResultTile label={`${preset} blocks needed`} value={`${blocks}`} testID="block-result" />} />
+      </Card>
+      <ResultTile label={`${preset} blocks needed`} value={`${blocks}`} testID="block-result" />
     </>
   );
 }
@@ -331,23 +336,36 @@ function DimMathTab() {
         ))}
       </Card>
 
-      <ResponsivePair
-        primary={<View><SectionLabel>Total</SectionLabel><Card style={{ marginBottom: spacing.md }}>
-          <ResultRow label="Ft-In" value={formatFtInFrac(total)} testID="dim-total-ftin" />
-          <ResultRow label="Decimal ft" value={formatDecimalFt(total)} testID="dim-total-decft" />
-          <ResultRow label="Total in" value={formatTotalInches(total)} testID="dim-total-in" />
-        </Card></View>}
-        secondary={<View><SectionLabel>Scale × ÷</SectionLabel><Card>
-          <Input label="Factor" value={scaleFactor} onChangeText={setScaleFactor} keyboardType="decimal-pad" mono testID="dim-scale" />
-          <ResultRow label={`Total × ${scaleFactor || "?"}`} value={formatFtInFrac(scaled)} testID="dim-mul" />
-          <ResultRow label={`Total ÷ ${scaleFactor || "?"}`} value={formatFtInFrac(divided)} testID="dim-div" />
-        </Card></View>}
-      />
+      <SectionLabel>Total</SectionLabel>
+      <Card style={{ marginBottom: spacing.md }}>
+        <ResultRow label="Ft-In" value={formatFtInFrac(total)} testID="dim-total-ftin" />
+        <ResultRow label="Decimal ft" value={formatDecimalFt(total)} testID="dim-total-decft" />
+        <ResultRow label="Total in" value={formatTotalInches(total)} testID="dim-total-in" />
+      </Card>
+
+      <SectionLabel>Scale × ÷</SectionLabel>
+      <Card>
+        <Input label="Factor" value={scaleFactor} onChangeText={setScaleFactor} keyboardType="decimal-pad" mono testID="dim-scale" />
+        <ResultRow label={`Total × ${scaleFactor || "?"}`} value={formatFtInFrac(scaled)} testID="dim-mul" />
+        <ResultRow label={`Total ÷ ${scaleFactor || "?"}`} value={formatFtInFrac(divided)} testID="dim-div" />
+      </Card>
     </>
   );
 }
 
 /* ----- helpers ----- */
+// Puts inputs and result side-by-side on desktop instead of stacked full-width.
+const TwoColTab: React.FC<{ inputs: React.ReactNode; result: React.ReactNode }> = ({ inputs, result }) => {
+  const { isShellWide } = useBreakpoint();
+  if (!isShellWide) return <>{inputs}<View style={{ marginTop: spacing.md }}>{result}</View></>;
+  return (
+    <Row style={{ gap: spacing.lg, alignItems: "flex-start" }}>
+      <View style={{ flex: 1 }}>{inputs}</View>
+      <View style={{ flex: 1 }}>{result}</View>
+    </Row>
+  );
+};
+
 const ResultTile: React.FC<{ label: string; value: string; accent?: boolean; testID?: string }> = ({ label, value, accent, testID }) => (
   <View style={[styles.resultTile, accent && { backgroundColor: colors.ink }]} testID={testID}>
     <Text style={[typo.label, accent && { color: "#FFF", opacity: 0.7 }]}>{label}</Text>
@@ -362,12 +380,6 @@ const ResultRow: React.FC<{ label: string; value: string; testID?: string }> = (
   </Row>
 );
 
-const ResponsivePair: React.FC<{ primary: React.ReactNode; secondary: React.ReactNode }> = ({ primary, secondary }) => {
-  const { isShellWide } = useBreakpoint();
-  if (!isShellWide) return <>{primary}{secondary}</>;
-  return <View style={styles.responsivePair}><View style={styles.pairColumn}>{primary}</View><View style={styles.pairColumn}>{secondary}</View></View>;
-};
-
 const styles = StyleSheet.create({
   tabRow: { paddingHorizontal: spacing.lg, gap: 8 },
   tab: { paddingHorizontal: 14, height: 40, justifyContent: "center", borderWidth: 2, borderColor: colors.border, backgroundColor: colors.bg, flexShrink: 0 },
@@ -379,6 +391,4 @@ const styles = StyleSheet.create({
   resultTile: { borderWidth: 2, borderColor: colors.ink, padding: 14, marginBottom: spacing.md, flex: 1 },
   grid2: { flexDirection: "row", gap: 12, marginBottom: 0 },
   tapeRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  responsivePair: { flexDirection: "row", alignItems: "flex-start", gap: spacing.lg },
-  pairColumn: { flex: 1, minWidth: 0 },
 });

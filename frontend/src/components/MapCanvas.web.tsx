@@ -1,3 +1,4 @@
+import "leaflet/dist/leaflet.css";
 import React, { useEffect, useRef, useState } from "react";
 import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,36 +25,14 @@ declare global {
   }
 }
 
-const LEAFLET_VERSION = "1.9.4";
-
 function ensureLeaflet(): Promise<any> {
   if (window.L) return Promise.resolve(window.L);
   if (window.__mobileOpsLeafletPromise) return window.__mobileOpsLeafletPromise;
 
-  window.__mobileOpsLeafletPromise = new Promise((resolve, reject) => {
-    const cssId = "mobileops-leaflet-css";
-    if (!document.getElementById(cssId)) {
-      const link = document.createElement("link");
-      link.id = cssId;
-      link.rel = "stylesheet";
-      link.href = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
-      document.head.appendChild(link);
-    }
-
-    const existing = document.getElementById("mobileops-leaflet-js") as HTMLScriptElement | null;
-    if (existing) {
-      existing.addEventListener("load", () => resolve(window.L), { once: true });
-      existing.addEventListener("error", () => reject(new Error("Map library failed to load.")), { once: true });
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.id = "mobileops-leaflet-js";
-    script.src = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.js`;
-    script.async = true;
-    script.onload = () => resolve(window.L);
-    script.onerror = () => reject(new Error("Map library failed to load."));
-    document.head.appendChild(script);
+  window.__mobileOpsLeafletPromise = import("leaflet").then((module) => {
+    const leaflet = module.default || module;
+    window.L = leaflet;
+    return leaflet;
   });
 
   return window.__mobileOpsLeafletPromise;

@@ -1,7 +1,13 @@
+// Bracing Engine — on desktop, inputs sit in a left column with results
+// persistently visible on the right instead of forcing repeated scrolling
+// to check output after every edit. Mobile keeps the original single
+// scrolling column. Calculation logic and engineering warnings unchanged.
 import { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
 import { Screen } from "@/src/components/Screen";
 import { Button, Card, H3, Input, Mono, SectionLabel, Pill, Row } from "@/src/components/ui";
+import { SplitPane } from "@/src/components/layout/SplitPane";
+import { EmptyState } from "@/src/components/feedback/EmptyState";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
@@ -58,8 +64,8 @@ export default function BracingScreen() {
     }
   };
 
-  const inputs = (
-    <>
+  const inputsContent = (
+    <View style={isShellWide ? { padding: spacing.lg } : undefined}>
       <SectionLabel>Rule</SectionLabel>
       <Card style={{ marginBottom: spacing.md }}>
         <Text style={typo.body}>1 strongback per corner. 1 brace every 4 ft of wall (round up). Brace length set by wall height:
@@ -77,42 +83,16 @@ export default function BracingScreen() {
               </TouchableOpacity>
             ) : null}
           </Row>
-          <Input
-            label="Name"
-            value={r.name}
-            onChangeText={(t) => update(i, "name", t)}
-            testID={`run-name-${i}`}
-          />
+          <Input label="Name" value={r.name} onChangeText={(t) => update(i, "name", t)} testID={`run-name-${i}`} />
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}>
-              <Input
-                label="Corners"
-                value={r.corners}
-                onChangeText={(t) => update(i, "corners", t)}
-                keyboardType="number-pad"
-                mono
-                testID={`run-corners-${i}`}
-              />
+              <Input label="Corners" value={r.corners} onChangeText={(t) => update(i, "corners", t)} keyboardType="number-pad" mono testID={`run-corners-${i}`} />
             </View>
             <View style={{ flex: 1 }}>
-              <Input
-                label="Wall Ht (ft)"
-                value={r.wall_height}
-                onChangeText={(t) => update(i, "wall_height", t)}
-                keyboardType="decimal-pad"
-                mono
-                testID={`run-height-${i}`}
-              />
+              <Input label="Wall Ht (ft)" value={r.wall_height} onChangeText={(t) => update(i, "wall_height", t)} keyboardType="decimal-pad" mono testID={`run-height-${i}`} />
             </View>
           </Row>
-          <Input
-            label="Linear ft of wall"
-            value={r.linear_ft}
-            onChangeText={(t) => update(i, "linear_ft", t)}
-            keyboardType="decimal-pad"
-            mono
-            testID={`run-linearft-${i}`}
-          />
+          <Input label="Linear ft of wall" value={r.linear_ft} onChangeText={(t) => update(i, "linear_ft", t)} keyboardType="decimal-pad" mono testID={`run-linearft-${i}`} />
         </Card>
       ))}
 
@@ -125,79 +105,85 @@ export default function BracingScreen() {
           <Text style={{ color: colors.error, fontWeight: "700" }}>{err}</Text>
         </View>
       ) : null}
-    </>
+    </View>
   );
 
-  const results = result ? (
-        <View style={!isShellWide ? { marginTop: spacing.lg } : undefined} testID="bracing-results">
-          <SectionLabel>Totals</SectionLabel>
-          <View style={styles.totalsRow}>
-            <TotalTile label="Strongbacks" value={`${result.total_strongbacks}`} />
-            <TotalTile label="Braces" value={`${result.total_braces}`} accent />
-          </View>
+  const resultsContent = result ? (
+    <View style={isShellWide ? { padding: spacing.lg } : { marginTop: spacing.lg }} testID="bracing-results">
+      <SectionLabel>Totals</SectionLabel>
+      <View style={styles.totalsRow}>
+        <TotalTile label="Strongbacks" value={`${result.total_strongbacks}`} />
+        <TotalTile label="Braces" value={`${result.total_braces}`} accent />
+      </View>
 
-          {result.engineer_required ? (
-            <View style={styles.warn} testID="engineer-warning">
-              <Ionicons name="warning" size={18} color={colors.warning} />
-              <Text style={{ color: colors.ink, fontWeight: "700", marginLeft: 8, flex: 1 }}>
-                One or more walls exceed 20′ — engineer required for those runs.
-              </Text>
-            </View>
-          ) : null}
+      {result.engineer_required ? (
+        <View style={styles.warn} testID="engineer-warning">
+          <Ionicons name="warning" size={18} color={colors.warning} />
+          <Text style={{ color: colors.ink, fontWeight: "700", marginLeft: 8, flex: 1 }}>
+            One or more walls exceed 20′ — engineer required for those runs.
+          </Text>
+        </View>
+      ) : null}
 
-          <SectionLabel>Order list — Braces by length</SectionLabel>
-          <Card>
-            {Object.keys(result.braces_by_length).length === 0 ? (
-              <Text style={[typo.body, { color: colors.inkMuted }]}>No braces required.</Text>
+      <SectionLabel>Order list — Braces by length</SectionLabel>
+      <Card>
+        {Object.keys(result.braces_by_length).length === 0 ? (
+          <Text style={[typo.body, { color: colors.inkMuted }]}>No braces required.</Text>
+        ) : (
+          Object.entries(result.braces_by_length).map(([len, qty]) => (
+            <Row key={len} style={styles.row}>
+              <Mono>{len}′ braces</Mono>
+              <View style={{ flex: 1 }} />
+              <Mono large>{qty}</Mono>
+            </Row>
+          ))
+        )}
+      </Card>
+
+      <View style={{ height: spacing.md }} />
+      <SectionLabel>Per-run breakdown</SectionLabel>
+      {result.runs.map((rr, i) => (
+        <Card key={i} style={{ marginBottom: spacing.sm }}>
+          <Row style={{ justifyContent: "space-between", marginBottom: 4 }}>
+            <H3>{rr.name}</H3>
+            {rr.engineer_required ? (
+              <Pill color={colors.warning} bg="#FEF3C7">Engineer</Pill>
             ) : (
-              Object.entries(result.braces_by_length).map(([len, qty]) => (
-                <Row key={len} style={styles.row}>
-                  <Mono>{len}′ braces</Mono>
-                  <View style={{ flex: 1 }} />
-                  <Mono large>{qty}</Mono>
-                </Row>
-              ))
+              <Pill>{rr.brace_length}′ braces</Pill>
             )}
-          </Card>
+          </Row>
+          <Text style={typo.body}>
+            <Mono>{rr.corners}</Mono> corners · <Mono>{rr.linear_ft}</Mono> lf · <Mono>{rr.wall_height}</Mono>′ ht
+          </Text>
+          <Row style={{ marginTop: 6, gap: spacing.lg }}>
+            <Text style={typo.label}>SB <Mono style={{ fontSize: 14 }}>{rr.strongbacks}</Mono></Text>
+            <Text style={typo.label}>BR <Mono style={{ fontSize: 14 }}>{rr.braces}</Mono></Text>
+          </Row>
+        </Card>
+      ))}
+    </View>
+  ) : isShellWide ? (
+    <View style={{ padding: spacing.lg }}>
+      <EmptyState icon="construct-outline" title="No results yet" subtitle="Enter wall runs on the left and tap Calculate." />
+    </View>
+  ) : null;
 
-          <View style={{ height: spacing.md }} />
-          <SectionLabel>Per-run breakdown</SectionLabel>
-          {result.runs.map((rr, i) => (
-            <Card key={i} style={{ marginBottom: spacing.sm }}>
-              <Row style={{ justifyContent: "space-between", marginBottom: 4 }}>
-                <H3>{rr.name}</H3>
-                {rr.engineer_required ? (
-                  <Pill color={colors.warning} bg="#FEF3C7">Engineer</Pill>
-                ) : (
-                  <Pill>{rr.brace_length}′ braces</Pill>
-                )}
-              </Row>
-              <Text style={typo.body}>
-                <Mono>{rr.corners}</Mono> corners · <Mono>{rr.linear_ft}</Mono> lf · <Mono>{rr.wall_height}</Mono>′ ht
-              </Text>
-              <Row style={{ marginTop: 6, gap: spacing.lg }}>
-                <Text style={typo.label}>SB <Mono style={{ fontSize: 14 }}>{rr.strongbacks}</Mono></Text>
-                <Text style={typo.label}>BR <Mono style={{ fontSize: 14 }}>{rr.braces}</Mono></Text>
-              </Row>
-            </Card>
-          ))}
-        </View>
-      ) : isShellWide ? (
-        <View style={styles.resultsEmpty}>
-          <Ionicons name="calculator-outline" size={28} color={colors.inkMuted} />
-          <Text style={[typo.h3, { marginTop: spacing.sm }]}>Results stay visible here</Text>
-          <Text style={[typo.bodySmall, { textAlign: "center", marginTop: 4 }]}>Enter wall runs and calculate to build totals and the brace order list.</Text>
-        </View>
-      ) : null;
+  if (isShellWide) {
+    return (
+      <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back scroll={false} testID="bracing-screen">
+        <SplitPane
+          primary={<ScrollView showsVerticalScrollIndicator={false}>{inputsContent}</ScrollView>}
+          secondary={<ScrollView showsVerticalScrollIndicator={false}>{resultsContent}</ScrollView>}
+          secondaryWidth={420}
+        />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back testID="bracing-screen" scroll={!isShellWide}>
-      {isShellWide ? (
-        <View style={styles.workspace}>
-          <ScrollView style={styles.inputPane} contentContainerStyle={styles.paneContent} showsVerticalScrollIndicator={false}>{inputs}</ScrollView>
-          <ScrollView style={styles.resultPane} contentContainerStyle={styles.paneContent} showsVerticalScrollIndicator={false}>{results}</ScrollView>
-        </View>
-      ) : <>{inputs}{results}</>}
+    <Screen title="Bracing Engine" subtitle="Strongbacks + braces by wall run" back testID="bracing-screen">
+      {inputsContent}
+      {resultsContent}
     </Screen>
   );
 }
@@ -210,11 +196,6 @@ const TotalTile: React.FC<{ label: string; value: string; accent?: boolean }> = 
 );
 
 const styles = StyleSheet.create({
-  workspace: { flex: 1, flexDirection: "row" },
-  inputPane: { flex: 1, minWidth: 0 },
-  resultPane: { width: "42%", minWidth: 360, maxWidth: 560, borderLeftWidth: 1, borderLeftColor: colors.border, backgroundColor: colors.bgMuted },
-  paneContent: { padding: spacing.xl, paddingBottom: spacing.xxl },
-  resultsEmpty: { minHeight: 280, alignItems: "center", justifyContent: "center", padding: spacing.xl, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
   totalsRow: { flexDirection: "row", gap: 12, marginBottom: spacing.lg },
   tile: { flex: 1, borderWidth: 2, borderColor: colors.ink, padding: 14, backgroundColor: colors.bg },
   warn: { flexDirection: "row", alignItems: "center", borderWidth: 2, borderColor: colors.warning, backgroundColor: "#FEF3C7", padding: spacing.md, marginBottom: spacing.md },
