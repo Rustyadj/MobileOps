@@ -31,6 +31,7 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "operations",
     label: "Operations",
     items: [
+      { key: "dispatch", label: "Dispatch", route: "/(app)/operations/dispatch", icon: "navigate-outline", testID: "nav-dispatch" },
       { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
       { key: "rentals", label: "Rentals", route: "/(app)/operations/rentals", icon: "receipt-outline", testID: "nav-rentals" },
       { key: "bookings", label: "Bookings / Upcoming Jobs", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },

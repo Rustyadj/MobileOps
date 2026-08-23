@@ -5,6 +5,7 @@
 // moves the underlying units back to available in the inventory ledger.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
@@ -62,6 +63,7 @@ const blank: Partial<ShopTask> = {
 
 export default function ShopTasksScreen() {
   const { isShellWide } = useBreakpoint();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [tasks, setTasks] = useState<ShopTask[]>([]);
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
@@ -87,6 +89,14 @@ export default function ShopTasksScreen() {
     } catch (e) { console.warn(e); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!params.open || tasks.length === 0) return;
+    setSelected(tasks.find((t) => t.id === params.open) || null);
+  }, [params.open, tasks]);
+  useEffect(() => {
+    if (params.new) setEditing({ ...blank });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.new]);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const eqById = useMemo(() => Object.fromEntries(equipment.map((e) => [e.id, e])), [equipment]);

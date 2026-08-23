@@ -211,6 +211,7 @@ class TestRentals:
         eq = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
         target = next((e for e in eq if e["available"] >= 2 and e["sku"] == "SB-001"), None) or eq[0]
         before_avail = target["available"]
+        before_pending_inspection = target["pending_inspection"]
 
         start = datetime.now(timezone.utc).isoformat()
         # NOTE: due_date deliberately omitted — should still succeed (201)
@@ -247,9 +248,20 @@ class TestRentals:
         )
         assert rr2.json()["status"] == "returned"
 
-        # avail restored
+        # Returned units land in pending_inspection, not directly back in
+        # available — they only rejoin the available pool once inspected.
         final = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers).json()
-        assert next(e for e in final if e["id"] == target["id"])["available"] == before_avail
+        target_final = next(e for e in final if e["id"] == target["id"])
+        assert target_final["available"] == before_avail - 2
+        assert target_final["pending_inspection"] == before_pending_inspection + 2
+
+        insp = api_client.post(
+            f"{BASE_URL}/api/equipment/{target['id']}/inspect", headers=auth_headers,
+            json={"qty": 2, "outcome": "available", "note": "test lifecycle"},
+        )
+        assert insp.status_code == 200, insp.text
+        assert insp.json()["available"] == before_avail
+        assert insp.json()["pending_inspection"] == before_pending_inspection
 
         api_client.delete(f"{BASE_URL}/api/rentals/{rid}", headers=auth_headers)
 
@@ -695,10 +707,13 @@ class TestDashboard:
         r = api_client.get(f"{BASE_URL}/api/dashboard/stats", headers=auth_headers)
         assert r.status_code == 200, r.text
         d = r.json()
-        # New shape (due_date removed): no upcoming_returns / upcoming_count
-        for key in ["utilization", "total_quantity", "total_available", "active_rentals",
-                    "open_maintenance", "vendors_count", "activity"]:
+        # Operational shape (post financial-UI removal): no utilization %,
+        # no dollar figures — bucket totals plus shop/shortage counts instead.
+        for key in ["total_quantity", "total_available", "total_reserved", "total_on_rental",
+                    "total_pending_inspection", "returning_today", "active_rentals",
+                    "open_maintenance", "open_shop_tasks", "shortage_count", "vendors_count", "activity"]:
             assert key in d, f"missing {key}"
+        assert "utilization" not in d, "utilization percentage should be removed"
         assert "upcoming_returns" not in d, "upcoming_returns should be removed"
         assert "upcoming_count" not in d, "upcoming_count should be removed"
         assert isinstance(d["activity"], list)

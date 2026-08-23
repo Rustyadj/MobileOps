@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Modal, Alert, ScrollView } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { View, Text, StyleSheet, Modal, Alert, ScrollView, TouchableOpacity } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
@@ -16,24 +17,30 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
 type BookingLine = { equipment_id: string; sku: string; qr_code?: string | null; name: string; qty: number; returned_qty: number; daily_rate: number };
-type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string };
+type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string; dispatched_rental_id?: string | null };
 type CapacityRow = { equipment_id: string; sku: string; qr_code?: string | null; name: string; category: string; quantity: number; committed: number; available: number };
+type Eq = { id: string; sku: string; qr_code?: string | null; name: string };
 type BookingSortKey = "customer_name" | "job_site" | "start_date" | "end_date" | "status";
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
   { key: "tentative", label: "Tentative" },
   { key: "confirmed", label: "Confirmed" },
+  { key: "dispatched", label: "Dispatched" },
   { key: "cancelled", label: "Cancelled" },
 ];
 
 export default function BookingsScreen() {
   const { isShellWide } = useBreakpoint();
-  const params = useLocalSearchParams<{ open?: string }>();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [tab, setTab] = useState<"pipeline" | "capacity">("pipeline");
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [equipment, setEquipment] = useState<Eq[]>([]);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
+  const [eqSearch, setEqSearch] = useState("");
+  const [availability, setAvailability] = useState<Record<string, CapacityRow>>({});
   const [selected, setSelected] = useState<Booking | null>(null);
   const [deleting, setDeleting] = useState<Booking | null>(null);
   const [search, setSearch] = useState("");
@@ -45,7 +52,10 @@ export default function BookingsScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    try { setBookings(await api<Booking[]>("/bookings")); } catch (e) { console.warn(e); }
+    try {
+      const [b, e] = await Promise.all([api<Booking[]>("/bookings"), api<Eq[]>("/equipment")]);
+      setBookings(b); setEquipment(e);
+    } catch (e) { console.warn(e); }
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -53,6 +63,17 @@ export default function BookingsScreen() {
     const match = bookings.find((booking) => booking.id === params.open);
     if (match) setSelected(match);
   }, [bookings, params.open]);
+
+  // Availability for the draft's start date — refreshed whenever the create
+  // form is open and the start date changes, so "Available" / "Conflict"
+  // reflect what's actually committed that day.
+  useEffect(() => {
+    if (!creating || !draft?.start_date) return;
+    const target = draft.start_date.slice(0, 10) + "T00:00:00";
+    api<{ rows: CapacityRow[] }>(`/bookings/capacity?target_date=${target}`)
+      .then((res) => setAvailability(Object.fromEntries(res.rows.map((row) => [row.equipment_id, row]))))
+      .catch(() => setAvailability({}));
+  }, [creating, draft?.start_date]);
 
   const loadCapacity = useCallback(async () => {
     try {
@@ -83,7 +104,28 @@ export default function BookingsScreen() {
     const now = new Date();
     const end = new Date(now.getTime() + 3 * 86400000);
     setDraft({ customer_name: "", job_site: "", start_date: now.toISOString(), end_date: end.toISOString(), status: "tentative", items: [], notes: "" });
+    setEqSearch("");
     setCreating(true);
+  };
+
+  useEffect(() => {
+    if (params.new) newBooking();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.new]);
+
+  const addItem = (eq: Eq) => {
+    setDraft((d: any) => {
+      if (d.items.some((i: BookingLine) => i.equipment_id === eq.id)) return d;
+      return { ...d, items: [...d.items, { equipment_id: eq.id, sku: eq.sku, qr_code: eq.qr_code, name: eq.name, qty: 1, returned_qty: 0, daily_rate: 0 }] };
+    });
+  };
+  const updateItemQty = (equipmentId: string, qty: number) => {
+    setDraft((d: any) => ({
+      ...d,
+      items: qty <= 0
+        ? d.items.filter((i: BookingLine) => i.equipment_id !== equipmentId)
+        : d.items.map((i: BookingLine) => i.equipment_id === equipmentId ? { ...i, qty } : i),
+    }));
   };
 
   const save = async () => {
@@ -96,6 +138,15 @@ export default function BookingsScreen() {
     if (!deleting) return;
     try { await api(`/bookings/${deleting.id}`, { method: "DELETE" }); setDeleting(null); setSelected(null); load(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
+  };
+
+  const dispatch = async (booking: Booking) => {
+    try {
+      const rental = await api<{ id: string }>(`/bookings/${booking.id}/dispatch`, { method: "POST" });
+      setSelected(null);
+      await load();
+      router.push(`/(app)/operations/rentals?open=${rental.id}` as any);
+    } catch (e: any) { Alert.alert("Dispatch failed", e.message); }
   };
 
   const columns = useMemo<ColumnDef<Booking>[]>(() => [
@@ -159,10 +210,74 @@ export default function BookingsScreen() {
       )}
 
       <DetailDrawer visible={!!selected} title={selected?.customer_name || "Booking"} subtitle={selected?.job_site || "No job site"} onClose={() => setSelected(null)} testID="booking-detail-drawer">
-        {selected ? <><View style={styles.detailGrid}><Detail label="Status" value={selected.status} badge /><Detail label="Start" value={new Date(selected.start_date).toLocaleDateString()} /><Detail label="End" value={new Date(selected.end_date).toLocaleDateString()} /><Detail label="Units" value={String((selected.items || []).reduce((sum, item) => sum + item.qty, 0))} /></View><SectionLabel>Reserved equipment</SectionLabel>{(selected.items || []).length ? (selected.items || []).map((item) => <View key={item.equipment_id} style={styles.detailRow}><View style={{ flex: 1 }}><Text style={typo.body}>{item.name}</Text><Mono style={styles.tableMono}>{equipmentIdentifier(item)}</Mono></View><Mono>{item.qty}</Mono></View>) : <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>No equipment reserved.</Text>}<SectionLabel>Notes</SectionLabel><Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text><Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /></> : null}
+        {selected ? <>
+          <View style={styles.detailGrid}><Detail label="Status" value={selected.status} badge /><Detail label="Start" value={new Date(selected.start_date).toLocaleDateString()} /><Detail label="End" value={new Date(selected.end_date).toLocaleDateString()} /><Detail label="Units" value={String((selected.items || []).reduce((sum, item) => sum + item.qty, 0))} /></View>
+          <SectionLabel>Reserved equipment</SectionLabel>
+          {(selected.items || []).length ? (selected.items || []).map((item) => <View key={item.equipment_id} style={styles.detailRow}><View style={{ flex: 1 }}><Text style={typo.body}>{item.name}</Text><Mono style={styles.tableMono}>{equipmentIdentifier(item)}</Mono></View><Mono>{item.qty}</Mono></View>) : <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>No equipment reserved.</Text>}
+          <SectionLabel>Notes</SectionLabel>
+          <Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text>
+          {selected.status === "confirmed" ? (
+            <Button title="Dispatch → Start Rental" onPress={() => dispatch(selected)} testID={`dispatch-booking-${selected.id}`} style={{ marginBottom: spacing.sm }} />
+          ) : null}
+          {selected.status === "dispatched" && selected.dispatched_rental_id ? (
+            <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />
+          ) : null}
+          <Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} />
+        </> : null}
       </DetailDrawer>
 
-      <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}><Screen title="New Booking" back rightAction={{ icon: "close", onPress: () => setCreating(false), testID: "close-new-booking" }}><Input label="Customer Name" value={draft?.customer_name || ""} onChangeText={(text) => setDraft({ ...draft, customer_name: text })} testID="bk-cust" /><Input label="Job Site" value={draft?.job_site || ""} onChangeText={(text) => setDraft({ ...draft, job_site: text })} testID="bk-site" /><Row style={{ gap: spacing.md }}><View style={{ flex: 1 }}><Input label="Start" value={draft?.start_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, start_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-start" /></View><View style={{ flex: 1 }}><Input label="End" value={draft?.end_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, end_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-end" /></View></Row><SectionLabel>Status</SectionLabel><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{["tentative", "confirmed", "cancelled"].map((status) => <SegBtn key={status} label={status} active={draft?.status === status} onPress={() => setDraft({ ...draft, status })} testID={`bk-status-${status}`} />)}</ScrollView><Input label="Notes" value={draft?.notes || ""} onChangeText={(text) => setDraft({ ...draft, notes: text })} testID="bk-notes" /><Button title="Save Booking" onPress={save} testID="save-booking-btn" /></Screen></Modal>
+      <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
+        <Screen title="New Booking" back rightAction={{ icon: "close", onPress: () => setCreating(false), testID: "close-new-booking" }}>
+          <Input label="Customer Name" value={draft?.customer_name || ""} onChangeText={(text) => setDraft({ ...draft, customer_name: text })} testID="bk-cust" />
+          <Input label="Job Site" value={draft?.job_site || ""} onChangeText={(text) => setDraft({ ...draft, job_site: text })} testID="bk-site" />
+          <Row style={{ gap: spacing.md }}>
+            <View style={{ flex: 1 }}><Input label="Start" value={draft?.start_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, start_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-start" /></View>
+            <View style={{ flex: 1 }}><Input label="End" value={draft?.end_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, end_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-end" /></View>
+          </Row>
+          <SectionLabel>Status</SectionLabel>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>
+            {["tentative", "confirmed", "cancelled"].map((status) => <SegBtn key={status} label={status} active={draft?.status === status} onPress={() => setDraft({ ...draft, status })} testID={`bk-status-${status}`} />)}
+          </ScrollView>
+
+          <SectionLabel>Equipment ({(draft?.items || []).length})</SectionLabel>
+          {(draft?.items || []).map((item: BookingLine) => {
+            const cap = availability[item.equipment_id];
+            const conflict = cap ? item.qty > cap.available : false;
+            return (
+              <Card key={item.equipment_id} style={{ marginBottom: spacing.sm }} testID={`bk-item-${item.sku}`}>
+                <Row style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={typo.body} numberOfLines={1}>{item.name}</Text>
+                    <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(item)} · {cap ? `${cap.available} available` : "—"}</Mono>
+                  </View>
+                  <TouchableOpacity onPress={() => updateItemQty(item.equipment_id, item.qty - 1)} style={styles.qtyBtn} testID={`bk-qty-minus-${item.sku}`}><Text style={styles.qtyText}>−</Text></TouchableOpacity>
+                  <Mono style={{ marginHorizontal: 12, fontSize: 18 }}>{item.qty}</Mono>
+                  <TouchableOpacity onPress={() => updateItemQty(item.equipment_id, item.qty + 1)} style={styles.qtyBtn} testID={`bk-qty-plus-${item.sku}`}><Text style={styles.qtyText}>+</Text></TouchableOpacity>
+                </Row>
+                {conflict ? <StatusBadge label={`Conflict — only ${cap!.available} available`} tone="error" /> : null}
+              </Card>
+            );
+          })}
+
+          <SectionLabel>Add equipment</SectionLabel>
+          <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search SKU or equipment…" testID="bk-eq-search" style={{ marginBottom: spacing.sm }} />
+          <View style={{ borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="bk-add-eq-list">
+            {equipment
+              .filter((e) => !(draft?.items || []).some((i: BookingLine) => i.equipment_id === e.id))
+              .filter((e) => !eqSearch.trim() || `${e.qr_code || ""} ${e.sku} ${e.name}`.toLowerCase().includes(eqSearch.trim().toLowerCase()))
+              .slice(0, 8)
+              .map((e) => (
+                <TouchableOpacity key={e.id} onPress={() => addItem(e)} style={styles.eqRow} testID={`bk-add-eq-${e.sku}`}>
+                  <View style={{ flex: 1 }}><Text style={typo.body}>{e.name}</Text><Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(e)}{availability[e.id] ? ` · ${availability[e.id].available} available` : ""}</Mono></View>
+                  <Ionicons name="add-circle" size={26} color={colors.primary} />
+                </TouchableOpacity>
+              ))}
+          </View>
+
+          <Input label="Notes" value={draft?.notes || ""} onChangeText={(text) => setDraft({ ...draft, notes: text })} testID="bk-notes" />
+          <Button title="Save Booking" onPress={save} testID="save-booking-btn" />
+        </Screen>
+      </Modal>
       <ConfirmDialog visible={!!deleting} title="Delete booking?" message={deleting ? `${deleting.customer_name}'s booking will be permanently removed.` : undefined} confirmLabel="Delete" onConfirm={del} onCancel={() => setDeleting(null)} testID="delete-booking-confirm" />
     </Screen>
   );
@@ -183,4 +298,7 @@ const styles = StyleSheet.create({
   detailGrid: { flexDirection: "row", flexWrap: "wrap", marginBottom: spacing.lg },
   detail: { width: "50%", paddingVertical: spacing.sm, gap: 5 },
   detailRow: { flexDirection: "row", alignItems: "center", paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  qtyBtn: { width: 36, height: 36, borderWidth: 1, borderColor: colors.ink, alignItems: "center", justifyContent: "center" },
+  qtyText: { fontSize: 20, fontWeight: "800", color: colors.ink },
+  eqRow: { flexDirection: "row", alignItems: "center", padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
 });

@@ -190,12 +190,26 @@ class RefreshReq(BaseModel):
 
 
 # Inventory ledger buckets. Every unit of an equipment SKU sits in exactly
-# one bucket at a time; `quantity` (owned) always equals the sum of all six.
-# Movements between buckets are the unit of truth (see LedgerEntry) —
+# one bucket at a time; `quantity` (owned) always equals the sum of all of
+# them. Movements between buckets are the unit of truth (see LedgerEntry) —
 # available/reserved/etc. on the Equipment doc are a maintained cache of the
-# ledger, not the source of it. Internal tool checkouts are tracked separately
-# from customer rentals so the accountable foreman/project stays visible.
-BUCKET_FIELDS = ["available", "reserved", "on_rental", "checked_out", "in_transit", "pending_inspection", "in_maintenance", "missing"]
+# ledger, not the source of it.
+#
+# staged/outbound/inbound are direction-specific job-dispatch buckets (see
+# Dispatch below): staged = pulled for an outbound job but still on-site;
+# outbound = loaded and left the yard, not yet delivered; inbound = picked
+# up from the job, en route back, not yet checked in.
+#
+# in_transit is kept separately and ONLY for Inventory > Transfers
+# (yard-to-yard relocation of stock, unrelated to a customer job) — it is
+# deliberately never used to represent outbound/inbound job movement, so a
+# unit's current bucket always answers "what job-relevant state is this in"
+# unambiguously. Internal tool checkouts are tracked separately from customer
+# rentals so the accountable foreman/project stays visible.
+BUCKET_FIELDS = [
+    "available", "reserved", "staged", "outbound", "on_rental", "inbound",
+    "checked_out", "pending_inspection", "in_maintenance", "missing", "in_transit",
+]
 
 
 class Equipment(BaseModel):
@@ -212,10 +226,13 @@ class Equipment(BaseModel):
     quantity: int = 1  # owned
     available: int = 1
     reserved: int = 0
+    staged: int = 0  # pulled for an outbound delivery, still at the yard
+    outbound: int = 0  # loaded and left the yard, not yet delivered
     on_rental: int = 0
     checked_out: int = 0  # internal tool checkout, separate from customer rentals
     checked_out_to: str = ""  # project foreman / project assignment label
-    in_transit: int = 0
+    inbound: int = 0  # picked up from the job, en route back, not yet checked in
+    in_transit: int = 0  # yard-to-yard Transfers only — see BUCKET_FIELDS note above
     pending_inspection: int = 0  # returned, awaiting inspection before going back to available
     in_maintenance: int = 0  # confirmed damaged / open maintenance ticket
     missing: int = 0  # unaccounted for at last physical count
@@ -348,6 +365,106 @@ class TransferCreate(BaseModel):
     note: str = ""
 
 
+# ----------------------------- Dispatch / Movements -------------------------
+# A Dispatch is a scheduled physical movement of equipment: OUTBOUND
+# (shop/yard -> job) or INBOUND (job -> shop/yard). It drives the equipment
+# ledger through direction-specific bucket stages as it progresses, and is
+# the single sanctioned path between a booking's reservation and an active
+# rental (outbound), and between an active rental and inspection (inbound).
+#
+# Status flows (validated per direction — see DISPATCH_FLOWS):
+#   outbound: scheduled -> staging -> ready -> loaded -> dispatched -> arrived -> completed
+#   inbound:  scheduled -> dispatched -> arrived -> loaded -> returning -> at_yard -> completed
+# "cancelled" is reachable from any non-terminal status in either flow.
+#
+# Each status maps to the bucket its lines' units currently sit in (see
+# dispatch_bucket_for_status). A status transition moves qty from the old
+# bucket to the new one in one ledger entry — so cancelling from any point
+# in either flow always resolves to a single correct ledger move back to
+# the flow's starting bucket, not a special-cased rollback per stage.
+DISPATCH_FLOWS = {
+    "outbound": ["scheduled", "staging", "ready", "loaded", "dispatched", "arrived", "completed"],
+    "inbound": ["scheduled", "dispatched", "arrived", "loaded", "returning", "at_yard", "completed"],
+}
+
+
+def dispatch_bucket_for_status(direction: str, status: str) -> str:
+    if direction == "outbound":
+        return {
+            "scheduled": "reserved", "staging": "reserved",
+            "ready": "staged", "loaded": "staged",
+            "dispatched": "outbound", "arrived": "outbound",
+            "completed": "on_rental",
+        }[status]
+    return {
+        "scheduled": "on_rental", "dispatched": "on_rental", "arrived": "on_rental",
+        "loaded": "inbound", "returning": "inbound", "at_yard": "inbound",
+        "completed": "pending_inspection",
+    }[status]
+
+
+class DispatchLine(BaseModel):
+    equipment_id: str
+    sku: str
+    name: str
+    qty: int
+
+
+class Dispatch(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    direction: str  # "outbound" | "inbound"
+    status: str = "scheduled"
+    scheduled_date: Optional[datetime] = None
+    customer_name: str
+    job_site: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    rental_id: Optional[str] = None
+    booking_id: Optional[str] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    lines: List[DispatchLine] = []
+    notes: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+    started_at: Optional[datetime] = None
+    arrived_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class DispatchCreate(BaseModel):
+    direction: str
+    scheduled_date: Optional[datetime] = None
+    customer_name: str
+    job_site: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    rental_id: Optional[str] = None
+    booking_id: Optional[str] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    lines: List[DispatchLine] = []
+    notes: str = ""
+
+
+class DispatchStatusUpdate(BaseModel):
+    status: str
+
+
+class DispatchAssignUpdate(BaseModel):
+    driver_name: Optional[str] = None
+    truck: Optional[str] = None
+    trailer: Optional[str] = None
+    crew: Optional[str] = None
+    scheduled_date: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
 class RentalLine(BaseModel):
     equipment_id: str
     sku: str
@@ -420,15 +537,25 @@ class ReturnLine(BaseModel):
     damaged_qty: int = 0  # of `qty`, how many came back visibly damaged — routed straight to maintenance instead of inspection
 
 
+class SchedulePickupCreate(BaseModel):
+    scheduled_date: Optional[datetime] = None
+    driver_name: str = ""
+    truck: str = ""
+    trailer: str = ""
+    crew: str = ""
+    notes: str = ""
+
+
 class Booking(BaseModel):
     id: str = Field(default_factory=gen_id)
     customer_name: str
     job_site: str = ""
     start_date: datetime
     end_date: datetime
-    status: str = "tentative"  # tentative, confirmed, cancelled
+    status: str = "tentative"  # tentative, confirmed, cancelled, dispatched
     items: List[RentalLine] = []
     notes: str = ""
+    dispatched_rental_id: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -1056,7 +1183,7 @@ async def equipment_breakdown(eq_id: str, _: UserPublic = Depends(get_current_us
             if line["equipment_id"] != eq_id:
                 continue
             delivered = line.get("delivered_qty") or line["qty"]
-            outstanding = delivered - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+            outstanding = delivered - line.get("returned_qty", 0)
             if outstanding > 0:
                 label = f"{r.get('job_site') or r['customer_name']} / Rental #{r['id'][:6]}"
                 rows.append({"qty": outstanding, "label": label, "kind": "rental", "rental_id": r["id"]})
@@ -1146,6 +1273,8 @@ async def list_inventory_counts(_: UserPublic = Depends(get_current_user)):
 
 @api.post("/inventory-counts/{count_id}/reconcile", response_model=InventoryCount)
 async def reconcile_inventory_count(count_id: str, body: ReconcileBody, user: UserPublic = Depends(require_role(Role.admin))):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required to reconcile a variance")
     doc = await db.inventory_counts.find_one({"id": count_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Count not found")
@@ -1227,6 +1356,205 @@ async def receive_transfer(transfer_id: str, user: UserPublic = Depends(require_
     return Transfer(**new_doc)
 
 
+# ----------------------------- Dispatch / Movements --------------------------
+async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> dict:
+    """Apply one status transition (including 'cancelled') to a dispatch doc:
+    moves its lines' qty between the buckets dispatch_bucket_for_status maps
+    the old and new status to, stamps the relevant timestamp, and — for an
+    outbound dispatch completing without an existing rental — creates the
+    Rental and marks any linked booking dispatched. Persists the change and
+    returns the updated doc (mutates `doc` in place too, so callers fast-
+    forwarding through several stages can just keep passing it back in)."""
+    direction = doc["direction"]
+    flow = DISPATCH_FLOWS[direction]
+    current = doc["status"]
+    old_bucket = dispatch_bucket_for_status(direction, current)
+    if new_status == "cancelled":
+        if direction == "outbound" and not doc.get("booking_id"):
+            # This dispatch made its own available -> reserved reservation on
+            # create (no booking backing it) — cancelling must release it all
+            # the way back to available, not leave it stuck in reserved.
+            new_bucket = "available"
+        else:
+            new_bucket = dispatch_bucket_for_status(direction, flow[0])
+    else:
+        new_bucket = dispatch_bucket_for_status(direction, new_status)
+
+    now = now_utc()
+    upd: dict = {"status": new_status, "updated_at": now}
+    if new_status == "dispatched" and not doc.get("started_at"):
+        upd["started_at"] = now
+    if new_status == "arrived" and not doc.get("arrived_at"):
+        upd["arrived_at"] = now
+    if new_status in ("completed", "cancelled"):
+        upd["completed_at"] = now
+
+    if old_bucket != new_bucket:
+        for line in doc["lines"]:
+            await apply_ledger_entry(
+                line["equipment_id"], line["qty"], old_bucket, new_bucket,
+                f"dispatch_{direction}_{new_status}", location=doc.get("job_site", ""),
+                rental_id=doc.get("rental_id"), booking_id=doc.get("booking_id"), created_by=user.name,
+            )
+
+    if direction == "outbound" and new_status == "completed" and not doc.get("rental_id"):
+        rental = Rental(
+            customer_name=doc["customer_name"], job_site=doc.get("job_site", ""),
+            start_date=doc.get("scheduled_date") or now_utc(), notes=doc.get("notes", ""),
+            lines=[RentalLine(equipment_id=l["equipment_id"], sku=l["sku"], name=l["name"], qty=l["qty"], daily_rate=0) for l in doc["lines"]],
+        )
+        await db.rentals.insert_one(rental.model_dump())
+        upd["rental_id"] = rental.id
+        if doc.get("booking_id"):
+            await db.bookings.update_one({"id": doc["booking_id"]}, {"$set": {"status": "dispatched", "dispatched_rental_id": rental.id}})
+
+    if direction == "inbound" and new_status == "completed" and doc.get("rental_id"):
+        # The truck physically picked these units up off the job — that's a
+        # return event. Credit it against the rental's lines the same way
+        # partial_return does, so the rental's outstanding/returned math and
+        # status stay correct regardless of which path (desk return vs.
+        # scheduled pickup) brought the units back.
+        rdoc = await db.rentals.find_one({"id": doc["rental_id"]}, {"_id": 0})
+        if rdoc:
+            rental = Rental(**rdoc)
+            for dline in doc["lines"]:
+                for rline in rental.lines:
+                    if rline.equipment_id == dline["equipment_id"]:
+                        remaining = resolve_delivered_qty(rline) - rline.returned_qty
+                        rline.returned_qty += min(dline["qty"], remaining)
+                        break
+            all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
+            any_returned = any(l.returned_qty > 0 for l in rental.lines)
+            rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
+            await db.rentals.update_one({"id": doc["rental_id"]}, {"$set": rental.model_dump()})
+
+    await db.dispatches.update_one({"id": doc["id"]}, {"$set": upd})
+    doc.update(upd)
+    return doc
+
+
+@api.get("/dispatches", response_model=List[Dispatch])
+async def list_dispatches(
+    direction: Optional[str] = None,
+    status: Optional[str] = None,
+    rental_id: Optional[str] = None,
+    booking_id: Optional[str] = None,
+    _: UserPublic = Depends(get_current_user),
+):
+    query: dict = {}
+    if direction:
+        query["direction"] = direction
+    if status:
+        query["status"] = status
+    if rental_id:
+        query["rental_id"] = rental_id
+    if booking_id:
+        query["booking_id"] = booking_id
+    docs = await db.dispatches.find(query, {"_id": 0}).sort("scheduled_date", 1).to_list(2000)
+    return [Dispatch(**d) for d in docs]
+
+
+@api.get("/dispatches/{d_id}", response_model=Dispatch)
+async def get_dispatch(d_id: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    return Dispatch(**doc)
+
+
+@api.post("/dispatches", response_model=Dispatch, status_code=201)
+async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    if body.direction not in DISPATCH_FLOWS:
+        raise HTTPException(400, "direction must be 'outbound' or 'inbound'")
+    if not body.lines:
+        raise HTTPException(400, "Dispatch needs at least one equipment line")
+    if body.direction == "inbound" and not body.rental_id:
+        raise HTTPException(400, "Inbound dispatch requires rental_id — it can only pick up units already on that rental")
+
+    dispatch = Dispatch(**body.model_dump(), created_by=user.name)
+    starting_bucket = dispatch_bucket_for_status(dispatch.direction, dispatch.status)
+
+    if dispatch.direction == "outbound" and not dispatch.booking_id:
+        # No booking behind this dispatch to have already reserved the units
+        # — reserve them from available right now, so the dispatch's own
+        # bucket (starting_bucket == "reserved") is actually backed by stock.
+        for line in dispatch.lines:
+            eq = await db.equipment.find_one({"id": line.equipment_id}, {"_id": 0})
+            if not eq or eq.get("available", 0) < line.qty:
+                raise HTTPException(400, f"Not enough available {line.name} to schedule this dispatch")
+        for line in dispatch.lines:
+            await apply_ledger_entry(
+                line.equipment_id, line.qty, "available", starting_bucket, "dispatch_scheduled",
+                location=dispatch.job_site, booking_id=dispatch.booking_id, created_by=user.name,
+            )
+
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch
+
+
+@api.patch("/dispatches/{d_id}/assign", response_model=Dispatch)
+async def assign_dispatch(d_id: str, body: DispatchAssignUpdate, _: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_utc()
+        await db.dispatches.update_one({"id": d_id}, {"$set": upd})
+    new_doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    return Dispatch(**new_doc)
+
+
+@api.patch("/dispatches/{d_id}/status", response_model=Dispatch)
+async def update_dispatch_status(d_id: str, body: DispatchStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await db.dispatches.find_one({"id": d_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    current = doc["status"]
+    if current in ("completed", "cancelled"):
+        raise HTTPException(400, f"Dispatch already {current}")
+
+    flow = DISPATCH_FLOWS[doc["direction"]]
+    new_status = body.status
+    if new_status != "cancelled":
+        if new_status not in flow:
+            raise HTTPException(400, f"Invalid status for a {doc['direction']} dispatch")
+        cur_idx = flow.index(current)
+        new_idx = flow.index(new_status)
+        if new_idx != cur_idx + 1:
+            raise HTTPException(400, f"Cannot jump from '{current}' to '{new_status}' — next step is '{flow[cur_idx + 1]}'")
+
+    updated = await _set_dispatch_status(doc, new_status, user)
+    return Dispatch(**updated)
+
+
+async def _create_outbound_dispatch_for_booking(doc: dict, user: UserPublic) -> Optional[dict]:
+    """Create the linked outbound Dispatch for a just-confirmed booking. The
+    booking's own reservation already moved units available -> reserved on
+    booking creation, so this does NOT touch buckets — create_dispatch skips
+    its reserve step whenever booking_id is set. No-ops (returns None) if a
+    live (non-cancelled) outbound dispatch is already linked to this booking,
+    so re-confirming or a retried call never double-creates one."""
+    if not doc.get("items"):
+        return None
+    existing = await db.dispatches.find_one(
+        {"booking_id": doc["id"], "direction": "outbound", "status": {"$ne": "cancelled"}}, {"_id": 0}
+    )
+    if existing:
+        return existing
+    dispatch = Dispatch(
+        direction="outbound",
+        scheduled_date=doc.get("start_date"),
+        customer_name=doc["customer_name"],
+        job_site=doc.get("job_site", ""),
+        booking_id=doc["id"],
+        lines=[DispatchLine(**item) for item in doc["items"]],
+        created_by=user.name,
+    )
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch.model_dump()
+
+
 # ----------------------------- Serialized units -----------------------------
 @api.get("/equipment/{eq_id}/serials", response_model=List[SerialUnit])
 async def list_serial_units(eq_id: str, _: UserPublic = Depends(get_current_user)):
@@ -1292,7 +1620,10 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
     for ret in returns:
         for line in rental.lines:
             if line.equipment_id == ret.equipment_id:
-                remaining = line.qty - line.returned_qty - line.damaged_qty
+                # returned_qty already counts every physically-returned unit,
+                # damaged or not — damaged_qty is a subset marker, not an
+                # additional deduction.
+                remaining = resolve_delivered_qty(line) - line.returned_qty
                 qty_back = min(ret.qty, remaining)
                 damaged = min(ret.damaged_qty, qty_back)
                 clean = qty_back - damaged
@@ -1314,11 +1645,54 @@ async def partial_return(rental_id: str, returns: List[ReturnLine] = Body(...), 
                         notes=f"Reported damaged on return from {rental.customer_name}.", created_by=user.name,
                     )
                     await db.shop_tasks.insert_one(task.model_dump())
-    all_returned = all((l.returned_qty + l.damaged_qty) >= l.qty for l in rental.lines)
-    any_returned = any((l.returned_qty + l.damaged_qty) > 0 for l in rental.lines)
+    all_returned = all(l.returned_qty >= resolve_delivered_qty(l) for l in rental.lines)
+    any_returned = any(l.returned_qty > 0 for l in rental.lines)
     rental.status = "returned" if all_returned else ("partially_returned" if any_returned else "active")
     await db.rentals.update_one({"id": rental_id}, {"$set": rental.model_dump()})
     return rental
+
+
+@api.post("/rentals/{rental_id}/schedule-pickup", response_model=Dispatch, status_code=201)
+async def schedule_pickup(rental_id: str, body: SchedulePickupCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    """Create the inbound Dispatch that sends a truck back out to a job to
+    collect a rental's still-outstanding units. Lines are derived from what's
+    actually left on site (delivered - returned) — already-returned lines are
+    skipped so the driver isn't sent to pick up units that came back some
+    other way (e.g. a desk return)."""
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+    rental = Rental(**doc)
+    if rental.status == "returned":
+        raise HTTPException(400, "Rental is already fully returned — nothing left to pick up")
+    existing = await db.dispatches.find_one(
+        {"rental_id": rental_id, "direction": "inbound", "status": {"$nin": ["completed", "cancelled"]}}, {"_id": 0}
+    )
+    if existing:
+        raise HTTPException(400, "A pickup is already scheduled for this rental")
+
+    lines = []
+    for line in rental.lines:
+        outstanding = resolve_delivered_qty(line) - line.returned_qty
+        if outstanding > 0:
+            lines.append(DispatchLine(equipment_id=line.equipment_id, sku=line.sku, name=line.name, qty=outstanding))
+    if not lines:
+        raise HTTPException(400, "Nothing outstanding to pick up on this rental")
+
+    dispatch = Dispatch(
+        direction="inbound",
+        scheduled_date=body.scheduled_date,
+        customer_name=rental.customer_name,
+        job_site=rental.job_site,
+        lat=rental.lat, lng=rental.lng,
+        rental_id=rental_id,
+        driver_name=body.driver_name, truck=body.truck, trailer=body.trailer, crew=body.crew,
+        lines=lines,
+        notes=body.notes,
+        created_by=user.name,
+    )
+    await db.dispatches.insert_one(dispatch.model_dump())
+    return dispatch
 
 
 @api.patch("/rentals/{rental_id}/location", response_model=Rental)
@@ -1342,7 +1716,10 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     # units already returned/damaged for this rental are left alone.
     old_by_eq: dict[str, int] = {}
     for line in doc.get("lines", []):
-        remaining = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+        # returned_qty already counts every physically-returned unit, damaged
+        # or not — damaged_qty is a subset marker, not an additional deduction.
+        delivered = line.get("delivered_qty") or line["qty"]
+        remaining = delivered - line.get("returned_qty", 0)
         old_by_eq[line["equipment_id"]] = old_by_eq.get(line["equipment_id"], 0) + remaining
 
     new_by_eq: dict[str, int] = {}
@@ -1368,8 +1745,8 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     if not upd["lines"]:
         upd["status"] = "active"
     else:
-        all_ret = all((l["returned_qty"] + l["damaged_qty"]) >= l["qty"] for l in upd["lines"])
-        any_ret = any((l["returned_qty"] + l["damaged_qty"]) > 0 for l in upd["lines"])
+        all_ret = all(l["returned_qty"] >= (l.get("delivered_qty") or l["qty"]) for l in upd["lines"])
+        any_ret = any(l["returned_qty"] > 0 for l in upd["lines"])
         upd["status"] = "returned" if all_ret else ("partially_returned" if any_ret else "active")
 
     # Preserve id, created_at, and legacy due_date.
@@ -1388,9 +1765,12 @@ async def delete_rental(rental_id: str, user: UserPublic = Depends(require_role(
     doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Not found")
-    # restore inventory: only the still-on_rental portion returns to available
+    # restore inventory: only the still-on_rental portion returns to available.
+    # returned_qty already counts every physically-returned unit, damaged or
+    # not — damaged_qty is a subset marker, not an additional deduction.
     for line in doc.get("lines", []):
-        remaining = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+        delivered = line.get("delivered_qty") or line["qty"]
+        remaining = delivered - line.get("returned_qty", 0)
         if remaining > 0:
             await apply_ledger_entry(
                 line["equipment_id"], remaining, "on_rental", "available", "rental_deleted",
@@ -1425,6 +1805,8 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
     doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Booking not found")
+    if doc.get("status") == "dispatched":
+        raise HTTPException(400, "Booking already dispatched to a rental — manage it from the rental instead")
     if body.status not in ("tentative", "confirmed", "cancelled"):
         raise HTTPException(400, "Invalid status")
     was_active = doc.get("status") != "cancelled"
@@ -1452,6 +1834,7 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
                 related_booking_id=bk_id, created_by=user.name,
             )
             await db.shop_tasks.insert_one(task.model_dump())
+        await _create_outbound_dispatch_for_booking(doc, user)
     await db.bookings.update_one({"id": bk_id}, {"$set": {"status": body.status}})
     new_doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
     return Booking(**new_doc)
@@ -1460,7 +1843,9 @@ async def update_booking_status(bk_id: str, body: BookingStatusUpdate, user: Use
 @api.delete("/bookings/{bk_id}")
 async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
     doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
-    if doc and doc.get("status") != "cancelled":
+    # A dispatched booking's units already moved reserved -> on_rental under
+    # the rental it created — nothing is left in "reserved" to release.
+    if doc and doc.get("status") not in ("cancelled", "dispatched"):
         for item in doc.get("items", []):
             await apply_ledger_entry(
                 item["equipment_id"], item["qty"], "reserved", "available", "booking_released",
@@ -1468,6 +1853,33 @@ async def delete_booking(bk_id: str, user: UserPublic = Depends(require_role(Rol
             )
     await db.bookings.delete_one({"id": bk_id})
     return {"ok": True}
+
+
+@api.post("/bookings/{bk_id}/dispatch", response_model=Rental, status_code=201)
+async def dispatch_booking(bk_id: str, user: UserPublic = Depends(require_role(Role.foreman))):
+    """Quick-dispatch shortcut: fast-forwards a confirmed booking's linked
+    outbound Dispatch through the rest of DISPATCH_FLOWS straight to
+    'completed' in one call, for a booking that doesn't need its staging/
+    loading steps tracked individually. It walks the exact same status path
+    (and bucket moves) a manually-staged dispatch would, via repeated
+    _set_dispatch_status calls, so the Rental it produces and the bucket
+    accounting are identical either way — this is not a separate path."""
+    doc = await db.bookings.find_one({"id": bk_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Booking not found")
+    if doc.get("status") != "confirmed":
+        raise HTTPException(400, "Only a confirmed booking can be dispatched")
+    if not doc.get("items"):
+        raise HTTPException(400, "Booking has no equipment to dispatch")
+
+    dispatch_doc = await _create_outbound_dispatch_for_booking(doc, user)
+    flow = DISPATCH_FLOWS["outbound"]
+    cur_idx = flow.index(dispatch_doc["status"])
+    for status in flow[cur_idx + 1:]:
+        dispatch_doc = await _set_dispatch_status(dispatch_doc, status, user)
+
+    rental_doc = await db.rentals.find_one({"id": dispatch_doc["rental_id"]}, {"_id": 0})
+    return Rental(**rental_doc)
 
 
 @api.get("/bookings/capacity")
@@ -1482,9 +1894,12 @@ async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_u
     bookings = await db.bookings.find({"status": {"$in": ["tentative", "confirmed"]}}, {"_id": 0}).to_list(1000)
     usage: dict[str, int] = {}
     # Active rentals commit inventory until returned (no due_date used).
+    # returned_qty already counts every physically-returned unit, damaged or
+    # not — damaged_qty is a subset marker, not an additional deduction.
     for r in rentals:
         for line in r.get("lines", []):
-            rem = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+            delivered = line.get("delivered_qty") or line["qty"]
+            rem = delivered - line.get("returned_qty", 0)
             if rem > 0:
                 usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
     for b in bookings:
@@ -1523,7 +1938,8 @@ async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_curren
         jobs: dict[str, List[str]] = {}
         for r in rentals:
             for line in r.get("lines", []):
-                rem = line["qty"] - line.get("returned_qty", 0) - line.get("damaged_qty", 0)
+                delivered = line.get("delivered_qty") or line["qty"]
+                rem = delivered - line.get("returned_qty", 0)
                 if rem > 0:
                     usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
                     jobs.setdefault(line["equipment_id"], []).append(r.get("job_site") or r["customer_name"])

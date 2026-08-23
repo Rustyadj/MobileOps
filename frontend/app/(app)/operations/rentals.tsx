@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
@@ -37,6 +37,7 @@ type Rental = {
   lat?: number | null; lng?: number | null;
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
+type Dispatch = { id: string; direction: "outbound" | "inbound"; status: string; rental_id?: string | null; scheduled_date?: string | null; driver_name: string };
 type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "lines";
 type RentalDirection = "outbound" | "inbound";
 type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
@@ -50,10 +51,12 @@ const STATUS_OPTIONS = [
 
 const lineLifecycle = (line: Line) => {
   const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
+  // returned_qty already counts every physically-returned unit, damaged or
+  // not — damaged_qty is a subset marker, not an additional deduction.
   return {
     ordered: line.qty,
     delivered,
-    onSite: Math.max(0, delivered - line.returned_qty - line.damaged_qty),
+    onSite: Math.max(0, delivered - line.returned_qty),
     returned: line.returned_qty,
     damaged: line.damaged_qty,
   };
@@ -63,10 +66,13 @@ const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDat
 
 export default function RentalsScreen() {
   const { isShellWide, width } = useBreakpoint();
-  const params = useLocalSearchParams<{ open?: string }>();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [equipment, setEquipment] = useState<Eq[]>([]);
   const [site, setSite] = useState<Site | null>(null);
+  const [dispatches, setDispatches] = useState<Dispatch[]>([]);
+  const [pickupBusy, setPickupBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -86,12 +92,13 @@ export default function RentalsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [r, e, s] = await Promise.all([
+      const [r, e, s, d] = await Promise.all([
         api<Rental[]>("/rentals"),
         api<Eq[]>("/equipment"),
         api<Site>("/site"),
+        api<Dispatch[]>("/dispatches").catch(() => []),
       ]);
-      setRentals(r); setEquipment(e); setSite(s);
+      setRentals(r); setEquipment(e); setSite(s); setDispatches(d);
       setSelected((current) => current ? r.find((rental) => rental.id === current.id) || null : null);
     } catch (err) { console.warn(err); }
   }, []);
@@ -169,6 +176,11 @@ export default function RentalsScreen() {
     });
     setCreating(true);
   };
+
+  useEffect(() => {
+    if (params.new) newRental();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.new]);
 
   const editRental = (r: Rental) => {
     setDraft({
@@ -260,6 +272,23 @@ export default function RentalsScreen() {
   const del = async (id: string) => {
     try { await api(`/rentals/${id}`, { method: "DELETE" }); load(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
+  };
+
+  const pickupFor = (rentalId: string) => dispatches.find(
+    (d) => d.direction === "inbound" && d.rental_id === rentalId && d.status !== "completed" && d.status !== "cancelled"
+  );
+
+  const schedulePickup = async (rentalId: string) => {
+    setPickupBusy(true);
+    try {
+      const dispatch = await api<Dispatch>(`/rentals/${rentalId}/schedule-pickup`, { method: "POST", body: JSON.stringify({}) });
+      await load();
+      router.push(`/(app)/operations/dispatch?open=${dispatch.id}` as any);
+    } catch (e: any) {
+      Alert.alert("Schedule pickup failed", e.message);
+    } finally {
+      setPickupBusy(false);
+    }
   };
 
   const openReturn = (rental: Rental, line: Line) => {
@@ -506,6 +535,15 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <LifecycleStrip line={l} />
               </View>
             ))}
+            <View style={{ marginTop: spacing.sm }}>
+              <PickupStatus
+                dispatch={pickupFor(r.id)}
+                rentalReturned={r.status === "returned"}
+                onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
+                onSchedule={() => schedulePickup(r.id)}
+                busy={pickupBusy}
+              />
+            </View>
             <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
               <View style={{ flex: 1 }}>
                 <Button title="Edit" onPress={() => editRental(r)} variant="outline" testID={`edit-rental-${r.id}`} />
@@ -576,6 +614,15 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               ))}
             </DetailSection>
             {selected.notes ? <DetailSection label="Notes"><Text style={styles.detailText}>{selected.notes}</Text></DetailSection> : null}
+            <DetailSection label="Pickup">
+              <PickupStatus
+                dispatch={pickupFor(selected.id)}
+                rentalReturned={selected.status === "returned"}
+                onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
+                onSchedule={() => schedulePickup(selected.id)}
+                busy={pickupBusy}
+              />
+            </DetailSection>
             <View style={styles.drawerActions}>
               <Button title="Edit Rental" onPress={() => editRental(selected)} testID={`edit-rental-${selected.id}`} />
               <View style={styles.drawerActionRow}>
@@ -816,6 +863,30 @@ const DetailSection: React.FC<{ label: string; children: React.ReactNode }> = ({
 const DetailMetric: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <View style={styles.detailMetric}><Text style={styles.detailLabel}>{label}</Text><Mono style={styles.detailMetricValue}>{value}</Mono></View>
 );
+
+const PickupStatus: React.FC<{
+  dispatch?: Dispatch;
+  rentalReturned: boolean;
+  onOpen: (id: string) => void;
+  onSchedule: () => void;
+  busy: boolean;
+}> = ({ dispatch, rentalReturned, onOpen, onSchedule, busy }) => {
+  if (rentalReturned) {
+    return <Text style={typo.bodySmall}>Fully returned — no pickup needed.</Text>;
+  }
+  if (dispatch) {
+    return (
+      <TouchableOpacity onPress={() => onOpen(dispatch.id)} testID="pickup-status-row">
+        <Text style={styles.detailTitle}>
+          {dispatch.scheduled_date ? new Date(dispatch.scheduled_date).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : "Time not set"}
+        </Text>
+        <Text style={styles.detailText}>Driver: {dispatch.driver_name || "Unassigned"}</Text>
+        <StatusBadge label={dispatch.status} />
+      </TouchableOpacity>
+    );
+  }
+  return <Button title="Schedule Pickup" onPress={onSchedule} loading={busy} variant="outline" testID="schedule-pickup-btn" />;
+};
 
 const RentalDirectionTabs: React.FC<{
   direction: RentalDirection;

@@ -19,6 +19,7 @@ type ShopTask = {
   checklist: ChecklistItem[]; related_booking_id: string | null; created_at: string;
 };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string };
+type Dispatch = { id: string; direction: string; status: string; booking_id: string | null };
 
 const statusTone = (status: string): StatusTone =>
   status === "done" ? "success" : status === "blocked" ? "error" : status === "in_progress" ? "warning" : "neutral";
@@ -29,14 +30,19 @@ export default function StagingScreen() {
   const router = useRouter();
   const [tasks, setTasks] = useState<ShopTask[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<ShopTask | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [t, b] = await Promise.all([api<ShopTask[]>("/shop-tasks"), api<Booking[]>("/bookings")]);
+      const [t, b, d] = await Promise.all([
+        api<ShopTask[]>("/shop-tasks"),
+        api<Booking[]>("/bookings"),
+        api<Dispatch[]>("/dispatches").catch(() => []),
+      ]);
       const staging = t.filter((task) => (task as any).task_type === "staging");
-      setTasks(staging); setBookings(b);
+      setTasks(staging); setBookings(b); setDispatches(d);
       setSelected((cur) => cur ? staging.find((x) => x.id === cur.id) || null : null);
     } catch (e) { console.warn(e); }
   }, []);
@@ -52,6 +58,10 @@ export default function StagingScreen() {
   }), [tasks]);
 
   const progress = (t: ShopTask) => t.checklist.length ? `${t.checklist.filter((i) => i.done).length}/${t.checklist.length} staged` : "No checklist";
+  const progressPct = (t: ShopTask) => t.checklist.length ? Math.round((t.checklist.filter((i) => i.done).length / t.checklist.length) * 100) : 0;
+  const dispatchFor = (bookingId: string | null) => bookingId
+    ? dispatches.find((d) => d.direction === "outbound" && d.booking_id === bookingId && d.status !== "completed" && d.status !== "cancelled")
+    : undefined;
 
   const toggleChecklistItem = async (task: ShopTask, idx: number) => {
     const checklist = task.checklist.map((item, i) => i === idx ? { ...item, done: !item.done } : item);
@@ -82,7 +92,7 @@ export default function StagingScreen() {
               <Row style={{ gap: 8, alignItems: "flex-start" }}>
                 <View style={{ flex: 1 }}>
                   <H3>{t.title}</H3>
-                  <Text style={[typo.label, { marginTop: 2 }]}>{booking?.job_site || booking?.customer_name || "No job linked"} · Due {shortDate(t.due_date)} · {progress(t)}</Text>
+                  <Text style={[typo.label, { marginTop: 2 }]}>{booking?.job_site || booking?.customer_name || "No job linked"} · Due {shortDate(t.due_date)} · {progressPct(t)}% staged</Text>
                 </View>
                 <StatusBadge label={pretty(t.status)} tone={statusTone(t.status)} />
               </Row>
@@ -91,9 +101,25 @@ export default function StagingScreen() {
         );
       })}
 
-      <DetailDrawer visible={!!selected} title={selected?.title || "Staging task"} subtitle={selected ? progress(selected) : undefined} onClose={() => setSelected(null)} testID="staging-drawer">
+      <DetailDrawer visible={!!selected} title={selected?.title || "Staging task"} subtitle={selected ? `${progress(selected)} · ${progressPct(selected)}% staged` : undefined} onClose={() => setSelected(null)} testID="staging-drawer">
         {selected ? (
           <View>
+            {dispatchFor(selected.related_booking_id) ? (
+              <View style={{ marginBottom: spacing.lg }}>
+                <SectionLabel>Outbound dispatch</SectionLabel>
+                <Row style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <StatusBadge label={pretty(dispatchFor(selected.related_booking_id)!.status)} />
+                  <Button
+                    title="Open in Dispatch"
+                    variant="outline"
+                    onPress={() => router.push(`/(app)/operations/dispatch?open=${dispatchFor(selected.related_booking_id)!.id}` as any)}
+                    fullWidth={false}
+                    style={{ height: 34, paddingHorizontal: 14 }}
+                    testID="staging-open-dispatch"
+                  />
+                </Row>
+              </View>
+            ) : null}
             <SectionLabel>Status</SectionLabel>
             <Row style={{ gap: spacing.xs, marginBottom: spacing.lg, flexWrap: "wrap" }}>
               {["to_do", "in_progress", "blocked", "done"].map((s) => (

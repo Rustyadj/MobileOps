@@ -18,6 +18,11 @@ type ShopTask = {
   related_booking_id: string | null;
   related_equipment_id: string | null;
 };
+type DispatchDoc = {
+  id: string; direction: "outbound" | "inbound"; status: string;
+  scheduled_date: string | null; customer_name: string; job_site: string;
+  rental_id: string | null; driver_name: string; truck: string;
+};
 
 const arrayResponse = <T,>(value: unknown): T[] => Array.isArray(value) ? value as T[] : [];
 const rowsResponse = <T,>(value: unknown): T[] => {
@@ -27,7 +32,7 @@ const rowsResponse = <T,>(value: unknown): T[] => {
 
 export type AttentionItem = {
   id: string;
-  kind: "rental-overdue" | "due-soon" | "returning-today" | "shortage" | "pending-inspection" | "booking-missing-site" | "damaged-maintenance" | "count-variance" | "loadout-incomplete";
+  kind: "rental-overdue" | "due-soon" | "returning-today" | "shortage" | "pending-inspection" | "booking-missing-site" | "damaged-maintenance" | "count-variance" | "loadout-incomplete" | "pickup-overdue" | "inbound-not-checked-in" | "dispatch-unassigned" | "rental-no-pickup";
   title: string;
   subtitle: string;
   route: string;
@@ -47,7 +52,9 @@ const rentalLabel = (id: string) => id.toUpperCase().startsWith("RNT-") ? id.toU
 const sameLocalDay = (left: Date, right: Date) => left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 const lineOutstanding = (line: RentalLine) => {
   const delivered = (line.delivered_qty ?? 0) > 0 ? line.delivered_qty ?? line.qty : line.qty;
-  return Math.max(0, delivered - line.returned_qty - (line.damaged_qty ?? 0));
+  // returned_qty already counts every physically-returned unit, damaged or
+  // not — damaged_qty is a subset marker, not an additional deduction.
+  return Math.max(0, delivered - line.returned_qty);
 };
 const outstandingUnits = (rental: Rental) => rental.lines.reduce((sum, line) => sum + lineOutstanding(line), 0);
 const unitLabel = (name: string, quantity: number) => `${quantity} ${name.toLowerCase()}`;
@@ -59,13 +66,14 @@ export function useNeedsAttention(): AttentionData {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rentals, bookings, equipment, shortages, inventoryCounts, shopTasks] = await Promise.all([
+      const [rentals, bookings, equipment, shortages, inventoryCounts, shopTasks, dispatches] = await Promise.all([
         api<unknown>("/rentals").then(arrayResponse<Rental>).catch(() => []),
         api<unknown>("/bookings").then(arrayResponse<Booking>).catch(() => []),
         api<unknown>("/equipment").then(arrayResponse<Equipment>).catch(() => []),
         api<unknown>("/dashboard/shortages?days=14").then(rowsResponse<Shortage>).catch(() => []),
         api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>).catch(() => []),
         api<unknown>("/shop-tasks").then(arrayResponse<ShopTask>).catch(() => []),
+        api<unknown>("/dispatches").then(arrayResponse<DispatchDoc>).catch(() => []),
       ]);
       const out: AttentionItem[] = [];
       const now = new Date();
@@ -147,6 +155,33 @@ export function useNeedsAttention(): AttentionData {
         if (!startsAt || startsAt > nextDay) continue;
         out.push({ id: `loadout-${task.id}`, kind: "loadout-incomplete", title: `Loadout for ${booking?.job_site || booking?.customer_name || task.title} not complete`, subtitle: `Starts ${startsAt.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`, route: "/(app)/shop/staging" });
       }
+
+      const liveDispatches = dispatches.filter((d) => d.status !== "completed" && d.status !== "cancelled");
+      for (const d of liveDispatches) {
+        const label = d.job_site || d.customer_name;
+        if (d.direction === "inbound") {
+          if (d.scheduled_date && new Date(d.scheduled_date) < now && d.status === "scheduled") {
+            out.push({ id: `pickup-overdue-${d.id}`, kind: "pickup-overdue", title: `${d.customer_name} pickup overdue`, subtitle: `${label} · was scheduled ${new Date(d.scheduled_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`, route: `/(app)/operations/dispatch?open=${d.id}` });
+          }
+          if (d.status === "at_yard") {
+            out.push({ id: `not-checked-in-${d.id}`, kind: "inbound-not-checked-in", title: `${d.customer_name} arrived at yard, not checked in`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
+          }
+        }
+        const needsAssignment = d.direction === "outbound" ? ["loaded", "dispatched"].includes(d.status) : d.status !== "scheduled";
+        if (needsAssignment && !d.driver_name.trim()) {
+          out.push({ id: `unassigned-driver-${d.id}`, kind: "dispatch-unassigned", title: `${d.customer_name} ${d.direction} has no driver assigned`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
+        } else if (needsAssignment && !d.truck.trim()) {
+          out.push({ id: `unassigned-truck-${d.id}`, kind: "dispatch-unassigned", title: `${d.customer_name} ${d.direction} has no truck assigned`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
+        }
+      }
+
+      const rentalsWithLivePickup = new Set(liveDispatches.filter((d) => d.direction === "inbound" && d.rental_id).map((d) => d.rental_id));
+      for (const rental of rentals) {
+        if (rental.status === "returned" || rentalsWithLivePickup.has(rental.id)) continue;
+        if (!rental.due_date || new Date(rental.due_date) >= now) continue;
+        out.push({ id: `no-pickup-${rental.id}`, kind: "rental-no-pickup", title: `${rental.customer_name} rental overdue with no pickup scheduled`, subtitle: `${rental.job_site || "No job site"} · due ${new Date(rental.due_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`, route: `/(app)/operations/rentals?open=${rental.id}` });
+      }
+
       setItems(out);
     } finally {
       setLoading(false);

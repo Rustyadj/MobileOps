@@ -21,7 +21,9 @@ type OutstandingRow = { rental: Rental; line: Line; onSite: number };
 const shortDate = (v?: string | null) => v ? new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
 const onSiteQty = (line: Line) => {
   const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
-  return Math.max(0, delivered - line.returned_qty - line.damaged_qty);
+  // returned_qty already counts every physically-returned unit, damaged or
+  // not — damaged_qty is a subset marker, not an additional deduction.
+  return Math.max(0, delivered - line.returned_qty);
 };
 
 export default function ReturnsScreen() {
