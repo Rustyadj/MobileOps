@@ -8,6 +8,7 @@ import * as ImagePicker from "expo-image-picker";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, SectionLabel, Row } from "@/src/components/ui";
 import { PageHeader } from "@/src/components/layout/PageHeader";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { api } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
@@ -25,9 +26,10 @@ export default function SiteAdminScreen() {
   const { isShellWide } = useBreakpoint();
   const [site, setSite] = useState<Site>(blank);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const load = useCallback(async () => {
-    try { setSite(await api<Site>("/site")); } catch (e) { console.warn(e); }
+    try { setSite(await api<Site>("/site")); setLoadError(false); } catch (e) { console.warn(e); setLoadError(true); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -54,12 +56,14 @@ export default function SiteAdminScreen() {
     finally { setBusy(false); }
   };
 
+  const isAdmin = user?.role === "admin";
+
   const desktopHeader = (
     <PageHeader
       title="Site Admin"
       subtitle="Brand · Logo · Company contact"
       actions={
-        <Button title="Save Settings" onPress={save} loading={busy} fullWidth={false} style={{ paddingHorizontal: 20, height: 38 }} testID="save-site-btn" />
+        isAdmin ? <Button title="Save Settings" onPress={save} loading={busy} fullWidth={false} style={{ paddingHorizontal: 20, height: 38 }} testID="save-site-btn" /> : undefined
       }
     />
   );
@@ -76,6 +80,7 @@ export default function SiteAdminScreen() {
     >
       <View style={isShellWide ? { flex: 1 } : undefined}>
         <View style={isShellWide ? { paddingHorizontal: spacing.xl, paddingBottom: spacing.xl } : undefined}>
+          {loadError ? <ErrorState message="Couldn't load site settings." onRetry={load} testID="site-admin-error" /> : null}
           <View style={isShellWide ? { flexDirection: "row", gap: spacing.lg, alignItems: "flex-start" } : undefined}>
             <View style={isShellWide ? { width: 220 } : undefined}>
               <SectionLabel>Logo</SectionLabel>
@@ -87,32 +92,34 @@ export default function SiteAdminScreen() {
                     <Text style={[typo.label, { color: colors.inkMuted }]}>No logo</Text>
                   </View>
                 )}
-                <Row style={{ gap: spacing.sm, alignSelf: "stretch" }}>
-                  <View style={{ flex: 1 }}><Button title="Upload" onPress={pickLogo} variant="outline" testID="upload-logo-btn" /></View>
-                  {site.logo_base64 ? (
-                    <View style={{ flex: 1 }}><Button title="Remove" onPress={() => setSite({ ...site, logo_base64: "" })} variant="danger" testID="remove-logo-btn" /></View>
-                  ) : null}
-                </Row>
+                {isAdmin ? (
+                  <Row style={{ gap: spacing.sm, alignSelf: "stretch" }}>
+                    <View style={{ flex: 1 }}><Button title="Upload" onPress={pickLogo} variant="outline" testID="upload-logo-btn" /></View>
+                    {site.logo_base64 ? (
+                      <View style={{ flex: 1 }}><Button title="Remove" onPress={() => setSite({ ...site, logo_base64: "" })} variant="danger" testID="remove-logo-btn" /></View>
+                    ) : null}
+                  </Row>
+                ) : null}
               </Card>
             </View>
 
             <View style={{ flex: 1 }}>
               <SectionLabel>Brand</SectionLabel>
               <Card style={{ marginBottom: spacing.md }}>
-                <Input label="Brand Name" value={site.brand_name} onChangeText={(t) => setSite({ ...site, brand_name: t })} testID="site-brand" />
-                <Input label="Tagline" value={site.tagline} onChangeText={(t) => setSite({ ...site, tagline: t })} testID="site-tagline" />
+                <Input label="Brand Name" value={site.brand_name} onChangeText={(t) => setSite({ ...site, brand_name: t })} editable={isAdmin} testID="site-brand" />
+                <Input label="Tagline" value={site.tagline} onChangeText={(t) => setSite({ ...site, tagline: t })} editable={isAdmin} testID="site-tagline" />
               </Card>
 
               <SectionLabel>Company contact</SectionLabel>
               <Card style={{ marginBottom: spacing.md }}>
-                <Input label="Address" value={site.company_address} onChangeText={(t) => setSite({ ...site, company_address: t })} testID="site-address" />
+                <Input label="Address" value={site.company_address} onChangeText={(t) => setSite({ ...site, company_address: t })} editable={isAdmin} testID="site-address" />
                 <Row style={{ gap: spacing.md }}>
-                  <View style={{ flex: 1 }}><Input label="Phone" value={site.company_phone} onChangeText={(t) => setSite({ ...site, company_phone: t })} keyboardType="phone-pad" mono testID="site-phone" /></View>
-                  <View style={{ flex: 1 }}><Input label="Email" value={site.company_email} onChangeText={(t) => setSite({ ...site, company_email: t })} keyboardType="email-address" autoCapitalize="none" testID="site-email" /></View>
+                  <View style={{ flex: 1 }}><Input label="Phone" value={site.company_phone} onChangeText={(t) => setSite({ ...site, company_phone: t })} keyboardType="phone-pad" mono editable={isAdmin} testID="site-phone" /></View>
+                  <View style={{ flex: 1 }}><Input label="Email" value={site.company_email} onChangeText={(t) => setSite({ ...site, company_email: t })} keyboardType="email-address" autoCapitalize="none" editable={isAdmin} testID="site-email" /></View>
                 </Row>
               </Card>
 
-              {!isShellWide ? <Button title="Save Settings" onPress={save} loading={busy} testID="save-site-btn" /> : null}
+              {!isShellWide && isAdmin ? <Button title="Save Settings" onPress={save} loading={busy} testID="save-site-btn" /> : null}
             </View>
           </View>
         </View>

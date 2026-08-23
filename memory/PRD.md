@@ -23,6 +23,24 @@ A mobile-first React Native (Expo) field-ops app for concrete/ICF contractors. E
 9. **Vendors** — ICF block supplier directory with categories, freight terms, truck capacity, lead time. Tap to call/email.
 10. **Site Admin** — Brand name, tagline, logo upload (base64), company contact for delivery tickets.
 
+## No dollar amounts in the UI
+The app tracks operational data, not pricing — crew and foreman users are not
+in the business of quoting or invoicing from this tool. Dollar fields
+(`daily_rate`, `deposit`, maintenance `cost`) still exist in the data model
+for admin-only record-keeping, but:
+- List/read API responses zero these fields out for `crew`-role users
+  (`redact_money_for_crew` in `backend/server.py`) — the raw JSON never
+  carries real figures to an account that shouldn't see them.
+- No screen renders a dollar figure to a non-admin/foreman user. Where a cost
+  is shown at all (e.g. maintenance history), it's gated the same way the
+  corresponding edit action is gated.
+- Design concepts, mockups, and screenshots must not show revenue, totals, or
+  per-line pricing — see `design/concepts/README.md` for a past example that
+  violated this and was removed.
+This is a product requirement, not a style preference: don't reintroduce a
+`$` figure, a revenue KPI, or an invoice-style breakdown into the crew/foreman
+UI without checking with product first.
+
 ## Deferred (per user, not on mobile)
 - Quote Analyzer (AI PDF parsing)
 - Leads CRM
@@ -33,4 +51,7 @@ A mobile-first React Native (Expo) field-ops app for concrete/ICF contractors. E
 - Offline mode (currently online-only; data fetched live)
 
 ## Seeded admin
-`admin@concreteform.com` / `ChangeMe123!`
+Email is set via `ADMIN_EMAIL`; password via `ADMIN_PASSWORD` — both required env vars, no default.
+Set them in the deployment's secret store, never commit real values here. If this repo's history
+still contains a previously-published password, treat it as compromised: rotate it in the live
+deployment immediately (see SECURITY.md for the history-scrub procedure).

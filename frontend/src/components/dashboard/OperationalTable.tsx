@@ -32,15 +32,15 @@ export function OperationalTable<T>({
   fullWidth?: boolean;
 }) {
   return (
-    <View style={[styles.panel, fullWidth && { flex: undefined }]} testID={testID}>
+    <View style={[styles.panel, fullWidth && { flex: undefined }]} testID={testID} role="table" accessibilityLabel={title}>
       <View style={styles.header}>
         {icon ? <Ionicons name={icon} size={13} color={colors.inkSecondary} style={{ marginRight: 6 }} /> : null}
         <Text style={styles.title} numberOfLines={1}>{title.toUpperCase()}</Text>
       </View>
 
-      <View style={styles.colHeaderRow}>
+      <View style={styles.colHeaderRow} role="row">
         {columns.map((c) => (
-          <Text key={c.key} style={[styles.colHeader, c.width ? { width: c.width, flexGrow: 0 } : { flex: c.flex ?? 1 }, c.align === "right" && { textAlign: "right" }]} numberOfLines={1}>
+          <Text key={c.key} role="columnheader" style={[styles.colHeader, c.width ? { width: c.width, flexGrow: 0 } : { flex: c.flex ?? 1 }, c.align === "right" && { textAlign: "right" }]} numberOfLines={1}>
             {c.label.toUpperCase()}
           </Text>
         ))}
@@ -52,9 +52,9 @@ export function OperationalTable<T>({
         rows.map((row) => {
           const Wrapper = onRowPress ? TouchableOpacity : View;
           return (
-            <Wrapper key={keyExtractor(row)} style={styles.row} onPress={onRowPress ? () => onRowPress(row) : undefined} activeOpacity={0.6}>
+            <Wrapper key={keyExtractor(row)} style={styles.row} onPress={onRowPress ? () => onRowPress(row) : undefined} activeOpacity={0.6} role="row">
               {columns.map((c) => (
-                <View key={c.key} style={[c.width ? { width: c.width, flexGrow: 0 } : { flex: c.flex ?? 1 }, c.align === "right" && { alignItems: "flex-end" }]}>
+                <View key={c.key} role="cell" style={[c.width ? { width: c.width, flexGrow: 0 } : { flex: c.flex ?? 1 }, c.align === "right" && { alignItems: "flex-end" }]}>
                   {c.render(row)}
                 </View>
               ))}
@@ -63,7 +63,7 @@ export function OperationalTable<T>({
         })
       )}
 
-      <TouchableOpacity onPress={onViewAll} style={styles.footer} testID={testID ? `${testID}-view-all` : undefined}>
+      <TouchableOpacity onPress={onViewAll} style={styles.footer} testID={testID ? `${testID}-view-all` : undefined} accessibilityLabel={viewAllLabel} accessibilityRole="button">
         <Text style={styles.footerText}>{viewAllLabel}</Text>
       </TouchableOpacity>
     </View>

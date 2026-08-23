@@ -11,6 +11,7 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; available: number };
@@ -35,6 +36,7 @@ const arrayResponse = <T,>(value: unknown): T[] => Array.isArray(value) ? value 
 
 export default function InventoryCountsScreen() {
   const { isShellWide } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string }>();
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [counts, setCounts] = useState<InventoryCount[]>([]);
@@ -142,6 +144,7 @@ export default function InventoryCountsScreen() {
   return (
     <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="inventory-counts-screen">
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
+        {canEdit ? (
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
           <SectionLabel>RECORD PHYSICAL COUNT</SectionLabel>
           <Text style={styles.panelTitle}>Select equipment</Text>
@@ -170,6 +173,7 @@ export default function InventoryCountsScreen() {
             </View>
           ) : null}
         </Card>
+        ) : null}
 
         <View style={styles.queuePanel}>
           <View style={styles.queueToolbar}><PageToolbar><View><Text style={styles.queueTitle}>Pending counts</Text><Text style={styles.queueMeta}>{pendingCounts.length} awaiting review</Text></View></PageToolbar></View>
@@ -194,7 +198,7 @@ export default function InventoryCountsScreen() {
             <View style={styles.drawerMetrics}><CountMetric label="Expected" value={selectedCount.expected_qty} /><CountMetric label="Physical" value={selectedCount.counted_qty} /><CountMetric label="Variance" value={selectedCount.variance} signed /></View>
             <View style={styles.drawerMeta}><Text style={styles.tableMuted}>Counted by</Text><Text style={styles.tableName}>{selectedCount.counted_by || "Unknown"}</Text></View>
             {selectedCount.status === "pending" ? (
-              <View style={{ marginTop: spacing.lg }}><Input label="Reconciliation reason (required)" value={reason} onChangeText={setReason} placeholder="Explain the variance and corrective action…" multiline style={styles.reasonInput} testID="reconciliation-reason" /><Button title="Reconcile Variance" onPress={reconcile} loading={reconciling} disabled={!reason.trim()} testID="reconcile-count" /></View>
+              canEdit ? <View style={{ marginTop: spacing.lg }}><Input label="Reconciliation reason (required)" value={reason} onChangeText={setReason} placeholder="Explain the variance and corrective action…" multiline style={styles.reasonInput} testID="reconciliation-reason" /><Button title="Reconcile Variance" onPress={reconcile} loading={reconciling} disabled={!reason.trim()} testID="reconcile-count" /></View> : null
             ) : (
               <View style={styles.reconciledSummary}><StatusBadge label="Reconciled" tone="success" /><Text style={[styles.tableName, { marginTop: spacing.sm }]}>{selectedCount.reason}</Text><Text style={[styles.tableMuted, { marginTop: 4 }]}>By {selectedCount.reconciled_by || "Unknown"}</Text></View>
             )}

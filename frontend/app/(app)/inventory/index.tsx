@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card } from "@/src/components/ui";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
@@ -14,17 +15,21 @@ export default function InventoryIndex() {
   const [equipCount, setEquipCount] = useState<number | null>(null);
   const [locationCount, setLocationCount] = useState<number | null>(null);
   const [pendingCounts, setPendingCounts] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [equipment, counts] = await Promise.all([
-        api<any[]>("/equipment").catch(() => []),
-        api<{ status: string }[]>("/inventory-counts").catch(() => []),
+        api<any[]>("/equipment"),
+        api<{ status: string }[]>("/inventory-counts"),
       ]);
       setEquipCount(equipment.length);
       setLocationCount(new Set(equipment.map((e) => e.location).filter(Boolean)).size);
       setPendingCounts(counts.filter((count) => count.status === "pending").length);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -37,6 +42,7 @@ export default function InventoryIndex() {
 
   return (
     <Screen title="Inventory" subtitle="Equipment · Yard · Transfers · Counts" onRefresh={load} testID="inventory-index-screen">
+      {loadError ? <ErrorState message="Couldn't load inventory counts." onRetry={load} testID="inventory-index-error" /> : null}
       {items.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

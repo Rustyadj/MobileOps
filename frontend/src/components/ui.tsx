@@ -10,8 +10,8 @@ export const Card: React.FC<{ children: React.ReactNode; style?: StyleProp<ViewS
   <View testID={testID} style={[styles.card, style]}>{children}</View>
 );
 
-export const SectionLabel: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
-  <Text style={[typo.caption, { marginBottom: spacing.sm }, style]}>{children}</Text>
+export const SectionLabel: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle>; nativeID?: string }> = ({ children, style, nativeID }) => (
+  <Text nativeID={nativeID} style={[typo.caption, { marginBottom: spacing.sm }, style]}>{children}</Text>
 );
 
 export const H1: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
@@ -57,17 +57,24 @@ export const Button: React.FC<ButtonProps> = ({ title, onPress, variant = "prima
   );
 };
 
-export const Input: React.FC<TextInputProps & { label?: string; mono?: boolean; testID?: string }> = ({ label, mono, style, testID, ...rest }) => (
-  <View style={{ marginBottom: spacing.md }}>
-    {label ? <SectionLabel>{label}</SectionLabel> : null}
-    <TextInput
-      testID={testID}
-      placeholderTextColor={colors.inkMuted}
-      {...rest}
-      style={[styles.input, mono && { fontFamily: "monospace", fontSize: 15 }, style]}
-    />
-  </View>
-);
+let inputLabelSeq = 0;
+
+export const Input: React.FC<TextInputProps & { label?: string; mono?: boolean; testID?: string }> = ({ label, mono, style, testID, ...rest }) => {
+  const labelId = React.useMemo(() => testID ? `${testID}-label` : label ? `input-label-${++inputLabelSeq}` : undefined, [testID, label]);
+  return (
+    <View style={{ marginBottom: spacing.md }}>
+      {label ? <SectionLabel nativeID={labelId}>{label}</SectionLabel> : null}
+      <TextInput
+        testID={testID}
+        placeholderTextColor={colors.inkMuted}
+        accessibilityLabel={label}
+        accessibilityLabelledBy={labelId}
+        {...rest}
+        style={[styles.input, mono && { fontFamily: "monospace", fontSize: 15 }, style]}
+      />
+    </View>
+  );
+};
 
 export const Pill: React.FC<{ children: React.ReactNode; color?: string; bg?: string; testID?: string }> = ({ children, color = colors.inkSecondary, bg = colors.bgTint, testID }) => (
   <View testID={testID} style={[styles.pill, { backgroundColor: bg, borderColor: "transparent" }]}>

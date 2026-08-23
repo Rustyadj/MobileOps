@@ -12,6 +12,7 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Direction = "outbound" | "inbound";
@@ -68,6 +69,7 @@ const TABS: { key: Tab; label: string }[] = [
 
 export default function DispatchScreen() {
   const { isShellWide, width } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [equipment, setEquipment] = useState<Eq[]>([]);
@@ -262,7 +264,7 @@ export default function DispatchScreen() {
 
   return (
     <Screen title="Dispatch" subtitle={`${counts.outbound} outbound · ${counts.inbound} inbound scheduled`} back
-      rightAction={{ icon: "add", onPress: openNew, testID: "new-dispatch-btn" }}
+      rightAction={canEdit ? { icon: "add", onPress: openNew, testID: "new-dispatch-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="dispatch-screen" scroll={!isShellWide}>
 
       {isShellWide ? (
@@ -272,7 +274,7 @@ export default function DispatchScreen() {
           </View>
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job, driver, equipment…" testID="dispatch-search" style={{ flex: 1, maxWidth: 420 }} />
-            <Button title="New Dispatch" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" />
+            {canEdit ? <Button title="New Dispatch" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" /> : null}
           </PageToolbar>
           <View style={styles.tableWrap}>
             <DataTable
@@ -349,15 +351,15 @@ export default function DispatchScreen() {
                 <View style={{ flex: 1 }}><Input label="Truck" value={assignDraft?.truck || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, truck: t } : a)} testID="assign-truck" /></View>
                 <View style={{ flex: 1 }}><Input label="Trailer" value={assignDraft?.trailer || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, trailer: t } : a)} testID="assign-trailer" /></View>
               </Row>
-              <Button title="Save assignment" onPress={saveAssignment} variant="outline" loading={busy} testID="save-assignment-btn" />
+              {canEdit ? <Button title="Save assignment" onPress={saveAssignment} variant="outline" loading={busy} testID="save-assignment-btn" /> : null}
             </DetailSection>
             {selected.notes ? <DetailSection label="Notes"><Text style={styles.detailText}>{selected.notes}</Text></DetailSection> : null}
             {selected.rental_id ? <DetailSection label="Linked rental"><Mono style={styles.detailText}>{selected.rental_id.slice(0, 12)}</Mono></DetailSection> : null}
             <View style={styles.drawerActions}>
-              {isLive(selected) && nextStep(selected) ? (
+              {canEdit && isLive(selected) && nextStep(selected) ? (
                 <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} loading={busy} testID="dispatch-advance-btn" />
               ) : null}
-              {isLive(selected) ? (
+              {canEdit && isLive(selected) ? (
                 <Button title="Cancel Dispatch" onPress={() => cancelDispatch(selected)} variant="danger" testID="dispatch-cancel-btn" />
               ) : null}
             </View>

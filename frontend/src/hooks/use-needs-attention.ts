@@ -39,7 +39,7 @@ export type AttentionItem = {
   jobs?: string[];
 };
 
-export type AttentionData = { items: AttentionItem[]; loading: boolean; reload: () => Promise<void> };
+export type AttentionData = { items: AttentionItem[]; loading: boolean; error: boolean; reload: () => Promise<void> };
 
 const DAY_MS = 86_400_000;
 // Rentals without a due date become exceptions after 30 active days.
@@ -62,18 +62,22 @@ const unitLabel = (name: string, quantity: number) => `${quantity} ${name.toLowe
 export function useNeedsAttention(): AttentionData {
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    let hadError = false;
+    const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
+      p.catch(() => { hadError = true; return fallback; });
     try {
       const [rentals, bookings, equipment, shortages, inventoryCounts, shopTasks, dispatches] = await Promise.all([
-        api<unknown>("/rentals").then(arrayResponse<Rental>).catch(() => []),
-        api<unknown>("/bookings").then(arrayResponse<Booking>).catch(() => []),
-        api<unknown>("/equipment").then(arrayResponse<Equipment>).catch(() => []),
-        api<unknown>("/dashboard/shortages?days=14").then(rowsResponse<Shortage>).catch(() => []),
-        api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>).catch(() => []),
-        api<unknown>("/shop-tasks").then(arrayResponse<ShopTask>).catch(() => []),
-        api<unknown>("/dispatches").then(arrayResponse<DispatchDoc>).catch(() => []),
+        guard(api<unknown>("/rentals").then(arrayResponse<Rental>), []),
+        guard(api<unknown>("/bookings").then(arrayResponse<Booking>), []),
+        guard(api<unknown>("/equipment").then(arrayResponse<Equipment>), []),
+        guard(api<unknown>("/dashboard/shortages?days=14").then(rowsResponse<Shortage>), []),
+        guard(api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>), []),
+        guard(api<unknown>("/shop-tasks").then(arrayResponse<ShopTask>), []),
+        guard(api<unknown>("/dispatches").then(arrayResponse<DispatchDoc>), []),
       ]);
       const out: AttentionItem[] = [];
       const now = new Date();
@@ -192,11 +196,12 @@ export function useNeedsAttention(): AttentionData {
       }
 
       setItems(out);
+      setError(hadError);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  return { items, loading, reload: load };
+  return { items, loading, error, reload: load };
 }

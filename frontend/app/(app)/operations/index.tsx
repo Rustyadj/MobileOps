@@ -8,6 +8,7 @@ import { Screen } from "@/src/components/Screen";
 import { Card } from "@/src/components/ui";
 import { ResponsiveGrid } from "@/src/components/layout/ResponsiveGrid";
 import { KpiCard } from "@/src/components/data/KpiCard";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
@@ -19,12 +20,13 @@ export default function OperationsIndex() {
   const [activeRentals, setActiveRentals] = useState<number | null>(null);
   const [missingLocation, setMissingLocation] = useState<number | null>(null);
   const [upcomingBookings, setUpcomingBookings] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [rentals, bookings] = await Promise.all([
-        api<Rental[]>("/rentals").catch(() => []),
-        api<Booking[]>("/bookings").catch(() => []),
+        api<Rental[]>("/rentals"),
+        api<Booking[]>("/bookings"),
       ]);
       const active = rentals.filter((r) => r.status !== "returned");
       setActiveRentals(active.length);
@@ -32,7 +34,10 @@ export default function OperationsIndex() {
       const now = new Date();
       const cutoff = new Date(now.getTime() + 14 * 86400000);
       setUpcomingBookings(bookings.filter((b) => b.status !== "cancelled" && new Date(b.start_date) >= now && new Date(b.start_date) <= cutoff).length);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -45,6 +50,7 @@ export default function OperationsIndex() {
 
   return (
     <Screen title="Operations" subtitle="Map · Rentals · Bookings · Capacity" onRefresh={load} testID="operations-index-screen">
+      {loadError ? <ErrorState message="Couldn't load operations counts." onRetry={load} testID="operations-index-error" /> : null}
       <ResponsiveGrid minItemWidth={180}>
         <KpiCard label="Active rentals" value={String(activeRentals ?? "—")} icon="receipt-outline" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="ops-kpi-active" />
         <KpiCard label="Upcoming bookings (14d)" value={String(upcomingBookings ?? "—")} icon="calendar-outline" onPress={() => router.push("/(app)/operations/bookings" as any)} testID="ops-kpi-upcoming" />

@@ -10,6 +10,7 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
@@ -44,6 +45,7 @@ const serviceDate = (value?: string | null) => value ? new Date(value).toLocaleD
 
 export default function MaintenanceScreen() {
   const { isShellWide } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const [items, setItems] = useState<Maintenance[]>([]);
   const [equipment, setEquipment] = useState<Eq[]>([]);
   const [editing, setEditing] = useState<Draft | null>(null);
@@ -107,14 +109,14 @@ export default function MaintenanceScreen() {
 
   return (
     <Screen title="Maintenance" subtitle={`${items.length} entries`} back
-      rightAction={{ icon: "add", onPress: newService, testID: "new-maint-btn" }}
+      rightAction={canEdit ? { icon: "add", onPress: newService, testID: "new-maint-btn" } : undefined}
       onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }}
       refreshing={refreshing} testID="maintenance-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search equipment, issue, action…" testID="maintenance-search" style={{ flex: 1, maxWidth: 380 }} />
-            <Button title="New Service" onPress={newService} fullWidth={false} style={styles.toolbarButton} testID="new-maint-btn" />
+            {canEdit ? <Button title="New Service" onPress={newService} fullWidth={false} style={styles.toolbarButton} testID="new-maint-btn" /> : null}
           </PageToolbar>
           <View style={styles.filterStack}>
             <FilterChips options={STATUSES} value={status} onChange={setStatus} testIDPrefix="maintenance-status-filter" />
@@ -145,13 +147,13 @@ export default function MaintenanceScreen() {
 
       {isShellWide ? (
         <DetailDrawer visible={!!editing} title={editing?.id ? "Edit Service" : "New Service"} subtitle={editing?.id ? editing.equipment_name : "Create a maintenance entry"} onClose={() => setEditing(null)} testID="maintenance-detail-drawer">
-          {editing ? <ServiceForm editing={editing} setEditing={setEditing} equipment={equipment} onSave={save} /> : null}
-          {editing?.id ? <Button title="Delete Service" onPress={() => setDeleting(editing as Maintenance)} variant="danger" testID={`del-maint-${editing.id}`} /> : null}
+          {editing ? <ServiceForm editing={editing} setEditing={setEditing} equipment={equipment} onSave={save} canEdit={canEdit} /> : null}
+          {editing?.id && canEdit ? <Button title="Delete Service" onPress={() => setDeleting(editing as Maintenance)} variant="danger" testID={`del-maint-${editing.id}`} /> : null}
         </DetailDrawer>
       ) : (
         <Modal visible={!!editing} animationType="slide" onRequestClose={() => setEditing(null)}>
           <Screen title={editing?.id ? "Edit Service" : "New Service"} back rightAction={{ icon: "close", onPress: () => setEditing(null), testID: "close-maint-edit" }}>
-            {editing ? <ServiceForm editing={editing} setEditing={setEditing} equipment={equipment} onSave={save} /> : null}
+            {editing ? <ServiceForm editing={editing} setEditing={setEditing} equipment={equipment} onSave={save} canEdit={canEdit} /> : null}
           </Screen>
         </Modal>
       )}
@@ -160,17 +162,17 @@ export default function MaintenanceScreen() {
   );
 }
 
-const ServiceForm = ({ editing, setEditing, equipment, onSave }: { editing: Draft; setEditing: (draft: Draft) => void; equipment: Eq[]; onSave: () => void }) => (
+const ServiceForm = ({ editing, setEditing, equipment, onSave, canEdit }: { editing: Draft; setEditing: (draft: Draft) => void; equipment: Eq[]; onSave: () => void; canEdit: boolean }) => (
   <>
     <SectionLabel>Equipment</SectionLabel>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>
-      {equipment.map((item) => <View key={item.id} style={{ flexShrink: 0 }}><Button title={`${equipmentIdentifier(item)} — ${item.name}`} onPress={() => setEditing({ ...editing, equipment_id: item.id, equipment_name: item.name })} variant={editing.equipment_id === item.id ? "primary" : "outline"} fullWidth={false} testID={`eq-pick-${item.sku}`} /></View>)}
+      {equipment.map((item) => <View key={item.id} style={{ flexShrink: 0 }}><Button title={`${equipmentIdentifier(item)} — ${item.name}`} onPress={() => canEdit && setEditing({ ...editing, equipment_id: item.id, equipment_name: item.name })} variant={editing.equipment_id === item.id ? "primary" : "outline"} fullWidth={false} disabled={!canEdit} testID={`eq-pick-${item.sku}`} /></View>)}
     </ScrollView>
-    <Input label="Issue" value={editing.issue || ""} onChangeText={(text) => setEditing({ ...editing, issue: text })} testID="maint-issue" />
-    <Input label="Action Taken" value={editing.action_taken || ""} onChangeText={(text) => setEditing({ ...editing, action_taken: text })} testID="maint-action" />
+    <Input label="Issue" value={editing.issue || ""} onChangeText={(text) => setEditing({ ...editing, issue: text })} editable={canEdit} testID="maint-issue" />
+    <Input label="Action Taken" value={editing.action_taken || ""} onChangeText={(text) => setEditing({ ...editing, action_taken: text })} editable={canEdit} testID="maint-action" />
     <SectionLabel>Status</SectionLabel>
-    <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>{["open", "in_progress", "resolved"].map((value) => <View key={value} style={{ flex: 1 }}><Button title={value.replace("_", " ")} onPress={() => setEditing({ ...editing, status: value })} variant={editing.status === value ? "primary" : "outline"} testID={`maint-status-${value}`} /></View>)}</Row>
-    <Button title="Save" onPress={onSave} testID="save-maint-btn" />
+    <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>{["open", "in_progress", "resolved"].map((value) => <View key={value} style={{ flex: 1 }}><Button title={value.replace("_", " ")} onPress={() => canEdit && setEditing({ ...editing, status: value })} variant={editing.status === value ? "primary" : "outline"} disabled={!canEdit} testID={`maint-status-${value}`} /></View>)}</Row>
+    {canEdit ? <Button title="Save" onPress={onSave} testID="save-maint-btn" /> : null}
   </>
 );
 
