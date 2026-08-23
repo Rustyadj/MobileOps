@@ -16,7 +16,7 @@ type Props = {
   title: string;
   subtitle?: string;
   back?: boolean;
-  rightAction?: { icon: keyof typeof Ionicons.glyphMap; onPress: () => void; testID?: string };
+  rightAction?: { icon: keyof typeof Ionicons.glyphMap; onPress: () => void; testID?: string; accessibilityLabel?: string };
   children: React.ReactNode;
   scroll?: boolean;
   refreshing?: boolean;
@@ -34,7 +34,7 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
   const Header = (
     <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
       {back ? (
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} testID="header-back">
+        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} testID="header-back" accessibilityLabel="Go back" accessibilityRole="button">
           <Ionicons name="chevron-back" size={22} color={colors.ink} />
         </TouchableOpacity>
       ) : null}
@@ -43,7 +43,13 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
         {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
       </View>
       {rightAction ? (
-        <TouchableOpacity onPress={rightAction.onPress} style={styles.iconBtn} testID={rightAction.testID}>
+        <TouchableOpacity
+          onPress={rightAction.onPress}
+          style={styles.iconBtn}
+          testID={rightAction.testID}
+          accessibilityLabel={rightAction.accessibilityLabel || (rightAction.icon === "close" ? "Close" : rightAction.icon === "add" ? "Add" : title)}
+          accessibilityRole="button"
+        >
           <Ionicons name={rightAction.icon} size={22} color={colors.ink} />
         </TouchableOpacity>
       ) : null}

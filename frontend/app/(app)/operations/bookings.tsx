@@ -12,6 +12,7 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -32,6 +33,7 @@ const STATUS_OPTIONS = [
 
 export default function BookingsScreen() {
   const { isShellWide } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [tab, setTab] = useState<"pipeline" | "capacity">("pipeline");
@@ -168,7 +170,7 @@ export default function BookingsScreen() {
   ], []);
 
   return (
-    <Screen title="Bookings" subtitle="Pipeline · Capacity" back rightAction={tab === "pipeline" ? { icon: "add", onPress: newBooking, testID: "new-booking-btn" } : undefined}
+    <Screen title="Bookings" subtitle="Pipeline · Capacity" back rightAction={tab === "pipeline" && canEdit ? { icon: "add", onPress: newBooking, testID: "new-booking-btn" } : undefined}
       onRefresh={async () => { setRefreshing(true); await (tab === "pipeline" ? load() : loadCapacity()); setRefreshing(false); }} refreshing={refreshing}
       testID="bookings-screen" scroll={!isShellWide}>
       <View style={[styles.tabs, isShellWide && styles.desktopTabs]}>
@@ -182,7 +184,7 @@ export default function BookingsScreen() {
             <>
               <PageToolbar>
                 <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job site, notes…" testID="bookings-search" style={{ flex: 1, maxWidth: 390 }} />
-                <Button title="New Booking" onPress={newBooking} fullWidth={false} style={styles.toolbarButton} testID="new-booking-btn" />
+                {canEdit ? <Button title="New Booking" onPress={newBooking} fullWidth={false} style={styles.toolbarButton} testID="new-booking-btn" /> : null}
               </PageToolbar>
               <View style={styles.filters}><FilterChips options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} testIDPrefix="booking-status" /></View>
               <View style={styles.tableWrap}><DataTable columns={columns} rows={visibleBookings} keyExtractor={(booking) => booking.id} rowTestID={(booking) => `booking-${booking.id}`} onRowPress={setSelected} selectedId={selected?.id} sortKey={sortKey} sortDirection={sortDirection} onSort={handleSort} emptyLabel="No bookings match these filters." /></View>
@@ -202,7 +204,7 @@ export default function BookingsScreen() {
           <Card key={booking.id} style={{ marginBottom: spacing.sm }} testID={`booking-${booking.id}`}>
             <Row style={{ justifyContent: "space-between" }}><View style={{ flex: 1 }}><H3>{booking.customer_name}</H3><Text style={[typo.label, { marginTop: 2 }]}>{booking.job_site || "—"}</Text></View><Pill color={booking.status === "confirmed" ? colors.success : booking.status === "cancelled" ? colors.error : colors.warning} bg={booking.status === "confirmed" ? colors.successSoft : booking.status === "cancelled" ? colors.errorSoft : colors.warningSoft}>{booking.status}</Pill></Row>
             <Mono style={{ fontSize: 12, marginTop: 8 }}>{new Date(booking.start_date).toLocaleDateString()} → {new Date(booking.end_date).toLocaleDateString()}</Mono>
-            <Button title="Delete" onPress={() => setDeleting(booking)} variant="outline" testID={`del-booking-${booking.id}`} />
+            {canEdit ? <Button title="Delete" onPress={() => setDeleting(booking)} variant="outline" testID={`del-booking-${booking.id}`} /> : null}
           </Card>
         ))
       ) : (
@@ -222,7 +224,7 @@ export default function BookingsScreen() {
           {selected.status === "dispatched" && selected.dispatched_rental_id ? (
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />
           ) : null}
-          <Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} />
+          {canEdit ? <Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /> : null}
         </> : null}
       </DetailDrawer>
 

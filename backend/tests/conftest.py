@@ -12,8 +12,8 @@ BASE_URL = (
     or os.environ.get("EXPO_BACKEND_URL")
 ).rstrip("/")
 
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@concreteform.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ChangeMe123!")
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 
 @pytest.fixture(scope="session")

@@ -47,6 +47,9 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "MobileO
                     style={[styles.item, active && styles.itemActive, collapsed && styles.itemCollapsed]}
                     activeOpacity={0.75}
                     testID={item.testID}
+                    accessibilityLabel={item.label}
+                    accessibilityRole="link"
+                    accessibilityState={{ selected: active }}
                   >
                     <Ionicons name={item.icon} size={16} color={active ? "#FFFFFF" : colors.sidebarItemMuted} />
                     {!collapsed ? (
@@ -67,7 +70,7 @@ export const Sidebar: React.FC<{ brandName?: string }> = ({ brandName = "MobileO
         ))}
       </ScrollView>
 
-      <TouchableOpacity onPress={toggle} style={styles.collapseBtn} testID="sidebar-toggle" activeOpacity={0.7}>
+      <TouchableOpacity onPress={toggle} style={styles.collapseBtn} testID="sidebar-toggle" activeOpacity={0.7} accessibilityLabel={collapsed ? "Expand sidebar" : "Collapse sidebar"} accessibilityRole="button">
         <Ionicons name={collapsed ? "chevron-forward" : "chevron-back"} size={14} color={colors.sidebarItemMuted} />
         {!collapsed ? <Text style={styles.collapseText}>Collapse</Text> : null}
       </TouchableOpacity>

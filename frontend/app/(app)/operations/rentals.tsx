@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
@@ -66,6 +67,7 @@ const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDat
 
 export default function RentalsScreen() {
   const { isShellWide, width } = useBreakpoint();
+  const { canEdit, canAdmin } = usePermissions();
   const router = useRouter();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [rentals, setRentals] = useState<Rental[]>([]);
@@ -455,7 +457,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
 
   return (
     <Screen title="Rentals" subtitle={`${rentals.length} total · ${rentals.filter(r => r.status === "active").length} active`} back
-      rightAction={{ icon: "add", onPress: newRental, testID: "new-rental-btn" }}
+      rightAction={canEdit ? { icon: "add", onPress: newRental, testID: "new-rental-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
       {isShellWide ? (
@@ -463,7 +465,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} desktop />
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search rental, customer, site, equipment…" testID="rentals-search" style={{ flex: 1, maxWidth: 420 }} />
-            <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" />
+            {canEdit ? <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" /> : null}
           </PageToolbar>
           <View style={styles.filterRow}>
             <FilterChips options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} testIDPrefix="rentals-status-filter" />
@@ -526,7 +528,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                   <Text style={typo.body}>{l.name}</Text>
                   <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(l)}</Mono>
                 </View>
-                {lineLifecycle(l).onSite > 0 && r.status !== "returned" ? (
+                {canEdit && lineLifecycle(l).onSite > 0 && r.status !== "returned" ? (
                   <TouchableOpacity onPress={() => openReturn(r, l)} style={styles.smallBtn} testID={`return-${r.id}-${l.equipment_id}`}>
                     <Text style={styles.smallBtnText}>Return</Text>
                   </TouchableOpacity>
@@ -544,23 +546,25 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 busy={pickupBusy}
               />
             </View>
-            <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
-              <View style={{ flex: 1 }}>
-                <Button title="Edit" onPress={() => editRental(r)} variant="outline" testID={`edit-rental-${r.id}`} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Button
-                  title={r.lat != null ? "Update location" : "Set location"}
-                  onPress={() => setPickerFor({ mode: "existing", id: r.id, initial: r.lat != null && r.lng != null ? { lat: r.lat, lng: r.lng } : null })}
-                  variant="outline"
-                  testID={`set-location-${r.id}`}
-                />
-              </View>
-            </Row>
+            {canEdit ? (
+              <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
+                <View style={{ flex: 1 }}>
+                  <Button title="Edit" onPress={() => editRental(r)} variant="outline" testID={`edit-rental-${r.id}`} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Button
+                    title={r.lat != null ? "Update location" : "Set location"}
+                    onPress={() => setPickerFor({ mode: "existing", id: r.id, initial: r.lat != null && r.lng != null ? { lat: r.lat, lng: r.lng } : null })}
+                    variant="outline"
+                    testID={`set-location-${r.id}`}
+                  />
+                </View>
+              </Row>
+            ) : null}
             <View style={{ height: spacing.sm }} />
             <Row style={{ gap: spacing.sm }}>
               <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(r)} variant="outline" testID={`pdf-${r.id}`} /></View>
-              <View style={{ flex: 1 }}><Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} /></View>
+              {canAdmin ? <View style={{ flex: 1 }}><Button title="Delete" onPress={() => del(r.id)} variant="danger" testID={`delete-rental-${r.id}`} /></View> : null}
             </Row>
           </Card>
         );
@@ -603,7 +607,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                   <Row style={{ width: "100%" }}>
                     <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{equipmentIdentifier(line)}</Mono></View>
                     <Mono style={styles.detailAmount}>{line.qty} ordered</Mono>
-                    {lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
+                    {canEdit && lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
                       <TouchableOpacity onPress={() => openReturn(selected, line)} style={styles.smallBtn} testID={`return-${selected.id}-${line.equipment_id}`}>
                         <Text style={styles.smallBtnText}>Return</Text>
                       </TouchableOpacity>
@@ -624,12 +628,12 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               />
             </DetailSection>
             <View style={styles.drawerActions}>
-              <Button title="Edit Rental" onPress={() => editRental(selected)} testID={`edit-rental-${selected.id}`} />
+              {canEdit ? <Button title="Edit Rental" onPress={() => editRental(selected)} testID={`edit-rental-${selected.id}`} /> : null}
               <View style={styles.drawerActionRow}>
-                <View style={{ flex: 1 }}><Button title={selected.lat != null ? "Update location" : "Set location"} onPress={() => setPickerFor({ mode: "existing", id: selected.id, initial: selected.lat != null && selected.lng != null ? { lat: selected.lat, lng: selected.lng } : null })} variant="outline" testID={`set-location-${selected.id}`} /></View>
+                {canEdit ? <View style={{ flex: 1 }}><Button title={selected.lat != null ? "Update location" : "Set location"} onPress={() => setPickerFor({ mode: "existing", id: selected.id, initial: selected.lat != null && selected.lng != null ? { lat: selected.lat, lng: selected.lng } : null })} variant="outline" testID={`set-location-${selected.id}`} /></View> : null}
                 <View style={{ flex: 1 }}><Button title="Delivery PDF" onPress={() => generatePDF(selected)} variant="outline" testID={`pdf-${selected.id}`} /></View>
               </View>
-              <Button title="Delete Rental" onPress={() => del(selected.id)} variant="danger" testID={`delete-rental-${selected.id}`} />
+              {canAdmin ? <Button title="Delete Rental" onPress={() => del(selected.id)} variant="danger" testID={`delete-rental-${selected.id}`} /> : null}
             </View>
           </View>
         ) : null}

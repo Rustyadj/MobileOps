@@ -19,6 +19,7 @@ import { WhatsNext, NextMovement } from "@/src/components/dashboard/WhatsNext";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { Button, Mono } from "@/src/components/ui";
 import { api, apiBaseUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
@@ -86,15 +87,19 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    let hadError = false;
+    const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
+      p.catch(() => { hadError = true; return fallback; });
     const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks, nextDispatches] = await Promise.all([
-      api<unknown>("/dashboard/stats").then(statsResponse).catch(() => EMPTY_STATS),
-      api<Rental[]>("/rentals").catch(() => []),
-      api<Booking[]>("/bookings").catch(() => []),
-      api<{ rows: ShortageRow[] }>("/dashboard/shortages?days=14").catch(() => ({ rows: [] })),
-      api<ShopTask[]>("/shop-tasks").catch(() => []),
-      api<DispatchDoc[]>("/dispatches").catch(() => []),
+      guard(api<unknown>("/dashboard/stats").then(statsResponse), EMPTY_STATS),
+      guard(api<Rental[]>("/rentals"), []),
+      guard(api<Booking[]>("/bookings"), []),
+      guard(api<{ rows: ShortageRow[] }>("/dashboard/shortages?days=14"), { rows: [] }),
+      guard(api<ShopTask[]>("/shop-tasks"), []),
+      guard(api<DispatchDoc[]>("/dispatches"), []),
     ]);
     setStats(nextStats);
     setRentals(nextRentals);
@@ -103,6 +108,11 @@ export default function Dashboard() {
     setShopTasks(nextShopTasks);
     setDispatches(nextDispatches);
     setLastUpdated(new Date());
+    // The dashboard is a Promise.all of six independent calls with a fallback
+    // each so ONE flaky endpoint doesn't blank the whole screen — but a
+    // fallback of "zero"/"empty" looks identical to a genuinely idle fleet
+    // unless we also surface that a fetch actually failed.
+    setLoadError(hadError ? "Some dashboard data failed to load — numbers below may be incomplete or stale." : null);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -197,6 +207,9 @@ export default function Dashboard() {
 
   const commandCenter = (
     <View style={styles.commandCenter} testID="dashboard-command-center">
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={load} testID="dashboard-load-error" />
+      ) : null}
       <KpiStrip>
         <KpiTile label="Available inventory" value={String(stats.total_available)} meta={`of ${stats.total_quantity} owned`} icon="layers-outline" tone="success" onPress={() => router.push("/(app)/inventory/equipment" as any)} testID="stat-available-inventory" />
         <KpiTile label="On rental" value={String(stats.total_on_rental)} meta={`${activeRentals.length} active rentals`} icon="cube-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-on-rental" />

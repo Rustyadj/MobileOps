@@ -42,7 +42,7 @@ export const DetailDrawer: React.FC<{
               {subtitle ? <Text style={[typo.bodySmall, { marginTop: 2 }]} numberOfLines={1}>{subtitle}</Text> : null}
             </View>
             {headerActions}
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn} testID={`${testID}-close`}>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} testID={`${testID}-close`} accessibilityLabel="Close" accessibilityRole="button">
               <Ionicons name="close" size={20} color={colors.ink} />
             </TouchableOpacity>
           </View>

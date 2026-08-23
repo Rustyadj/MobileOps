@@ -1,8 +1,9 @@
 // Transfers — move available stock from one yard to another. Initiating a
-// transfer takes units out of Available into In Transit; receiving it at
-// the destination puts them back into Available and updates the asset's
-// location of record. This is a whole-yard relocation (bulk equipment
-// tracks one location for its whole available pool, not per-unit).
+// transfer takes units out of Available into In Transit at the equipment's
+// current (source) location; receiving it at the destination credits that
+// destination's own balance. The backend tracks available stock per
+// location (location_balances), so a partial transfer only moves the units
+// that actually left — it doesn't relabel the whole SKU's pool.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import { Screen } from "@/src/components/Screen";
@@ -11,6 +12,7 @@ import { SearchInput } from "@/src/components/data/SearchInput";
 import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; location: string; available: number; in_transit: number };
@@ -24,6 +26,7 @@ const messageFor = (e: unknown) => e instanceof Error ? e.message : "Unexpected 
 const shortDate = (v: string) => new Date(v).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export default function TransfersScreen() {
+  const { canEdit } = usePermissions();
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [eqSearch, setEqSearch] = useState("");
@@ -75,6 +78,7 @@ export default function TransfersScreen() {
 
   return (
     <Screen title="Transfers" subtitle={`${inTransit.length} in transit`} back onRefresh={onRefresh} refreshing={refreshing} testID="transfers-screen">
+      {canEdit ? (
       <Card style={{ marginBottom: spacing.lg }} testID="new-transfer-form">
         <SectionLabel>MOVE STOCK</SectionLabel>
         <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search QR code or equipment…" testID="transfer-eq-search" style={{ marginBottom: spacing.sm }} />
@@ -100,6 +104,7 @@ export default function TransfersScreen() {
           </>
         ) : null}
       </Card>
+      ) : null}
 
       <SectionLabel>IN TRANSIT</SectionLabel>
       {inTransit.length === 0 ? (
@@ -110,7 +115,7 @@ export default function TransfersScreen() {
             <H3>{t.equipment_name}</H3>
             <Text style={[typo.label, { marginTop: 2 }]}>{t.from_location || "—"} → {t.to_location} · {t.qty} units · {shortDate(t.created_at)}</Text>
           </View>
-          <Button title="Receive" onPress={() => receive(t)} fullWidth={false} style={{ height: 36 }} testID={`receive-transfer-${t.id}`} />
+          {canEdit ? <Button title="Receive" onPress={() => receive(t)} fullWidth={false} style={{ height: 36 }} testID={`receive-transfer-${t.id}`} /> : null}
         </Card>
       ))}
 

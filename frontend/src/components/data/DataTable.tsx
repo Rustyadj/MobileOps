@@ -50,11 +50,12 @@ function DataTableInner<T>({
           onPress={onRowPress ? () => onRowPress(item) : undefined}
           activeOpacity={0.6}
           testID={rowTestID ? rowTestID(item) : undefined}
+          role="row"
         >
           {columns.map((col) => {
             const content = col.render(item);
             return (
-              <View key={col.key} style={[styles.cell, col.width ? { width: col.width, flexGrow: 0 } : { flex: col.flex ?? 1 }, col.align === "right" && { alignItems: "flex-end" }, col.align === "center" && { alignItems: "center" }]}>
+              <View key={col.key} role="cell" style={[styles.cell, col.width ? { width: col.width, flexGrow: 0 } : { flex: col.flex ?? 1 }, col.align === "right" && { alignItems: "flex-end" }, col.align === "center" && { alignItems: "center" }]}>
                 {typeof content === "string" ? <Text style={typo.body} numberOfLines={1}>{content}</Text> : content}
               </View>
             );
@@ -66,8 +67,8 @@ function DataTableInner<T>({
   );
 
   return (
-    <View style={{ flex: 1 }}>
-      <View style={styles.headerRow}>
+    <View style={{ flex: 1 }} role="table">
+      <View style={styles.headerRow} role="row">
         {columns.map((col) => {
           const active = sortKey === col.key;
           const content = (
@@ -78,11 +79,19 @@ function DataTableInner<T>({
           );
           const cellStyle: StyleProp<ViewStyle> = [styles.cell, col.width ? { width: col.width, flexGrow: 0 } : { flex: col.flex ?? 1 }, col.align === "right" && { alignItems: "flex-end" }, col.align === "center" && { alignItems: "center" }];
           return onSort ? (
-            <TouchableOpacity key={col.key} style={cellStyle} onPress={() => onSort(col.key)} activeOpacity={0.65} testID={`sort-${col.key}`}>
+            <TouchableOpacity
+              key={col.key}
+              style={cellStyle}
+              onPress={() => onSort(col.key)}
+              activeOpacity={0.65}
+              testID={`sort-${col.key}`}
+              role="columnheader"
+              accessibilityLabel={`Sort by ${col.label}${active ? `, currently sorted ${sortDirection === "asc" ? "ascending" : "descending"}` : ""}`}
+            >
               {content}
             </TouchableOpacity>
           ) : (
-            <View key={col.key} style={cellStyle}>{content}</View>
+            <View key={col.key} style={cellStyle} role="columnheader">{content}</View>
           );
         })}
       </View>

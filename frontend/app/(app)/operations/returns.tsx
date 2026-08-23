@@ -10,6 +10,7 @@ import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/componen
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { api } from "@/src/api/client";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -29,6 +30,7 @@ const onSiteQty = (line: Line) => {
 export default function ReturnsScreen() {
   const router = useRouter();
   const { isShellWide } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<OutstandingRow | null>(null);
@@ -119,10 +121,10 @@ export default function ReturnsScreen() {
         {selected ? (
           <View>
             <SectionLabel>Record return</SectionLabel>
-            <Input label={`Quantity returning (max ${selected.onSite})`} value={qty} onChangeText={(v) => setQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="return-qty" />
-            <Input label="Of which damaged" value={damagedQty} onChangeText={(v) => setDamagedQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="return-damaged-qty" />
+            <Input label={`Quantity returning (max ${selected.onSite})`} value={qty} onChangeText={(v) => setQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono editable={canEdit} testID="return-qty" />
+            <Input label="Of which damaged" value={damagedQty} onChangeText={(v) => setDamagedQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono editable={canEdit} testID="return-damaged-qty" />
             <Text style={[typo.bodySmall, { color: colors.inkMuted, marginBottom: spacing.md }]}>Clean units go to inspection; damaged units go straight to a repair task.</Text>
-            <Button title="Record Return" onPress={submit} loading={submitting} testID="submit-return" />
+            {canEdit ? <Button title="Record Return" onPress={submit} loading={submitting} testID="submit-return" /> : null}
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.rental.id}` as any)} style={{ marginTop: spacing.sm }} testID="return-view-rental" />
           </View>
         ) : null}

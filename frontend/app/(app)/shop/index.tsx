@@ -7,6 +7,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card } from "@/src/components/ui";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
@@ -16,18 +17,22 @@ export default function ShopIndex() {
   const [staging, setStaging] = useState<number | null>(null);
   const [pendingInspection, setPendingInspection] = useState<number | null>(null);
   const [openRepairs, setOpenRepairs] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [tasks, equipment] = await Promise.all([
-        api<any[]>("/shop-tasks").catch(() => []),
-        api<any[]>("/equipment").catch(() => []),
+        api<any[]>("/shop-tasks"),
+        api<any[]>("/equipment"),
       ]);
       setOpenTasks(tasks.filter((t) => t.status !== "done").length);
       setStaging(tasks.filter((t) => t.task_type === "staging" && t.status !== "done").length);
       setOpenRepairs(tasks.filter((t) => t.task_type === "repair" && t.status !== "done").length);
       setPendingInspection(equipment.reduce((sum, e) => sum + (e.pending_inspection || 0), 0));
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -40,6 +45,7 @@ export default function ShopIndex() {
 
   return (
     <Screen title="Shop" subtitle="Tasks · Staging · Inspections · Repairs" onRefresh={load} testID="shop-index-screen">
+      {loadError ? <ErrorState message="Couldn't load shop counts." onRetry={load} testID="shop-index-error" /> : null}
       {items.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

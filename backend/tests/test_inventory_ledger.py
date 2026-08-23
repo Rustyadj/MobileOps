@@ -284,13 +284,59 @@ class TestTransfers:
 
         eq3 = get_equipment(api_client, auth_headers, eq["id"])
         assert eq3["in_transit"] == 0 and eq3["available"] == 40
-        assert eq3["location"] == "Yard B"
+        # A partial transfer must not relabel the whole SKU's pool: Yard A
+        # still holds more units (25) than Yard B (15), so it stays primary.
+        assert eq3["location"] == "Yard A"
+        assert eq3["location_balances"] == {"Yard A": 25, "Yard B": 15}
+
+    def test_partial_transfer_does_not_relocate_whole_pool(self, api_client, auth_headers):
+        """Regression for: receiving part of a transfer used to overwrite the
+        equipment's single `location` field for its ENTIRE available pool,
+        even though only a fraction of the units actually moved yards."""
+        eq = create_equipment(api_client, auth_headers, qty=40, location="Yard A")
+        r = api_client.post(
+            f"{BASE_URL}/api/equipment/{eq['id']}/transfer", headers=auth_headers,
+            json={"qty": 15, "to_location": "Yard B", "note": ""},
+        )
+        assert r.status_code == 201, r.text
+        transfer = r.json()
+        r = api_client.post(f"{BASE_URL}/api/transfers/{transfer['id']}/receive", headers=auth_headers)
+        assert r.status_code == 200, r.text
+
+        breakdown = api_client.get(f"{BASE_URL}/api/equipment/{eq['id']}/breakdown", headers=auth_headers).json()
+        yard_rows = {row["label"]: row["qty"] for row in breakdown["rows"] if row["kind"] == "yard"}
+        assert yard_rows == {"Yard A": 25, "Yard B": 15}
+
+        # A second transfer that tips the balance toward Yard B moves the
+        # equipment's primary `location`, but the split is still exact.
+        r = api_client.post(
+            f"{BASE_URL}/api/equipment/{eq['id']}/transfer", headers=auth_headers,
+            json={"qty": 20, "to_location": "Yard B", "note": ""},
+        )
+        assert r.status_code == 400, "Yard A only has 25 available, not 20+15 already at Yard B"
 
     def test_transfer_over_available_rejected(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=5)
         r = api_client.post(
             f"{BASE_URL}/api/equipment/{eq['id']}/transfer", headers=auth_headers,
             json={"qty": 6, "to_location": "Yard B", "note": ""},
+        )
+        assert r.status_code == 400
+
+    def test_transfer_over_source_location_balance_rejected(self, api_client, auth_headers):
+        """qty must be checked against the SOURCE location's own balance, not
+        just the SKU's total available count across all locations."""
+        eq = create_equipment(api_client, auth_headers, qty=40, location="Yard A")
+        r = api_client.post(
+            f"{BASE_URL}/api/equipment/{eq['id']}/transfer", headers=auth_headers,
+            json={"qty": 15, "to_location": "Yard B", "note": ""},
+        )
+        assert r.status_code == 201, r.text
+        # Yard A now has 25 available; asking to move 30 more from Yard A
+        # must fail even though total available (40) would cover it.
+        r = api_client.post(
+            f"{BASE_URL}/api/equipment/{eq['id']}/transfer", headers=auth_headers,
+            json={"qty": 30, "to_location": "Yard C", "note": ""},
         )
         assert r.status_code == 400
 

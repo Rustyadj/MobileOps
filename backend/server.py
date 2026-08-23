@@ -41,6 +41,34 @@ REFRESH_TTL_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+
+# Self-service account creation (public /auth/signup and Google auto-provision
+# via /auth/session) is gated so a stranger with an email address can't hand
+# themselves a crew account and start reading rentals/equipment/job-site data.
+# Configure ONE of:
+#   SIGNUP_ALLOWED_DOMAINS — comma-separated list of email domains ("acme.com,
+#     acme-icf.com") that may self-provision a crew account.
+#   SIGNUP_INVITE_CODES — comma-separated list of one-time-ish shared invite
+#     codes; SignupReq.invite_code must match one.
+# If neither is set, self-service signup is disabled entirely — accounts must
+# be created by an admin via POST /auth/register.
+SIGNUP_ALLOWED_DOMAINS = {
+    d.strip().lower().lstrip("@")
+    for d in os.environ.get("SIGNUP_ALLOWED_DOMAINS", "").split(",")
+    if d.strip()
+}
+SIGNUP_INVITE_CODES = {
+    c.strip() for c in os.environ.get("SIGNUP_INVITE_CODES", "").split(",") if c.strip()
+}
+
+
+def _signup_authorized(email: str, invite_code: Optional[str]) -> bool:
+    domain = email.rsplit("@", 1)[-1].lower()
+    if SIGNUP_ALLOWED_DOMAINS and domain in SIGNUP_ALLOWED_DOMAINS:
+        return True
+    if SIGNUP_INVITE_CODES and invite_code and invite_code.strip() in SIGNUP_INVITE_CODES:
+        return True
+    return False
 PUSH_BASE_URL = "https://integrations.emergentagent.com"
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -59,6 +87,25 @@ class Role(str, Enum):
 
 
 ROLE_ORDER = {Role.crew: 1, Role.foreman: 2, Role.admin: 3}
+
+# Dollar figures (rates, deposits, maintenance costs) are a pricing/business
+# concern for foreman+ only — crew accounts don't need them and shouldn't see
+# them. Zeroed rather than omitted so response shapes stay stable for clients.
+def redact_money_for_crew(doc: dict, role: str) -> dict:
+    if role == Role.crew.value:
+        if "daily_rate" in doc:
+            doc["daily_rate"] = 0.0
+        if "deposit" in doc:
+            doc["deposit"] = 0.0
+        if "cost" in doc:
+            doc["cost"] = 0.0
+        for line in doc.get("lines") or []:
+            if isinstance(line, dict) and "daily_rate" in line:
+                line["daily_rate"] = 0.0
+        for line in doc.get("items") or []:
+            if isinstance(line, dict) and "daily_rate" in line:
+                line["daily_rate"] = 0.0
+    return doc
 
 EQUIPMENT_CATEGORIES = [
     "tool",
@@ -152,6 +199,7 @@ class SignupReq(BaseModel):
     email: EmailStr
     password: str
     name: str
+    invite_code: Optional[str] = None
 
     @field_validator("email", mode="before")
     @classmethod
@@ -221,7 +269,8 @@ class Equipment(BaseModel):
     name: str
     category: str
     condition: str = "good"  # good, fair, poor, broken
-    location: str = ""
+    location: str = ""  # primary/display location — see location_balances for the real split
+    location_balances: dict[str, int] = Field(default_factory=dict)  # {location: available units there}
     daily_rate: float = 0.0
     quantity: int = 1  # owned
     available: int = 1
@@ -730,6 +779,14 @@ class InspectBody(BaseModel):
 
 
 # ----------------------------- Inventory Ledger ----------------------------
+_TRANSACTIONS_SUPPORTED: Optional[bool] = None  # cached probe result; None = not yet probed
+
+
+class InsufficientStockError(HTTPException):
+    def __init__(self, equipment_id: str, bucket: str, requested: int) -> None:
+        super().__init__(409, f"Not enough {bucket} stock for equipment {equipment_id} to move {requested} units")
+
+
 async def apply_ledger_entry(
     equipment_id: str,
     qty: int,
@@ -742,16 +799,24 @@ async def apply_ledger_entry(
     booking_id: Optional[str] = None,
     note: str = "",
     created_by: str = "",
+    session: Any = None,
 ) -> None:
     """Move `qty` units of `equipment_id` from one bucket to another,
-    atomically updating the equipment doc's cached bucket counts and
-    recording a LedgerEntry for audit history.
+    conditionally/atomically updating the equipment doc's cached bucket
+    counts and recording a LedgerEntry for audit history.
 
     `from_bucket` / `to_bucket` are entries of BUCKET_FIELDS, or "owned" for
     entries that change total ownership rather than move between buckets
     (e.g. a fresh receipt goes owned -> available; a write-off goes
     missing -> owned). "owned" only ever touches `quantity`, never a bucket
     field, so ownership changes never fabricate or destroy bucket units.
+
+    The update is conditional: any field this call would decrement must
+    already hold at least `qty`, enforced by the Mongo filter (not a
+    read-then-write check), so concurrent callers can never drive a bucket
+    negative or over-allocate stock that isn't really there. If the caller
+    passed a `session` (an active Mongo transaction), the equipment update
+    and the ledger insert commit or abort together.
     """
     if qty <= 0:
         return
@@ -768,13 +833,55 @@ async def apply_ledger_entry(
         if to_bucket not in BUCKET_FIELDS:
             raise ValueError(f"Unknown bucket: {to_bucket}")
         inc[to_bucket] = inc.get(to_bucket, 0) + qty
-    await db.equipment.update_one({"id": equipment_id}, {"$inc": inc})
+
+    filt: dict[str, Any] = {"id": equipment_id}
+    for field, delta in inc.items():
+        if delta < 0:
+            filt[field] = {"$gte": -delta}
+
+    result = await db.equipment.update_one(filt, {"$inc": inc}, session=session)
+    if result.matched_count == 0:
+        # Either the equipment doesn't exist, or the source bucket doesn't
+        # have enough units — distinguish for a clearer error.
+        if not await db.equipment.find_one({"id": equipment_id}, {"_id": 1}, session=session):
+            raise HTTPException(404, "Equipment not found")
+        raise InsufficientStockError(equipment_id, from_bucket, qty)
+
     entry = LedgerEntry(
         equipment_id=equipment_id, qty=qty, from_bucket=from_bucket, to_bucket=to_bucket,
         reason=reason, location=location, rental_id=rental_id, booking_id=booking_id,
         note=note, created_by=created_by,
     )
-    await db.ledger_entries.insert_one(entry.model_dump())
+    await db.ledger_entries.insert_one(entry.model_dump(), session=session)
+
+
+async def run_in_transaction(fn):
+    """Run `fn(session)` inside a Mongo multi-document transaction when the
+    deployment supports one (replica set / sharded cluster). Standalone
+    MongoDB instances (local dev, some test sandboxes) don't support
+    transactions at all, so we probe once and transparently fall back to
+    running `fn(None)` without a session — the per-call conditional filter in
+    apply_ledger_entry still prevents over-allocation either way; the
+    transaction only adds all-or-nothing rollback across multiple ledger
+    moves in one request (e.g. a multi-line rental)."""
+    global _TRANSACTIONS_SUPPORTED
+    if _TRANSACTIONS_SUPPORTED is False:
+        return await fn(None)
+    try:
+        async with await client.start_session() as session:
+            async def _cb(s):
+                return await fn(s)
+            result = await session.with_transaction(_cb)
+            _TRANSACTIONS_SUPPORTED = True
+            return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "Transaction numbers" in msg or "IllegalOperation" in msg or "replica set" in msg.lower():
+            _TRANSACTIONS_SUPPORTED = False
+            return await fn(None)
+        raise
 
 
 # ----------------------------- Auth Deps ----------------------------------
@@ -880,7 +987,14 @@ async def register(body: RegisterReq, _user: UserPublic = Depends(require_role(R
 
 @api.post("/auth/signup", response_model=TokenPair, status_code=201)
 async def signup(body: SignupReq):
-    """Create a least-privileged account and sign it in immediately."""
+    """Create a least-privileged account and sign it in immediately.
+
+    Gated: only an allowed email domain or a valid invite code may self-
+    provision. Without SIGNUP_ALLOWED_DOMAINS / SIGNUP_INVITE_CODES configured,
+    self-service signup is closed and accounts must come from an admin via
+    POST /auth/register."""
+    if not _signup_authorized(str(body.email), body.invite_code):
+        raise HTTPException(403, "Sign-up is invite-only. Contact an administrator for access.")
     existing = await db.users.find_one({"email": body.email})
     if existing:
         raise HTTPException(409, "Email already registered")
@@ -973,6 +1087,12 @@ async def exchange_emergent_session(body: SessionExchangeBody):
         user_id = existing["id"]
         role = existing.get("role", Role.crew.value)
     else:
+        # Auto-provisioning a brand-new account via Google is the same trust
+        # decision as public signup: only allow it for an approved email
+        # domain. An invite code isn't collectible in this redirect flow, so
+        # unlike /auth/signup this path never falls back to one.
+        if not (SIGNUP_ALLOWED_DOMAINS and email.rsplit("@", 1)[-1] in SIGNUP_ALLOWED_DOMAINS):
+            raise HTTPException(403, "This Google account is not authorized. Contact an administrator for access.")
         user_id = gen_id()
         role = Role.crew.value
         await db.users.insert_one({
@@ -1015,9 +1135,9 @@ async def list_users(_: UserPublic = Depends(require_role(Role.admin))):
 
 # ----------------------------- Equipment ----------------------------------
 @api.get("/equipment", response_model=List[Equipment])
-async def list_equipment(_: UserPublic = Depends(get_current_user)):
+async def list_equipment(user: UserPublic = Depends(get_current_user)):
     docs = await db.equipment.find({}, {"_id": 0}).to_list(2000)
-    return [Equipment(**d) for d in docs]
+    return [Equipment(**redact_money_for_crew(d, user.role.value)) for d in docs]
 
 
 @api.post("/equipment", response_model=Equipment, status_code=201)
@@ -1025,13 +1145,15 @@ async def create_equipment(body: EquipmentCreate, user: UserPublic = Depends(req
     qr_code = (body.qr_code or "").strip() or None
     if qr_code and await db.equipment.find_one({"qr_code": qr_code}):
         raise HTTPException(409, "QR code already assigned")
+    available = body.available if body.available is not None else body.quantity
     eq = Equipment(
         sku=body.sku.strip() or equipment_identifier_sku(qr_code, body.serial_number),
         qr_code=qr_code, model=body.model.strip(), serial_number=body.serial_number.strip(),
         name=body.name, category=body.category,
         condition=body.condition, location=body.location,
+        location_balances={body.location: available} if available > 0 else {},
         daily_rate=body.daily_rate, quantity=body.quantity,
-        available=body.available if body.available is not None else body.quantity,
+        available=available,
         tracking_type=body.tracking_type,
         notes=body.notes,
     )
@@ -1061,6 +1183,10 @@ async def update_equipment(eq_id: str, body: EquipmentCreate, _: UserPublic = De
             raise HTTPException(409, "QR code already assigned")
     if upd.get("available") is None:
         upd["available"] = doc["available"]
+    # A manual edit sets the whole record, including collapsing any
+    # location split a transfer had created — this form only exposes one
+    # location field, so it can't express a partial split.
+    upd["location_balances"] = {upd["location"]: upd["available"]} if upd["available"] > 0 else {}
     await db.equipment.update_one({"id": eq_id}, {"$set": upd})
     new_doc = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
     return Equipment(**new_doc)
@@ -1171,8 +1297,20 @@ async def equipment_breakdown(eq_id: str, _: UserPublic = Depends(get_current_us
     if not eq:
         raise HTTPException(404, "Equipment not found")
     rows: List[dict] = []
-    if eq.get("available", 0) > 0:
-        rows.append({"qty": eq["available"], "label": eq.get("location") or "Yard", "kind": "yard"})
+    available = eq.get("available", 0)
+    balances: dict[str, int] = {k: v for k, v in (eq.get("location_balances") or {}).items() if v > 0}
+    tracked = sum(balances.values())
+    if tracked < available:
+        # available grew (a return, reconciliation, inspection pass, ...)
+        # through a path that doesn't attribute location — rather than hide
+        # those units from the breakdown, book the untracked remainder to
+        # the equipment's primary location so the rows still sum to
+        # `available`.
+        fallback_loc = eq.get("location") or "Yard"
+        balances[fallback_loc] = balances.get(fallback_loc, 0) + (available - tracked)
+    for loc, qty in balances.items():
+        if qty > 0:
+            rows.append({"qty": qty, "label": loc or "Yard", "kind": "yard"})
     if eq.get("checked_out", 0) > 0:
         rows.append({"qty": eq["checked_out"], "label": f"Checked out to {eq.get('checked_out_to') or 'project foreman'}", "kind": "checked_out"})
 
@@ -1330,26 +1468,46 @@ async def list_transfers(_: UserPublic = Depends(get_current_user)):
 @api.post("/equipment/{eq_id}/transfer", response_model=Transfer, status_code=201)
 async def create_transfer(eq_id: str, body: TransferCreate, user: UserPublic = Depends(require_role(Role.foreman))):
     """Move `qty` available units of this SKU to another yard. Units sit in
-    the in_transit bucket until received at the destination — this is a
-    whole-yard relocation, not per-unit tracking (bulk equipment has one
-    location field for its whole available pool)."""
+    the in_transit bucket until received at the destination. Bulk equipment
+    tracks available stock per location (`location_balances`), so a partial
+    transfer only moves units out of the specific yard they're leaving —
+    it never relabels the whole available pool."""
     eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
     if not eq:
         raise HTTPException(404, "Equipment not found")
-    if body.qty <= 0 or body.qty > eq.get("available", 0):
-        raise HTTPException(400, "qty exceeds available units")
-    if not body.to_location.strip():
+    from_location = eq.get("location", "")
+    balances: dict[str, int] = dict(eq.get("location_balances") or {})
+    at_source = balances.get(from_location, 0)
+    if body.qty <= 0 or body.qty > at_source:
+        raise HTTPException(400, f"qty exceeds available units at {from_location or 'this location'}")
+    to_location = body.to_location.strip()
+    if not to_location:
         raise HTTPException(400, "to_location is required")
+
     transfer = Transfer(
         equipment_id=eq_id, equipment_name=eq.get("name", ""), qty=body.qty,
-        from_location=eq.get("location", ""), to_location=body.to_location.strip(),
+        from_location=from_location, to_location=to_location,
         note=body.note, created_by=user.name,
     )
-    await db.transfers.insert_one(transfer.model_dump())
-    await apply_ledger_entry(
-        eq_id, body.qty, "available", "in_transit", "transfer",
-        location=body.to_location.strip(), note=body.note, created_by=user.name,
-    )
+
+    async def _do(session):
+        await db.transfers.insert_one(transfer.model_dump(), session=session)
+        await apply_ledger_entry(
+            eq_id, body.qty, "available", "in_transit", "transfer",
+            location=to_location, note=body.note, created_by=user.name, session=session,
+        )
+        # Decrement the specific source location's balance — conditional on
+        # it still holding enough, so a concurrent transfer from the same
+        # yard can't double-spend the same units.
+        result = await db.equipment.update_one(
+            {"id": eq_id, f"location_balances.{from_location}": {"$gte": body.qty}},
+            {"$inc": {f"location_balances.{from_location}": -body.qty}},
+            session=session,
+        )
+        if result.matched_count == 0:
+            raise HTTPException(409, f"Not enough stock at {from_location or 'this location'} to transfer")
+
+    await run_in_transaction(_do)
     return transfer
 
 
@@ -1360,17 +1518,39 @@ async def receive_transfer(transfer_id: str, user: UserPublic = Depends(require_
         raise HTTPException(404, "Transfer not found")
     if doc["status"] == "received":
         raise HTTPException(400, "Already received")
-    await apply_ledger_entry(
-        doc["equipment_id"], doc["qty"], "in_transit", "available", "transfer",
-        location=doc["to_location"], note=f"Received at {doc['to_location']}", created_by=user.name,
-    )
-    # Whole-yard relocation semantics: the destination becomes the equipment's
-    # location of record. A split-location yard isn't modeled — see note above.
-    await db.equipment.update_one({"id": doc["equipment_id"]}, {"$set": {"location": doc["to_location"]}})
-    await db.transfers.update_one(
-        {"id": transfer_id},
-        {"$set": {"status": "received", "received_by": user.name, "received_at": now_utc()}},
-    )
+    to_location = doc["to_location"]
+
+    async def _do(session):
+        await apply_ledger_entry(
+            doc["equipment_id"], doc["qty"], "in_transit", "available", "transfer",
+            location=to_location, note=f"Received at {to_location}", created_by=user.name, session=session,
+        )
+        # Credit the destination location's own balance — the units that
+        # left one yard land in this one; every other location's balance
+        # (including any still in transit) is untouched.
+        await db.equipment.update_one(
+            {"id": doc["equipment_id"]},
+            {"$inc": {f"location_balances.{to_location}": doc["qty"]}},
+            session=session,
+        )
+        await db.transfers.update_one(
+            {"id": transfer_id},
+            {"$set": {"status": "received", "received_by": user.name, "received_at": now_utc()}},
+            session=session,
+        )
+
+    await run_in_transaction(_do)
+
+    # `location` (the single display/default location) tracks whichever
+    # location now holds the most available stock — informational only;
+    # location_balances is the source of truth for "what's where".
+    eq = await db.equipment.find_one({"id": doc["equipment_id"]}, {"_id": 0})
+    balances: dict[str, int] = eq.get("location_balances") or {}
+    if balances:
+        top_location = max(balances, key=lambda loc: balances[loc])
+        if top_location != eq.get("location"):
+            await db.equipment.update_one({"id": doc["equipment_id"]}, {"$set": {"location": top_location}})
+
     new_doc = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
     return Transfer(**new_doc)
 
@@ -1673,20 +1853,27 @@ async def delete_serial_unit(serial_id: str, _: UserPublic = Depends(require_rol
 
 # ----------------------------- Rentals ------------------------------------
 @api.get("/rentals", response_model=List[Rental])
-async def list_rentals(_: UserPublic = Depends(get_current_user)):
+async def list_rentals(user: UserPublic = Depends(get_current_user)):
     docs = await db.rentals.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [Rental(**d) for d in docs]
+    return [Rental(**redact_money_for_crew(d, user.role.value)) for d in docs]
 
 
 @api.post("/rentals", response_model=Rental, status_code=201)
 async def create_rental(body: RentalCreate, user: UserPublic = Depends(require_role(Role.foreman))):
     rental = Rental(**body.model_dump())
-    for line in rental.lines:
-        await apply_ledger_entry(
-            line.equipment_id, line.qty, "available", "on_rental", "rental_created",
-            location=rental.job_site, rental_id=rental.id, created_by=user.name,
-        )
-    await db.rentals.insert_one(rental.model_dump())
+
+    async def _do(session):
+        for line in rental.lines:
+            await apply_ledger_entry(
+                line.equipment_id, line.qty, "available", "on_rental", "rental_created",
+                location=rental.job_site, rental_id=rental.id, created_by=user.name, session=session,
+            )
+        await db.rentals.insert_one(rental.model_dump(), session=session)
+
+    # All lines allocate or none do — otherwise a shortfall on line 2 of 3
+    # would leave line 1's stock already committed with no rental to show
+    # for it (over-allocation with no paper trail).
+    await run_in_transaction(_do)
     return rental
 
 
@@ -1805,12 +1992,15 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     for line in body.lines:
         new_by_eq[line.equipment_id] = new_by_eq.get(line.equipment_id, 0) + line.qty
 
-    for eq_id in set(old_by_eq) | set(new_by_eq):
-        delta = new_by_eq.get(eq_id, 0) - old_by_eq.get(eq_id, 0)  # +ve means MORE committed
-        if delta > 0:
-            await apply_ledger_entry(eq_id, delta, "available", "on_rental", "rental_updated", rental_id=rental_id, created_by=user.name)
-        elif delta < 0:
-            await apply_ledger_entry(eq_id, -delta, "on_rental", "available", "rental_updated", rental_id=rental_id, created_by=user.name)
+    async def _rebalance(session):
+        for eq_id in set(old_by_eq) | set(new_by_eq):
+            delta = new_by_eq.get(eq_id, 0) - old_by_eq.get(eq_id, 0)  # +ve means MORE committed
+            if delta > 0:
+                await apply_ledger_entry(eq_id, delta, "available", "on_rental", "rental_updated", rental_id=rental_id, created_by=user.name, session=session)
+            elif delta < 0:
+                await apply_ledger_entry(eq_id, -delta, "on_rental", "available", "rental_updated", rental_id=rental_id, created_by=user.name, session=session)
+
+    await run_in_transaction(_rebalance)
 
     # Preserve returned_qty/damaged_qty per equipment_id (clamped to new qty).
     old_returned: dict[str, int] = {l["equipment_id"]: l.get("returned_qty", 0) for l in doc.get("lines", [])}
@@ -1861,9 +2051,9 @@ async def delete_rental(rental_id: str, user: UserPublic = Depends(require_role(
 
 # ----------------------------- Bookings -----------------------------------
 @api.get("/bookings", response_model=List[Booking])
-async def list_bookings(_: UserPublic = Depends(get_current_user)):
+async def list_bookings(user: UserPublic = Depends(get_current_user)):
     docs = await db.bookings.find({}, {"_id": 0}).sort("start_date", 1).to_list(1000)
-    return [Booking(**d) for d in docs]
+    return [Booking(**redact_money_for_crew(d, user.role.value)) for d in docs]
 
 
 @api.post("/bookings", response_model=Booking, status_code=201)
@@ -2048,9 +2238,9 @@ async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_curren
 
 # ----------------------------- Maintenance --------------------------------
 @api.get("/maintenance", response_model=List[Maintenance])
-async def list_maintenance(_: UserPublic = Depends(get_current_user)):
+async def list_maintenance(user: UserPublic = Depends(get_current_user)):
     docs = await db.maintenance.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [Maintenance(**d) for d in docs]
+    return [Maintenance(**redact_money_for_crew(d, user.role.value)) for d in docs]
 
 
 @api.post("/maintenance", response_model=Maintenance, status_code=201)

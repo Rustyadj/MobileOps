@@ -16,6 +16,7 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -63,6 +64,7 @@ const blank: Partial<ShopTask> = {
 
 export default function ShopTasksScreen() {
   const { isShellWide } = useBreakpoint();
+  const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [tasks, setTasks] = useState<ShopTask[]>([]);
   const [equipment, setEquipment] = useState<Equipment[]>([]);
@@ -178,13 +180,13 @@ export default function ShopTasksScreen() {
 
   return (
     <Screen title="Shop Tasks" subtitle={`${tasks.filter((t) => t.status !== "done").length} open`} back
-      rightAction={{ icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-task-btn" }}
+      rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-task-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="shop-tasks-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search tasks, assignee…" testID="task-search" style={{ flex: 1, maxWidth: 360 }} />
-            <Button title="New Task" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-task-btn-toolbar" />
+            {canEdit ? <Button title="New Task" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-task-btn-toolbar" /> : null}
           </PageToolbar>
           <View style={styles.filterStack}>
             <FilterChips options={STATUSES} value={status} onChange={setStatus} testIDPrefix="task-status" />
@@ -222,7 +224,7 @@ export default function ShopTasksScreen() {
 
       <DetailDrawer visible={!!selected} title={selected?.title || "Task"} subtitle={selected ? `${pretty(selected.task_type)} · ${pretty(selected.priority)} priority` : undefined}
         onClose={() => setSelected(null)} testID="task-detail-drawer"
-        headerActions={selected ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID="edit-task-btn"><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
+        headerActions={selected && canEdit ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID="edit-task-btn" accessibilityLabel="Edit task" accessibilityRole="button"><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
         {selected ? <>
           <SectionLabel>Status</SectionLabel>
           <Row style={{ gap: spacing.xs, marginBottom: spacing.lg, flexWrap: "wrap" }}>

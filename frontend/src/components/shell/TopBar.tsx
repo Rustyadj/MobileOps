@@ -24,7 +24,7 @@ export const TopBar: React.FC = () => {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { openSearch, openNew } = useCommandMenu();
-  const { items } = useNeedsAttention();
+  const { items, error: attentionError } = useNeedsAttention();
   const { toggle: toggleSidebar } = useSidebarCollapsed();
   const router = useRouter();
   const [profileOpen, setProfileOpen] = useState(false);
@@ -35,7 +35,7 @@ export const TopBar: React.FC = () => {
 
   return (
     <View style={styles.wrap} testID="topbar">
-      <TouchableOpacity onPress={toggleSidebar} style={styles.iconBtn} testID="topbar-sidebar-toggle">
+      <TouchableOpacity onPress={toggleSidebar} style={styles.iconBtn} testID="topbar-sidebar-toggle" accessibilityLabel="Toggle sidebar" accessibilityRole="button">
         <Ionicons name="menu-outline" size={20} color={colors.inkSecondary} />
       </TouchableOpacity>
 
@@ -45,20 +45,30 @@ export const TopBar: React.FC = () => {
         <Text style={styles.crumbActive} numberOfLines={1}>{page}</Text>
       </View>
 
-      <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7}>
+      <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7} accessibilityLabel="Search rentals, equipment, sites, vendors" accessibilityRole="button">
         <Ionicons name="search" size={15} color={colors.inkMuted} />
         <Text style={styles.searchText} numberOfLines={1}>Search rentals, equipment, sites, vendors…</Text>
         <View style={styles.kbd}><Text style={styles.kbdText}>⌘K</Text></View>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={openNew} style={styles.newBtn} testID="topbar-new" activeOpacity={0.85}>
+      <TouchableOpacity onPress={openNew} style={styles.newBtn} testID="topbar-new" activeOpacity={0.85} accessibilityLabel="Create new" accessibilityRole="button">
         <Ionicons name="add" size={15} color="#FFF" />
         <Text style={styles.newText}>New</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.push("/(app)" as any)} style={styles.iconBtn} testID="topbar-attention">
+      <TouchableOpacity
+        onPress={() => router.push("/(app)" as any)}
+        style={styles.iconBtn}
+        testID="topbar-attention"
+        accessibilityLabel={attentionError ? "Needs attention (data may be incomplete — some sources failed to load)" : `Needs attention, ${items.length} item${items.length === 1 ? "" : "s"}`}
+        accessibilityRole="button"
+      >
         <Ionicons name="notifications-outline" size={18} color={colors.inkSecondary} />
-        {items.length > 0 ? (
+        {attentionError ? (
+          <View style={[styles.badge, styles.badgeWarning]}>
+            <Ionicons name="warning-outline" size={9} color="#FFF" />
+          </View>
+        ) : items.length > 0 ? (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{items.length > 9 ? "9+" : items.length}</Text>
           </View>
@@ -70,7 +80,7 @@ export const TopBar: React.FC = () => {
       </View>
 
       <View>
-        <TouchableOpacity onPress={() => setProfileOpen((o) => !o)} style={styles.profileBtn} testID="topbar-profile" activeOpacity={0.75}>
+        <TouchableOpacity onPress={() => setProfileOpen((o) => !o)} style={styles.profileBtn} testID="topbar-profile" activeOpacity={0.75} accessibilityLabel={`Account menu for ${user?.name || "current user"}`} accessibilityRole="button">
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>{initials}</Text>
           </View>
@@ -88,7 +98,7 @@ export const TopBar: React.FC = () => {
               <Text style={[typo.bodySmall, { marginTop: 2 }]} numberOfLines={1}>{user?.email}</Text>
               <View style={styles.roleTag}><Text style={styles.roleText}>{user?.role}</Text></View>
               <View style={styles.menuDivider} />
-              <TouchableOpacity onPress={logout} style={styles.menuItem} testID="topbar-signout">
+              <TouchableOpacity onPress={logout} style={styles.menuItem} testID="topbar-signout" accessibilityLabel="Sign out" accessibilityRole="button">
                 <Ionicons name="log-out-outline" size={16} color={colors.error} />
                 <Text style={[typo.body, { color: colors.error, fontSize: 13 }]}>Sign out</Text>
               </TouchableOpacity>
@@ -134,6 +144,7 @@ const styles = StyleSheet.create({
   helpBtn: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   helpText: { fontSize: 12, fontWeight: "700", color: colors.inkMuted },
   badge: { position: "absolute", top: 2, right: 2, minWidth: 15, height: 15, borderRadius: 8, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
+  badgeWarning: { backgroundColor: colors.error },
   badgeText: { color: "#FFF", fontSize: 9, fontWeight: "700" },
   profileBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 4, paddingRight: 2 },
   avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },

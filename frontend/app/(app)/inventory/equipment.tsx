@@ -14,6 +14,7 @@ import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
+import { usePermissions } from "@/src/hooks/use-permissions";
 import { Ionicons } from "@expo/vector-icons";
 import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
 import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
@@ -61,6 +62,7 @@ const pretty = (value: string) => value.replace(/_/g, " ");
 
 export default function EquipmentScreen() {
   const { isShellWide } = useBreakpoint();
+  const { canEdit, canAdmin } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const [items, setItems] = useState<Equipment[]>([]);
   const [maintenance, setMaintenance] = useState<Maintenance[]>([]);
@@ -246,18 +248,18 @@ export default function EquipmentScreen() {
 
   return (
     <Screen title="Equipment" subtitle={`${items.length} assets · ${items.reduce((sum, item) => sum + item.available, 0)} available`} back
-      rightAction={{ icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" }}
+      rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search QR code, tool, model, serial…" testID="equipment-search" style={{ flex: 1, maxWidth: 380 }} />
-            <Button title="Add Equipment" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-equipment-btn" />
+            {canEdit ? <Button title="Add Equipment" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-equipment-btn" /> : null}
             <View style={styles.menuWrap}>
-              <TouchableOpacity onPress={() => setShowFileMenu((visible) => !visible)} style={styles.overflowButton} testID="equipment-file-menu"><Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} /></TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowFileMenu((visible) => !visible)} style={styles.overflowButton} testID="equipment-file-menu" accessibilityLabel="More equipment actions" accessibilityRole="button"><Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} /></TouchableOpacity>
               {showFileMenu ? (
                 <View style={styles.fileMenu}>
-                  <TouchableOpacity onPress={importCSV} style={styles.fileMenuItem} testID="import-csv-btn"><Ionicons name="cloud-upload-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Import CSV</Text></TouchableOpacity>
+                  {canEdit ? <TouchableOpacity onPress={importCSV} style={styles.fileMenuItem} testID="import-csv-btn"><Ionicons name="cloud-upload-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Import CSV</Text></TouchableOpacity> : null}
                   <TouchableOpacity onPress={exportCSV} style={styles.fileMenuItem} testID="export-csv-btn"><Ionicons name="download-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Export CSV</Text></TouchableOpacity>
                 </View>
               ) : null}
@@ -285,7 +287,7 @@ export default function EquipmentScreen() {
             ))}
           </ScrollView>
           <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-            <View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View>
+            {canEdit ? <View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View> : null}
             <View style={{ flex: 1 }}><Button title="Export CSV" onPress={exportCSV} variant="outline" testID="export-csv-btn" /></View>
           </Row>
           {mobileItems.length === 0 ? <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No equipment in this category.</Text></Card> : mobileItems.map((item) => (
@@ -303,8 +305,13 @@ export default function EquipmentScreen() {
                 {item.in_maintenance > 0 ? <Text style={typo.label}>Maint <Mono style={{ fontSize: 13, color: colors.warning }}>{item.in_maintenance}</Mono></Text> : null}
                 {item.missing > 0 ? <Text style={typo.label}>Missing <Mono style={{ fontSize: 13, color: colors.error }}>{item.missing}</Mono></Text> : null}
               </Row>
-              <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}><View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View></Row>
-              {item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} loading={assignmentSaving} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
+              {canEdit || canAdmin ? (
+                <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
+                  {canEdit ? <View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View> : null}
+                  {canAdmin ? <View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View> : null}
+                </Row>
+              ) : null}
+              {canEdit && item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} loading={assignmentSaving} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
             </Card>
           ))}
         </>
@@ -312,13 +319,13 @@ export default function EquipmentScreen() {
 
       <DetailDrawer visible={!!selected} title={selected?.name || "Equipment"} subtitle={selected ? `${equipmentIdentifier(selected)} · ${pretty(selected.category)}` : undefined}
         onClose={() => { setSelected(null); setCheckoutTarget(null); }} testID="equipment-detail-drawer"
-        headerActions={selected ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID={`edit-${selected.sku}`}><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
+        headerActions={selected && canEdit ? <TouchableOpacity onPress={() => setEditing(selected)} style={styles.drawerEdit} testID={`edit-${selected.sku}`} accessibilityLabel="Edit equipment" accessibilityRole="button"><Ionicons name="create-outline" size={18} color={colors.primary} /><Text style={styles.drawerEditText}>Edit</Text></TouchableOpacity> : null}>
         {selected ? <>
           <SectionLabel>Tool identity</SectionLabel>
           <View style={styles.detailGrid}><DetailStat label="QR Code" value={qrCodeDisplay(selected)} mono /><DetailStat label="Model" value={selected.model || "—"} mono /><DetailStat label="Serial number" value={selected.serial_number || "—"} mono /></View>
           <SectionLabel>Inventory</SectionLabel>
           <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || (selected.checked_out ? "Field" : "—")} /><DetailStat label="Foreman / project" value={selected.checked_out_to || "Not checked out"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Owned" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Checked out" value={String(selected.checked_out || 0)} mono /><DetailStat label="Reserved" value={String(selected.reserved || 0)} mono /><DetailStat label="On rental" value={String(selected.on_rental || 0)} mono /><DetailStat label="In transit" value={String(selected.in_transit || 0)} mono /><DetailStat label="Pending inspection" value={String(selected.pending_inspection || 0)} mono /><DetailStat label="Maintenance" value={String(selected.in_maintenance || 0)} mono /><DetailStat label="Missing" value={String(selected.missing || 0)} mono /></View>
-          {selected.category === "tool" ? selected.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(selected)} loading={assignmentSaving} variant="outline" testID={`checkin-${selected.sku}`} /> : checkoutTarget?.id === selected.id ? (
+          {canEdit && selected.category === "tool" ? selected.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(selected)} loading={assignmentSaving} variant="outline" testID={`checkin-${selected.sku}`} /> : checkoutTarget?.id === selected.id ? (
             <View style={styles.checkoutForm} testID="tool-checkout-form">
               <Input label="Project Foreman / Project" value={checkoutAssignee} onChangeText={setCheckoutAssignee} placeholder="Who is accountable for this tool?" testID="checkout-assignee" />
               <Row style={{ gap: spacing.sm }}><View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setCheckoutTarget(null)} variant="outline" testID="cancel-tool-checkout" /></View><View style={{ flex: 1 }}><Button title="Confirm Checkout" onPress={checkout} loading={assignmentSaving} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" /></View></Row>
@@ -337,8 +344,8 @@ export default function EquipmentScreen() {
           <SectionLabel>Rental usage</SectionLabel>
           {selectedRentals.length ? selectedRentals.map((rental) => { const line = rental.lines.find((entry) => entry.equipment_id === selected.id)!; return <View key={rental.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{rental.customer_name}</Text><Text style={typo.bodySmall}>{rental.job_site || "No job site"} · {new Date(rental.start_date).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={rental.status} /><Mono style={styles.tableMono}>{line.qty - (line.returned_qty || 0)} out</Mono></View></View>; }) : <Text style={[typo.bodySmall, styles.detailText]}>No rental history for this item.</Text>}
           <SectionLabel>Maintenance history</SectionLabel>
-          {selectedMaintenance.length ? selectedMaintenance.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{entry.issue}</Text><Text style={typo.bodySmall}>{entry.action_taken || "No action recorded"} · {new Date(entry.created_at).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={entry.status} /><Mono style={styles.tableMono}>${entry.cost.toFixed(2)}</Mono></View></View>) : <Text style={[typo.bodySmall, styles.detailText]}>No maintenance history for this item.</Text>}
-          <Button title="Delete Equipment" onPress={() => setDeleting(selected)} variant="danger" testID={`delete-${selected.sku}`} />
+          {selectedMaintenance.length ? selectedMaintenance.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{entry.issue}</Text><Text style={typo.bodySmall}>{entry.action_taken || "No action recorded"} · {new Date(entry.created_at).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={entry.status} />{canEdit ? <Mono style={styles.tableMono}>${entry.cost.toFixed(2)}</Mono> : null}</View></View>) : <Text style={[typo.bodySmall, styles.detailText]}>No maintenance history for this item.</Text>}
+          {canAdmin ? <Button title="Delete Equipment" onPress={() => setDeleting(selected)} variant="danger" testID={`delete-${selected.sku}`} /> : null}
         </> : null}
       </DetailDrawer>
 
