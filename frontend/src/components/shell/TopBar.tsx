@@ -11,6 +11,7 @@ import { useCommandMenu } from "@/src/context/CommandMenuContext";
 import { useNeedsAttention } from "@/src/hooks/use-needs-attention";
 import { useSidebarCollapsed } from "@/src/hooks/use-sidebar-collapsed";
 import { breadcrumbForPath } from "./nav-config";
+import { SyncStatusBadge } from "./SyncStatusBadge";
 
 export const TOPBAR_HEIGHT = 56;
 
@@ -74,6 +75,8 @@ export const TopBar: React.FC = () => {
           </View>
         ) : null}
       </TouchableOpacity>
+
+      <SyncStatusBadge />
 
       <View style={styles.helpBtn}>
         <Text style={styles.helpText}>?</Text>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, Platform } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
@@ -15,6 +15,9 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { Ionicons } from "@expo/vector-icons";
 import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
 import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
@@ -64,9 +67,12 @@ export default function EquipmentScreen() {
   const { isShellWide } = useBreakpoint();
   const { canEdit, canAdmin } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
-  const [items, setItems] = useState<Equipment[]>([]);
-  const [maintenance, setMaintenance] = useState<Maintenance[]>([]);
-  const [rentals, setRentals] = useState<Rental[]>([]);
+  const equipmentRes = useCachedResource<Equipment>("equipment", () => api<Equipment[]>("/equipment"));
+  const maintenanceRes = useCachedResource<Maintenance>("maintenance", () => api<Maintenance[]>("/maintenance"));
+  const rentalsRes = useCachedResource<Rental>("rentals", () => api<Rental[]>("/rentals"));
+  const items = equipmentRes.data;
+  const maintenance = maintenanceRes.data;
+  const rentals = rentalsRes.data;
   const [cat, setCat] = useState("all");
   const [location, setLocation] = useState("all");
   const [condition, setCondition] = useState("all");
@@ -74,7 +80,6 @@ export default function EquipmentScreen() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("qr_code");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<Partial<Equipment> | null>(null);
   const [selected, setSelected] = useState<Equipment | null>(null);
   const [deleting, setDeleting] = useState<Equipment | null>(null);
@@ -83,21 +88,10 @@ export default function EquipmentScreen() {
   const [breakdownLoading, setBreakdownLoading] = useState(false);
   const [checkoutTarget, setCheckoutTarget] = useState<Equipment | null>(null);
   const [checkoutAssignee, setCheckoutAssignee] = useState("");
-  const [assignmentSaving, setAssignmentSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [equipmentData, maintenanceData, rentalData] = await Promise.all([
-        api<Equipment[]>("/equipment"),
-        api<Maintenance[]>("/maintenance"),
-        api<Rental[]>("/rentals"),
-      ]);
-      setItems(equipmentData);
-      setMaintenance(maintenanceData);
-      setRentals(rentalData);
-    } catch (e) { console.warn(e); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  const refreshing = equipmentRes.refreshing || maintenanceRes.refreshing || rentalsRes.refreshing;
+  const onRefresh = () => { equipmentRes.onRefresh(); maintenanceRes.onRefresh(); rentalsRes.onRefresh(); };
+
   useEffect(() => {
     if (!params.open || items.length === 0) return;
     setSelected(items.find((item) => item.id === params.open) || null);
@@ -117,7 +111,6 @@ export default function EquipmentScreen() {
     return () => { cancelled = true; };
   }, [selected]);
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
   const mobileItems = cat === "all" ? items : items.filter((item) => item.category === cat);
   const locationOptions = useMemo(() => [
     { key: "all", label: "All locations" },
@@ -166,32 +159,58 @@ export default function EquipmentScreen() {
       };
       if (editing.id) await api(`/equipment/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/equipment", { method: "POST", body: JSON.stringify(body) });
-      setEditing(null); setSelected(null); load();
+      setEditing(null); setSelected(null); equipmentRes.onRefresh();
     } catch (e: any) { Alert.alert("Save failed", e.message); }
   };
   const del = async () => {
     if (!deleting) return;
     try {
       await api(`/equipment/${deleting.id}`, { method: "DELETE" });
-      setDeleting(null); setSelected(null); load();
+      setDeleting(null); setSelected(null); equipmentRes.onRefresh();
     } catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
-  const checkout = async () => {
+  // Checkout/checkin queue offline (see plan: this is field-work, done where
+  // signal is worst) — mutate() applies the bucket change to the local cache
+  // immediately and enqueues the request; it doesn't await a round-trip, so
+  // there's nothing to catch here and no loading state to show.
+  const checkout = () => {
     if (!checkoutTarget || !checkoutAssignee.trim()) return;
-    setAssignmentSaving(true);
-    try {
-      const updated = await api<Equipment>(`/equipment/${checkoutTarget.id}/checkout`, { method: "POST", body: JSON.stringify({ checked_out_to: checkoutAssignee.trim(), qty: 1 }) });
-      setCheckoutTarget(null); setCheckoutAssignee(""); setSelected(updated); await load();
-    } catch (e: any) { Alert.alert("Checkout failed", e.message); }
-    finally { setAssignmentSaving(false); }
+    const assignee = checkoutAssignee.trim();
+    const target = checkoutTarget;
+    const updated = mutate<Equipment>({
+      kind: "command",
+      entityType: "equipment",
+      entityId: target.id,
+      path: `/equipment/${target.id}/checkout`,
+      method: "POST",
+      body: { checked_out_to: assignee, qty: 1 },
+      optimisticPatch: {
+        available: Math.max(0, target.available - 1),
+        checked_out: (target.checked_out || 0) + 1,
+        checked_out_to: assignee,
+        location: "",
+      },
+    });
+    setCheckoutTarget(null); setCheckoutAssignee("");
+    if (updated) setSelected(updated);
   };
-  const checkin = async (item: Equipment) => {
-    setAssignmentSaving(true);
-    try {
-      const updated = await api<Equipment>(`/equipment/${item.id}/checkin`, { method: "POST", body: JSON.stringify({ qty: 1 }) });
-      setSelected(updated); await load();
-    } catch (e: any) { Alert.alert("Check-in failed", e.message); }
-    finally { setAssignmentSaving(false); }
+  const checkin = (item: Equipment) => {
+    const remaining = Math.max(0, (item.checked_out || 0) - 1);
+    const updated = mutate<Equipment>({
+      kind: "command",
+      entityType: "equipment",
+      entityId: item.id,
+      path: `/equipment/${item.id}/checkin`,
+      method: "POST",
+      body: { qty: 1 },
+      optimisticPatch: {
+        available: item.available + 1,
+        checked_out: remaining,
+        checked_out_to: remaining ? item.checked_out_to : "",
+        location: remaining === 0 ? "Yard" : "",
+      },
+    });
+    if (updated) setSelected(updated);
   };
   const exportCSV = async () => {
     setShowFileMenu(false);
@@ -223,7 +242,7 @@ export default function EquipmentScreen() {
       const tok = getAccessToken();
       const resp = await fetch(`${apiBaseUrl()}/equipment/import.csv`, { method: "POST", headers: { Authorization: `Bearer ${tok}` }, body: form as any });
       const result = await resp.json();
-      Alert.alert("Imported", `${result.imported} rows`); load();
+      Alert.alert("Imported", `${result.imported} rows`); equipmentRes.onRefresh();
     } catch (e: any) { Alert.alert("Import failed", e.message); }
   };
 
@@ -259,7 +278,7 @@ export default function EquipmentScreen() {
               <TouchableOpacity onPress={() => setShowFileMenu((visible) => !visible)} style={styles.overflowButton} testID="equipment-file-menu" accessibilityLabel="More equipment actions" accessibilityRole="button"><Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} /></TouchableOpacity>
               {showFileMenu ? (
                 <View style={styles.fileMenu}>
-                  {canEdit ? <TouchableOpacity onPress={importCSV} style={styles.fileMenuItem} testID="import-csv-btn"><Ionicons name="cloud-upload-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Import CSV</Text></TouchableOpacity> : null}
+                  {canEdit ? <RequiresOnline><TouchableOpacity onPress={importCSV} style={styles.fileMenuItem} testID="import-csv-btn"><Ionicons name="cloud-upload-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Import CSV</Text></TouchableOpacity></RequiresOnline> : null}
                   <TouchableOpacity onPress={exportCSV} style={styles.fileMenuItem} testID="export-csv-btn"><Ionicons name="download-outline" size={17} color={colors.ink} /><Text style={typo.bodySmall}>Export CSV</Text></TouchableOpacity>
                 </View>
               ) : null}
@@ -287,7 +306,7 @@ export default function EquipmentScreen() {
             ))}
           </ScrollView>
           <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-            {canEdit ? <View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View> : null}
+            {canEdit ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View></RequiresOnline> : null}
             <View style={{ flex: 1 }}><Button title="Export CSV" onPress={exportCSV} variant="outline" testID="export-csv-btn" /></View>
           </Row>
           {mobileItems.length === 0 ? <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No equipment in this category.</Text></Card> : mobileItems.map((item) => (
@@ -308,10 +327,10 @@ export default function EquipmentScreen() {
               {canEdit || canAdmin ? (
                 <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
                   {canEdit ? <View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View> : null}
-                  {canAdmin ? <View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View> : null}
+                  {canAdmin ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View></RequiresOnline> : null}
                 </Row>
               ) : null}
-              {canEdit && item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} loading={assignmentSaving} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
+              {canEdit && item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
             </Card>
           ))}
         </>
@@ -325,10 +344,10 @@ export default function EquipmentScreen() {
           <View style={styles.detailGrid}><DetailStat label="QR Code" value={qrCodeDisplay(selected)} mono /><DetailStat label="Model" value={selected.model || "—"} mono /><DetailStat label="Serial number" value={selected.serial_number || "—"} mono /></View>
           <SectionLabel>Inventory</SectionLabel>
           <View style={styles.detailGrid}><DetailStat label="Location" value={selected.location || (selected.checked_out ? "Field" : "—")} /><DetailStat label="Foreman / project" value={selected.checked_out_to || "Not checked out"} /><DetailStat label="Condition" value={pretty(selected.condition)} badge /><DetailStat label="Owned" value={String(selected.quantity)} mono /><DetailStat label="Available" value={String(selected.available)} mono /><DetailStat label="Checked out" value={String(selected.checked_out || 0)} mono /><DetailStat label="Reserved" value={String(selected.reserved || 0)} mono /><DetailStat label="On rental" value={String(selected.on_rental || 0)} mono /><DetailStat label="In transit" value={String(selected.in_transit || 0)} mono /><DetailStat label="Pending inspection" value={String(selected.pending_inspection || 0)} mono /><DetailStat label="Maintenance" value={String(selected.in_maintenance || 0)} mono /><DetailStat label="Missing" value={String(selected.missing || 0)} mono /></View>
-          {canEdit && selected.category === "tool" ? selected.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(selected)} loading={assignmentSaving} variant="outline" testID={`checkin-${selected.sku}`} /> : checkoutTarget?.id === selected.id ? (
+          {canEdit && selected.category === "tool" ? selected.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(selected)} variant="outline" testID={`checkin-${selected.sku}`} /> : checkoutTarget?.id === selected.id ? (
             <View style={styles.checkoutForm} testID="tool-checkout-form">
               <Input label="Project Foreman / Project" value={checkoutAssignee} onChangeText={setCheckoutAssignee} placeholder="Who is accountable for this tool?" testID="checkout-assignee" />
-              <Row style={{ gap: spacing.sm }}><View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setCheckoutTarget(null)} variant="outline" testID="cancel-tool-checkout" /></View><View style={{ flex: 1 }}><Button title="Confirm Checkout" onPress={checkout} loading={assignmentSaving} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" /></View></Row>
+              <Row style={{ gap: spacing.sm }}><View style={{ flex: 1 }}><Button title="Cancel" onPress={() => setCheckoutTarget(null)} variant="outline" testID="cancel-tool-checkout" /></View><View style={{ flex: 1 }}><Button title="Confirm Checkout" onPress={checkout} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" /></View></Row>
             </View>
           ) : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(selected); setCheckoutAssignee(""); }} variant="outline" disabled={selected.available <= 0} testID={`checkout-${selected.sku}`} /> : null}
           <SectionLabel>Where these units are</SectionLabel>
@@ -345,7 +364,7 @@ export default function EquipmentScreen() {
           {selectedRentals.length ? selectedRentals.map((rental) => { const line = rental.lines.find((entry) => entry.equipment_id === selected.id)!; return <View key={rental.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{rental.customer_name}</Text><Text style={typo.bodySmall}>{rental.job_site || "No job site"} · {new Date(rental.start_date).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={rental.status} /><Mono style={styles.tableMono}>{line.qty - (line.returned_qty || 0)} out</Mono></View></View>; }) : <Text style={[typo.bodySmall, styles.detailText]}>No rental history for this item.</Text>}
           <SectionLabel>Maintenance history</SectionLabel>
           {selectedMaintenance.length ? selectedMaintenance.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={{ flex: 1 }}><Text style={typo.h3}>{entry.issue}</Text><Text style={typo.bodySmall}>{entry.action_taken || "No action recorded"} · {new Date(entry.created_at).toLocaleDateString()}</Text></View><View style={{ alignItems: "flex-end", gap: 4 }}><StatusBadge label={entry.status} />{canEdit ? <Mono style={styles.tableMono}>${entry.cost.toFixed(2)}</Mono> : null}</View></View>) : <Text style={[typo.bodySmall, styles.detailText]}>No maintenance history for this item.</Text>}
-          {canAdmin ? <Button title="Delete Equipment" onPress={() => setDeleting(selected)} variant="danger" testID={`delete-${selected.sku}`} /> : null}
+          {canAdmin ? <RequiresOnline><Button title="Delete Equipment" onPress={() => setDeleting(selected)} variant="danger" testID={`delete-${selected.sku}`} /></RequiresOnline> : null}
         </> : null}
       </DetailDrawer>
 
@@ -362,13 +381,13 @@ export default function EquipmentScreen() {
           <Input label="Quantity" value={String(editing?.quantity ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, quantity: Number(text) || 0, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-quantity" />
           <Input label="Available" value={String(editing?.available ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-available" />
           <Input label="Notes" value={editing?.notes || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, notes: text }))} testID="edit-notes" />
-          <Button title="Save" onPress={save} testID="save-equipment-btn" />
+          <RequiresOnline><Button title="Save" onPress={save} testID="save-equipment-btn" /></RequiresOnline>
         </Screen>
       </Modal>
       <Modal visible={!!checkoutTarget && !isShellWide} animationType="slide" onRequestClose={() => setCheckoutTarget(null)}>
         <Screen title="Check Out Tool" subtitle={checkoutTarget ? `${equipmentIdentifier(checkoutTarget)} · ${checkoutTarget.name}` : undefined} back rightAction={{ icon: "close", onPress: () => setCheckoutTarget(null), testID: "close-checkout" }} testID="tool-checkout-screen">
           <Input label="Project Foreman / Project" value={checkoutAssignee} onChangeText={setCheckoutAssignee} placeholder="Who is accountable for this tool?" testID="checkout-assignee" />
-          <Button title="Confirm Checkout" onPress={checkout} loading={assignmentSaving} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" />
+          <Button title="Confirm Checkout" onPress={checkout} disabled={!checkoutAssignee.trim()} testID="confirm-tool-checkout" />
         </Screen>
       </Modal>
       <ConfirmDialog visible={!!deleting} title="Delete equipment?" message={deleting ? `${equipmentIdentifier(deleting)} — ${deleting.name} will be permanently removed.` : undefined} confirmLabel="Delete" onConfirm={del} onCancel={() => setDeleting(null)} testID="delete-equipment-confirm" />

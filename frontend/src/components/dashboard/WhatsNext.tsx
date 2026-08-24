@@ -28,7 +28,7 @@ const equipmentSummary = (lines: DispatchLine[]) => {
 };
 
 const timeLabel = (value?: string | null) =>
-  value ? new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "Unscheduled";
+  value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Unscheduled";
 
 export const WhatsNext: React.FC<{
   items: NextMovement[];

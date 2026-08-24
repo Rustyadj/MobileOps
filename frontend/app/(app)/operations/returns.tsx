@@ -2,7 +2,7 @@
 // partially-returned rentals, so a return can be processed without hunting
 // through the full Rentals list first. Recording a return routes clean
 // units to inspection and damaged units straight to a repair task.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { Screen } from "@/src/components/Screen";
@@ -11,6 +11,8 @@ import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
 import { api } from "@/src/api/client";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -31,21 +33,13 @@ export default function ReturnsScreen() {
   const router = useRouter();
   const { isShellWide } = useBreakpoint();
   const { canEdit } = usePermissions();
-  const [rentals, setRentals] = useState<Rental[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [selected, setSelected] = useState<OutstandingRow | null>(null);
+  const rentalsRes = useCachedResource<Rental>("rentals", () => api<Rental[]>("/rentals"));
+  const rentals = useMemo(
+    () => rentalsRes.data.filter((r) => r.status === "active" || r.status === "partially_returned"),
+    [rentalsRes.data],
+  );
   const [qty, setQty] = useState("");
   const [damagedQty, setDamagedQty] = useState("0");
-  const [submitting, setSubmitting] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const all = await api<Rental[]>("/rentals");
-      setRentals(all.filter((r) => r.status === "active" || r.status === "partially_returned"));
-    } catch (e) { console.warn(e); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const rows = useMemo<OutstandingRow[]>(() => {
     const out: OutstandingRow[] = [];
@@ -58,9 +52,15 @@ export default function ReturnsScreen() {
     return out.sort((a, b) => a.rental.customer_name.localeCompare(b.rental.customer_name));
   }, [rentals]);
 
-  const openReturn = (row: OutstandingRow) => { setSelected(row); setQty(String(row.onSite)); setDamagedQty("0"); };
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selected = rows.find((r) => `${r.rental.id}-${r.line.equipment_id}` === selectedKey) || null;
 
-  const submit = async () => {
+  const openReturn = (row: OutstandingRow) => { setSelectedKey(`${row.rental.id}-${row.line.equipment_id}`); setQty(String(row.onSite)); setDamagedQty("0"); };
+
+  // Queues offline — see operations/rentals.tsx's submitReturn for the same
+  // optimistic-patch shape; this screen is just a different entry point
+  // onto the same rental/line data (shared "rentals" cache resource).
+  const submit = () => {
     if (!selected) return;
     const parsedQty = Number.parseInt(qty, 10);
     const parsedDamaged = Number.parseInt(damagedQty || "0", 10);
@@ -72,16 +72,27 @@ export default function ReturnsScreen() {
       Alert.alert("Invalid damaged quantity", "Damaged units must be between 0 and the return quantity.");
       return;
     }
-    setSubmitting(true);
-    try {
-      await api(`/rentals/${selected.rental.id}/return`, {
-        method: "POST",
-        body: JSON.stringify([{ equipment_id: selected.line.equipment_id, qty: parsedQty, damaged_qty: parsedDamaged }]),
-      });
-      setSelected(null);
-      load();
-    } catch (e: any) { Alert.alert("Return failed", e.message); }
-    finally { setSubmitting(false); }
+    const rental = selected.rental;
+    const nextLines = rental.lines.map((l) =>
+      l.equipment_id === selected.line.equipment_id
+        ? { ...l, returned_qty: l.returned_qty + parsedQty, damaged_qty: l.damaged_qty + parsedDamaged }
+        : l,
+    );
+    const allReturned = nextLines.every((l) => l.returned_qty >= (l.delivered_qty > 0 ? l.delivered_qty : l.qty));
+    const anyReturned = nextLines.some((l) => l.returned_qty > 0);
+    mutate<Rental>({
+      kind: "command",
+      entityType: "rentals",
+      entityId: rental.id,
+      path: `/rentals/${rental.id}/return`,
+      method: "POST",
+      body: [{ equipment_id: selected.line.equipment_id, qty: parsedQty, damaged_qty: parsedDamaged }],
+      optimisticPatch: {
+        lines: nextLines,
+        status: allReturned ? "returned" : anyReturned ? "partially_returned" : "active",
+      },
+    });
+    setSelectedKey(null);
   };
 
   const columns: ColumnDef<OutstandingRow>[] = [
@@ -95,7 +106,7 @@ export default function ReturnsScreen() {
 
   return (
     <Screen title="Returns" subtitle={`${rows.length} outstanding line${rows.length === 1 ? "" : "s"}`} back
-      onRefresh={onRefresh} refreshing={refreshing} testID="returns-screen" scroll={!isShellWide}>
+      onRefresh={rentalsRes.onRefresh} refreshing={rentalsRes.refreshing} testID="returns-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.tableWrap}>
           <DataTable columns={columns} rows={rows} keyExtractor={(r) => `${r.rental.id}-${r.line.equipment_id}`}
@@ -117,14 +128,14 @@ export default function ReturnsScreen() {
         </TouchableOpacity>
       ))}
 
-      <DetailDrawer visible={!!selected} title={selected?.line.name || "Return"} subtitle={selected ? `${selected.rental.customer_name} · ${selected.onSite} on site` : undefined} onClose={() => setSelected(null)} testID="return-drawer">
+      <DetailDrawer visible={!!selected} title={selected?.line.name || "Return"} subtitle={selected ? `${selected.rental.customer_name} · ${selected.onSite} on site` : undefined} onClose={() => setSelectedKey(null)} testID="return-drawer">
         {selected ? (
           <View>
             <SectionLabel>Record return</SectionLabel>
             <Input label={`Quantity returning (max ${selected.onSite})`} value={qty} onChangeText={(v) => setQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono editable={canEdit} testID="return-qty" />
             <Input label="Of which damaged" value={damagedQty} onChangeText={(v) => setDamagedQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono editable={canEdit} testID="return-damaged-qty" />
             <Text style={[typo.bodySmall, { color: colors.inkMuted, marginBottom: spacing.md }]}>Clean units go to inspection; damaged units go straight to a repair task.</Text>
-            {canEdit ? <Button title="Record Return" onPress={submit} loading={submitting} testID="submit-return" /> : null}
+            {canEdit ? <Button title="Record Return" onPress={submit} testID="submit-return" /> : null}
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.rental.id}` as any)} style={{ marginTop: spacing.sm }} testID="return-view-rental" />
           </View>
         ) : null}

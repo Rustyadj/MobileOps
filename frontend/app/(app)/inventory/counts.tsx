@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
@@ -12,6 +12,8 @@ import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; available: number };
@@ -38,37 +40,26 @@ export default function InventoryCountsScreen() {
   const { isShellWide } = useBreakpoint();
   const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string }>();
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
-  const [counts, setCounts] = useState<InventoryCount[]>([]);
+  const equipmentRes = useCachedResource<Equipment>("equipment", () => api<unknown>("/equipment").then(arrayResponse<Equipment>));
+  const countsRes = useCachedResource<InventoryCount>("inventory_counts", () => api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>));
+  const equipment = equipmentRes.data;
+  const counts = countsRes.data;
   const [equipmentSearch, setEquipmentSearch] = useState("");
   const [selectedEquipmentId, setSelectedEquipmentId] = useState("");
   const [countedQty, setCountedQty] = useState("");
   const [countResult, setCountResult] = useState<InventoryCount | null>(null);
-  const [selectedCount, setSelectedCount] = useState<InventoryCount | null>(null);
+  const [selectedCountId, setSelectedCountId] = useState<string | null>(null);
+  const selectedCount = counts.find((c) => c.id === selectedCountId) || null;
   const [reason, setReason] = useState("");
-  const [savingCount, setSavingCount] = useState(false);
   const [reconciling, setReconciling] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [nextEquipment, nextCounts] = await Promise.all([
-        api<unknown>("/equipment").then(arrayResponse<Equipment>),
-        api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>),
-      ]);
-      setEquipment(nextEquipment);
-      setCounts(nextCounts);
-      setSelectedCount((current) => current ? nextCounts.find((count) => count.id === current.id) || null : null);
-    } catch (error: unknown) {
-      Alert.alert("Unable to load inventory counts", messageFor(error));
-    }
-  }, []);
+  const refreshing = equipmentRes.refreshing || countsRes.refreshing;
+  const onRefresh = () => { equipmentRes.onRefresh(); countsRes.onRefresh(); };
 
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (!params.open || counts.length === 0) return;
-    setSelectedCount(counts.find((count) => count.id === params.open) || null);
-  }, [counts, params.open]);
+    setSelectedCountId(params.open);
+  }, [counts.length, params.open]);
 
   const selectedEquipment = equipment.find((item) => item.id === selectedEquipmentId) || null;
   const equipmentMatches = useMemo(() => {
@@ -78,7 +69,11 @@ export default function InventoryCountsScreen() {
   }, [equipment, equipmentSearch]);
   const pendingCounts = useMemo(() => counts.filter((count) => count.status === "pending"), [counts]);
 
-  const submitCount = async () => {
+  // Recording a physical count is the field-work half of this screen (an
+  // actual walk of the yard) — queues offline. Reconciling is a desk
+  // decision requiring a written reason and stays online-only (see
+  // RequiresOnline wrapping it below).
+  const submitCount = () => {
     if (!selectedEquipment) {
       Alert.alert("Select equipment", "Choose an equipment item before recording a count.");
       return;
@@ -88,20 +83,30 @@ export default function InventoryCountsScreen() {
       Alert.alert("Invalid count", "Enter a whole number of zero or more.");
       return;
     }
-    setSavingCount(true);
-    try {
-      const created = await api<InventoryCount>(`/equipment/${selectedEquipment.id}/count`, {
-        method: "POST",
-        body: JSON.stringify({ counted_qty: quantity }),
-      });
-      setCounts((current) => [created, ...current]);
-      setCountResult(created);
-      setCountedQty("");
-    } catch (error: unknown) {
-      Alert.alert("Count failed", messageFor(error));
-    } finally {
-      setSavingCount(false);
-    }
+    const expected = selectedEquipment.available;
+    const created = mutate<InventoryCount>({
+      kind: "create",
+      entityType: "inventory_counts",
+      path: `/equipment/${selectedEquipment.id}/count`,
+      method: "POST",
+      body: { counted_qty: quantity },
+      optimisticDoc: (tempId) => ({
+        id: tempId,
+        equipment_id: selectedEquipment.id,
+        equipment_name: selectedEquipment.name,
+        counted_qty: quantity,
+        expected_qty: expected,
+        variance: quantity - expected,
+        status: "pending",
+        reason: "",
+        counted_by: "",
+        counted_at: new Date().toISOString(),
+        reconciled_by: null,
+        reconciled_at: null,
+      }),
+    });
+    if (created) setCountResult(created);
+    setCountedQty("");
   };
 
   const reconcile = async () => {
@@ -113,12 +118,12 @@ export default function InventoryCountsScreen() {
     }
     setReconciling(true);
     try {
-      const updated = await api<InventoryCount>(`/inventory-counts/${selectedCount.id}/reconcile`, {
+      await api<InventoryCount>(`/inventory-counts/${selectedCount.id}/reconcile`, {
         method: "POST",
         body: JSON.stringify({ reason: cleanReason }),
       });
-      setCounts((current) => current.map((count) => count.id === updated.id ? updated : count));
-      setSelectedCount(updated);
+      countsRes.onRefresh();
+      equipmentRes.onRefresh();
       setReason("");
     } catch (error: unknown) {
       Alert.alert("Reconciliation failed", messageFor(error));
@@ -128,7 +133,7 @@ export default function InventoryCountsScreen() {
   };
 
   const openCount = (count: InventoryCount) => {
-    setSelectedCount(count);
+    setSelectedCountId(count.id);
     setReason(count.reason || "");
   };
 
@@ -142,7 +147,7 @@ export default function InventoryCountsScreen() {
   ];
 
   return (
-    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} refreshing={refreshing} testID="inventory-counts-screen">
+    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={onRefresh} refreshing={refreshing} testID="inventory-counts-screen">
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
         {canEdit ? (
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
@@ -163,7 +168,7 @@ export default function InventoryCountsScreen() {
           {selectedEquipment ? (
             <View style={styles.countEntry}>
               <View style={{ flex: 1 }}><Input label={`Physical count · ${equipmentIdentifier(selectedEquipment)}`} value={countedQty} onChangeText={(value) => setCountedQty(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="physical-count-qty" /></View>
-              <Button title="Record Count" onPress={submitCount} loading={savingCount} fullWidth={false} style={styles.recordButton} testID="record-count" />
+              <Button title="Record Count" onPress={submitCount} fullWidth={false} style={styles.recordButton} testID="record-count" />
             </View>
           ) : null}
           {countResult ? (
@@ -192,7 +197,7 @@ export default function InventoryCountsScreen() {
         </View>
       </View>
 
-      <DetailDrawer visible={!!selectedCount} title={selectedCount?.equipment_name || "Count detail"} subtitle={selectedCount ? `Counted ${shortDate(selectedCount.counted_at)}` : undefined} onClose={() => { setSelectedCount(null); setReason(""); }} testID="reconciliation-drawer">
+      <DetailDrawer visible={!!selectedCount} title={selectedCount?.equipment_name || "Count detail"} subtitle={selectedCount ? `Counted ${shortDate(selectedCount.counted_at)}` : undefined} onClose={() => { setSelectedCountId(null); setReason(""); }} testID="reconciliation-drawer">
         {selectedCount ? (
           <View>
             <View style={styles.drawerMetrics}><CountMetric label="Expected" value={selectedCount.expected_qty} /><CountMetric label="Physical" value={selectedCount.counted_qty} /><CountMetric label="Variance" value={selectedCount.variance} signed /></View>

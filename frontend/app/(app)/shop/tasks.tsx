@@ -3,7 +3,7 @@
 // not buried inside Maintenance. Tasks link back to the equipment/rental/
 // booking that generated them and, for repair tasks, completing the task
 // moves the underlying units back to available in the inventory ledger.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
@@ -17,6 +17,8 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
+import { useCachedResource } from "@/src/hooks/use-cached-resource";
+import { mutate } from "@/src/sync/mutate";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
@@ -66,40 +68,36 @@ export default function ShopTasksScreen() {
   const { isShellWide } = useBreakpoint();
   const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
-  const [tasks, setTasks] = useState<ShopTask[]>([]);
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
-  const [rentals, setRentals] = useState<Rental[]>([]);
-  const [bookings, setBookings] = useState<Booking[]>([]);
+  const tasksRes = useCachedResource<ShopTask>("shop_tasks", () => api<ShopTask[]>("/shop-tasks"));
+  const equipmentRes = useCachedResource<Equipment>("equipment", () => api<Equipment[]>("/equipment"));
+  const rentalsRes = useCachedResource<Rental>("rentals", () => api<Rental[]>("/rentals"));
+  const bookingsRes = useCachedResource<Booking>("bookings", () => api<Booking[]>("/bookings"));
+  const tasks = tasksRes.data;
+  const equipment = equipmentRes.data;
+  const rentals = rentalsRes.data;
+  const bookings = bookingsRes.data;
   const [status, setStatus] = useState("all");
   const [taskType, setTaskType] = useState("all");
   const [search, setSearch] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
-  const [selected, setSelected] = useState<ShopTask | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = tasks.find((t) => t.id === selectedId) || null;
+  const setSelected = (t: ShopTask | null) => setSelectedId(t?.id ?? null);
   const [editing, setEditing] = useState<Partial<ShopTask> | null>(null);
   const [deleting, setDeleting] = useState<ShopTask | null>(null);
   const [eqSearch, setEqSearch] = useState("");
   const [checklistDraft, setChecklistDraft] = useState("");
 
-  const load = useCallback(async () => {
-    try {
-      const [t, e, r, b] = await Promise.all([
-        api<ShopTask[]>("/shop-tasks"), api<Equipment[]>("/equipment"),
-        api<Rental[]>("/rentals"), api<Booking[]>("/bookings"),
-      ]);
-      setTasks(t); setEquipment(e); setRentals(r); setBookings(b);
-      setSelected((cur) => cur ? t.find((x) => x.id === cur.id) || null : null);
-    } catch (e) { console.warn(e); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  const refreshing = tasksRes.refreshing || equipmentRes.refreshing || rentalsRes.refreshing || bookingsRes.refreshing;
+  const onRefresh = () => { tasksRes.onRefresh(); equipmentRes.onRefresh(); rentalsRes.onRefresh(); bookingsRes.onRefresh(); };
+
   useEffect(() => {
     if (!params.open || tasks.length === 0) return;
-    setSelected(tasks.find((t) => t.id === params.open) || null);
-  }, [params.open, tasks]);
+    setSelectedId(params.open);
+  }, [params.open, tasks.length]);
   useEffect(() => {
     if (params.new) setEditing({ ...blank });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.new]);
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const eqById = useMemo(() => Object.fromEntries(equipment.map((e) => [e.id, e])), [equipment]);
   const rentalById = useMemo(() => Object.fromEntries(rentals.map((r) => [r.id, r])), [rentals]);
@@ -144,27 +142,43 @@ export default function ShopTasksScreen() {
       };
       if (editing.id) await api(`/shop-tasks/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });
       else await api("/shop-tasks", { method: "POST", body: JSON.stringify(body) });
-      setEditing(null); setSelected(null); load();
+      setEditing(null); setSelected(null); tasksRes.onRefresh();
     } catch (e: any) { Alert.alert("Save failed", e.message); }
   };
-  const setTaskStatus = async (task: ShopTask, next: string) => {
-    try {
-      const updated = await api<ShopTask>(`/shop-tasks/${task.id}/status`, { method: "PATCH", body: JSON.stringify({ status: next }) });
-      setTasks((cur) => cur.map((t) => t.id === updated.id ? updated : t));
-      setSelected(updated);
-    } catch (e: any) { Alert.alert("Status update failed", e.message); }
+  // Queues offline — the shop-floor status board is exactly where weak
+  // Wi-Fi bites. Optimistic patch covers the status/completion fields the
+  // status endpoint itself sets; a repair task's equipment-side effect
+  // (in_maintenance -> available) catches up once this syncs, same
+  // trade-off as dispatch status advances.
+  const setTaskStatus = (task: ShopTask, next: string) => {
+    const patch: Partial<ShopTask> = { status: next };
+    if (next === "done" && task.status !== "done") {
+      patch.completed_by = ""; // server fills this in from the authenticated user on sync
+      patch.completed_at = new Date().toISOString();
+    } else if (task.status === "done" && next !== "done") {
+      patch.completed_by = "";
+      patch.completed_at = null;
+    }
+    mutate<ShopTask>({
+      kind: "command",
+      entityType: "shop_tasks",
+      entityId: task.id,
+      path: `/shop-tasks/${task.id}/status`,
+      method: "PATCH",
+      body: { status: next },
+      optimisticPatch: patch,
+    });
   };
   const toggleChecklistItem = async (task: ShopTask, idx: number) => {
     const checklist = task.checklist.map((item, i) => i === idx ? { ...item, done: !item.done } : item);
     try {
-      const updated = await api<ShopTask>(`/shop-tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ ...task, checklist }) });
-      setTasks((cur) => cur.map((t) => t.id === updated.id ? updated : t));
-      setSelected(updated);
+      await api<ShopTask>(`/shop-tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ ...task, checklist }) });
+      tasksRes.onRefresh();
     } catch (e: any) { Alert.alert("Update failed", e.message); }
   };
   const del = async () => {
     if (!deleting) return;
-    try { await api(`/shop-tasks/${deleting.id}`, { method: "DELETE" }); setDeleting(null); setSelected(null); load(); }
+    try { await api(`/shop-tasks/${deleting.id}`, { method: "DELETE" }); setDeleting(null); setSelected(null); tasksRes.onRefresh(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
 

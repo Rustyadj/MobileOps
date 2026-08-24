@@ -9,6 +9,7 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { api, setAccessToken, REFRESH_KEY } from "@/src/api/client";
 import { storage } from "@/src/utils/storage";
+import { startSyncEngine } from "@/src/sync/syncEngine";
 
 export type Role = "admin" | "foreman" | "crew";
 export type User = { id: string; email: string; name: string; role: Role };
@@ -149,6 +150,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return () => sub.remove();
     }
   }, [bootstrap, exchange]);
+
+  // Starts NetInfo/AppState-driven queue draining once there's a session to
+  // sync mutations against — covers every path that lands here (fresh
+  // login, signup, Google exchange, or a restored session on cold start).
+  // Idempotent: startSyncEngine() is a no-op after the first successful call.
+  useEffect(() => {
+    if (user) startSyncEngine();
+  }, [user]);
 
   const login = async (email: string, password: string) => {
     const data = await api<{ access_token: string; refresh_token: string; user: User }>(
