@@ -9,7 +9,7 @@ A mobile-first React Native (Expo) field-ops app for concrete/ICF contractors. E
 - **Auth:** JWT (access + refresh) with bcrypt, RBAC (admin/foreman/crew)
 - **AI:** None on mobile (Quote Analyzer/Leads/Quick Estimator deferred per user)
 - **PDF:** Client-side HTML → PDF via expo-print + expo-sharing
-- **Push:** Emergent managed push (inert until native build + google-services.json supplied)
+- **Push:** legacy platform managed push (inert until native build + google-services.json supplied)
 
 ## Modules implemented
 1. **Auth** — Login + silent refresh + seeded admin. Account lockout after 5 failures.

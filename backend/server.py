@@ -43,11 +43,9 @@ ACCESS_TTL_MIN = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MIN", "60"))
 REFRESH_TTL_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
-EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
-
-# Self-service account creation (public /auth/signup and Google auto-provision
-# via /auth/session) is gated so a stranger with an email address can't hand
-# themselves a crew account and start reading rentals/equipment/job-site data.
+# Self-service account creation through public /auth/signup is gated so a
+# stranger with an email address can't hand themselves a crew account and
+# start reading rentals/equipment/job-site data.
 # Configure ONE of:
 #   SIGNUP_ALLOWED_DOMAINS — comma-separated list of email domains ("acme.com,
 #     acme-icf.com") that may self-provision a crew account.
@@ -72,7 +70,7 @@ def _signup_authorized(email: str, invite_code: Optional[str]) -> bool:
     if SIGNUP_INVITE_CODES and invite_code and invite_code.strip() in SIGNUP_INVITE_CODES:
         return True
     return False
-PUSH_BASE_URL = "https://integrations.emergentagent.com"
+
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -118,7 +116,64 @@ EQUIPMENT_CATEGORIES = [
     "hand_rail",
     "tb_extension",
     "crankup_scaffold",
+    "shoring_post",
+    "icf_block_nudura",
+    "icf_block_foxblocks",
+    "icf_block_amvic",
+    "icf_block_buildblock",
 ]
+
+# The rental yard's canonical bulk-equipment catalog. Startup reconciliation
+# inserts only missing SKUs and never changes counts/buckets on existing rows.
+# `legacy_names` lets the six original generic seed records receive useful
+# names while preserving every quantity already recorded against them.
+BRACING_CATALOG = [
+    ("SB-001", "Steel Stiffback — 8 ft", "strongback", ("8 ft Strongback",)),
+    ("SB-1001", "Steel Stiffback — 10 ft", "strongback", ()),
+    ("SB-1201", "Steel Stiffback — 12 ft", "strongback", ()),
+    ("SB-1601", "Steel Stiffback — 16 ft", "strongback", ()),
+    ("SB-2001", "Steel Stiffback — 20 ft", "strongback", ()),
+    ("ASB-0801", "Aluminum Stiffback — 8 ft", "strongback", ()),
+    ("ASB-0901", "Aluminum Stiffback — 9 ft", "strongback", ()),
+    ("ASB-1201", "Aluminum Stiffback — 12 ft", "strongback", ()),
+
+    ("TB-001", "Nudura Gen 1 Turnbuckle", "turnbuckle", ("Turnbuckle 10 ft",)),
+    ("G2TB", "Nudura Gen 2 Green Turnbuckle", "turnbuckle", ()),
+    ("G2TBY", "Nudura Gen 2 Yellow Turnbuckle", "turnbuckle", ()),
+    ("RCTB", "ReachCraft Turnbuckle", "turnbuckle", ()),
+    ("RCTBFT", "ReachCraft Fine Thread Turnbuckle", "turnbuckle", ()),
+    ("RCTB02", "ReachCraft Large Turnbuckle", "turnbuckle", ()),
+
+    ("WB-001", "Nudura Gen 1 Walk-Board Bracket", "walkboard_bracket", ("Walkboard Bracket",)),
+    ("WB-002", "Nudura Gen 2 Green Walk-Board Bracket", "walkboard_bracket", ()),
+    ("WBY-002", "Nudura Gen 2 Yellow Walk-Board Bracket", "walkboard_bracket", ()),
+    ("RCWB", "ReachCraft Walk-Board Bracket", "walkboard_bracket", ()),
+    ("RCWBFT", "ReachCraft Fine Thread Walk-Board Bracket", "walkboard_bracket", ()),
+    ("RCWBLG", "ReachCraft Large Walk-Board Bracket", "walkboard_bracket", ()),
+
+    ("HR-001", "Nudura Gen 1 Handrail", "hand_rail", ("Hand Rail (8 ft)",)),
+    ("HR-002", "Nudura Gen 2 Green Handrail", "hand_rail", ()),
+    ("HRY-002", "Nudura Gen 2 Yellow Handrail", "hand_rail", ()),
+    ("RCHR", "ReachCraft Handrail", "hand_rail", ()),
+    ("RCHRFT", "ReachCraft Fine Thread Handrail", "hand_rail", ()),
+    ("RCHRLG", "ReachCraft Large Handrail", "hand_rail", ()),
+
+    ("EXT", "Nudura Extension", "tb_extension", ()),
+    ("EX-001", "ReachCraft Extension", "tb_extension", ("TB Extension",)),
+    ("EXT-20", "20 ft Extension", "tb_extension", ()),
+
+    ("CU-001", "Non Stop Heavy Duty Crank-Up", "crankup_scaffold", ("Crankup Scaffold",)),
+    ("SP-001", "Shoring Post", "shoring_post", ()),
+]
+
+# These older six-digit asset tags were entered in the workbook's serial
+# column even though they are QR/tool tags. The explicit allow-list avoids
+# treating genuine numeric manufacturer serials as QR codes.
+LEGACY_WORKBOOK_QR_CODES = {
+    "256192", "252157", "252155", "252154", "401287", "401289",
+    "401277", "401252", "401283", "401251", "401247", "401255",
+    "403290", "401243", "401245", "403353", "403335",
+}
 
 BRACE_LENGTHS = [10, 12, 16, 20]  # ft
 
@@ -190,12 +245,22 @@ class LoginReq(BaseModel):
     email: EmailStr
     password: str
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
 
 class RegisterReq(BaseModel):
     email: EmailStr
     password: str
     name: str
     role: Role = Role.crew
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class SignupReq(BaseModel):
@@ -580,10 +645,6 @@ class GeocodeResult(BaseModel):
     display_name: str
 
 
-class SessionExchangeBody(BaseModel):
-    session_id: str
-
-
 class ReturnLine(BaseModel):
     equipment_id: str
     qty: int
@@ -768,13 +829,6 @@ class BracingResult(BaseModel):
     engineer_required: bool
 
 
-# Push
-class RegisterPushBody(BaseModel):
-    user_id: str
-    platform: str
-    device_token: str
-
-
 class InspectBody(BaseModel):
     qty: int
     outcome: str  # "available" or "damaged"
@@ -933,35 +987,11 @@ async def idempotent(key: Optional[str], endpoint: str, fn):
 
 
 # ----------------------------- Auth Deps ----------------------------------
-async def _user_from_session_token(token: str) -> Optional[dict]:
-    sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not sess:
-        return None
-    exp = sess.get("expires_at")
-    if isinstance(exp, str):
-        try:
-            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
-        except Exception:
-            exp = None
-    if isinstance(exp, datetime):
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        if exp < now_utc():
-            return None
-    user = await db.users.find_one({"id": sess["user_id"]}, {"_id": 0, "password_hash": 0})
-    return user
-
-
 async def get_current_user(request: Request) -> UserPublic:
     auth = request.headers.get("Authorization") or ""
     if not auth.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     token = auth.split(" ", 1)[1]
-    # 1) Try Emergent Google session token
-    user = await _user_from_session_token(token)
-    if user:
-        return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
-    # 2) Fall back to JWT
     try:
         payload = decode_token(token, refresh=False)
     except JWTError:
@@ -1107,74 +1137,6 @@ async def me(user: UserPublic = Depends(get_current_user)):
     return user
 
 
-@api.post("/auth/session", response_model=TokenPair)
-async def exchange_emergent_session(body: SessionExchangeBody):
-    """Emergent Google Auth: exchange one-time session_id for a 7-day session_token
-    and upsert the user by email. NEVER accept a session_token here."""
-    async with httpx.AsyncClient(timeout=10.0) as hc:
-        try:
-            resp = await hc.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": body.session_id},
-            )
-        except Exception as e:
-            logger.warning("emergent session exchange failed: %s", e)
-            raise HTTPException(401, "Session exchange failed")
-    if resp.status_code != 200:
-        raise HTTPException(401, "Invalid or expired session")
-    data = resp.json() or {}
-    email = (data.get("email") or "").strip().lower()
-    name = data.get("name") or email.split("@")[0] or "User"
-    session_token = data.get("session_token")
-    if not email or not session_token:
-        raise HTTPException(401, "Session data incomplete")
-
-    # Upsert user by email — reuse existing id if known (so JWT admins can also log in via Google)
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        user_id = existing["id"]
-        role = existing.get("role", Role.crew.value)
-    else:
-        # Auto-provisioning a brand-new account via Google is the same trust
-        # decision as public signup: only allow it for an approved email
-        # domain. An invite code isn't collectible in this redirect flow, so
-        # unlike /auth/signup this path never falls back to one.
-        if not (SIGNUP_ALLOWED_DOMAINS and email.rsplit("@", 1)[-1] in SIGNUP_ALLOWED_DOMAINS):
-            raise HTTPException(403, "This Google account is not authorized. Contact an administrator for access.")
-        user_id = gen_id()
-        role = Role.crew.value
-        await db.users.insert_one({
-            "id": user_id,
-            "email": email,
-            "name": name,
-            "password_hash": "",  # Google-only account
-            "role": role,
-            "failed_attempts": 0,
-            "lock_until": None,
-            "created_at": now_utc(),
-        })
-
-    # Persist session (upsert on session_token so a repeated session_id is idempotent)
-    expires_at = now_utc() + timedelta(days=7)
-    await db.user_sessions.update_one(
-        {"session_token": session_token},
-        {"$set": {
-            "session_token": session_token,
-            "user_id": user_id,
-            "expires_at": expires_at,
-            "created_at": now_utc(),
-            "provider": "emergent_google",
-        }},
-        upsert=True,
-    )
-
-    pub = UserPublic(id=user_id, email=email, name=name, role=Role(role))
-    # Reuse TokenPair shape so the frontend has a single response model.
-    # `access_token` is the session_token; refresh_token is set to the same value
-    # (Emergent sessions don't need refresh — they last 7 days).
-    return TokenPair(access_token=session_token, refresh_token=session_token, user=pub)
-
-
 @api.get("/auth/users", response_model=List[UserPublic])
 async def list_users(_: UserPublic = Depends(require_role(Role.admin))):
     docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(500)
@@ -1253,28 +1215,57 @@ async def export_equipment_csv(_: UserPublic = Depends(get_current_user)):
     docs = await db.equipment.find({}, {"_id": 0}).to_list(5000)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["qr_code", "name", "model", "serial_number", "category", "condition", "location", "checked_out_to", "quantity", "available", "checked_out", "notes", "internal_sku"])
+    columns = [
+        "qr_code", "name", "model", "serial_number", "category", "condition",
+        "location", "checked_out_to", "quantity", *BUCKET_FIELDS, "daily_rate",
+        "tracking_type", "notes", "internal_sku",
+    ]
+    writer.writerow(columns)
     for d in docs:
-        writer.writerow([d.get("qr_code", ""), d.get("name", ""), d.get("model", ""), d.get("serial_number", ""),
-                         d.get("category", ""), d.get("condition", ""), d.get("location", ""), d.get("checked_out_to", ""),
-                         d.get("quantity", 0), d.get("available", 0), d.get("checked_out", 0), d.get("notes", ""), d.get("sku", "")])
-    return PlainTextResponse(buf.getvalue(), media_type="text/csv")
+        row = {column: d.get(column, "") for column in columns}
+        row["internal_sku"] = d.get("sku", "")
+        writer.writerow([row[column] for column in columns])
+    return PlainTextResponse(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="equipment.csv"'},
+    )
 
 
 @api.post("/equipment/import.csv")
 async def import_equipment_csv(file: UploadFile = File(...), _: UserPublic = Depends(require_role(Role.foreman))):
-    data = (await file.read()).decode("utf-8", errors="ignore")
+    data = (await file.read()).decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(data))
+    if not reader.fieldnames:
+        raise HTTPException(400, "CSV is empty or has no header row")
+    reader.fieldnames = [(field or "").strip() for field in reader.fieldnames]
+    if not ({"name", "Tool"} & set(reader.fieldnames)):
+        raise HTTPException(400, "CSV must include a name or Tool column")
+
     count = 0
-    for row in reader:
+    errors: list[str] = []
+    for row_number, raw_row in enumerate(reader, start=2):
         try:
+            row = {(key or "").strip(): (value or "").strip() for key, value in raw_row.items()}
+
+            def int_value(field: str, default: int = 0) -> int:
+                value = row.get(field, "")
+                return int(float(value)) if value != "" else default
+
             qr_code = (row.get("qr_code") or row.get("QR Code") or "").strip() or None
             serial_number = (row.get("serial_number") or row.get("Serial Number") or "").strip()
             internal_sku = (row.get("sku") or row.get("internal_sku") or "").strip() or equipment_identifier_sku(qr_code, serial_number)
             checked_out_to = (row.get("checked_out_to") or "").strip()
-            quantity = int(float(row.get("quantity") or 1))
-            checked_out = int(float(row.get("checked_out") or (quantity if checked_out_to else 0)))
-            available = int(float(row.get("available") or (0 if checked_out else quantity)))
+            quantity = int_value("quantity", 1)
+            checked_out = int_value("checked_out", quantity if checked_out_to else 0)
+            available = int_value("available", 0 if checked_out else quantity)
+            bucket_values = {
+                field: int_value(field, checked_out if field == "checked_out" else available if field == "available" else 0)
+                for field in BUCKET_FIELDS
+            }
+            if quantity < 0 or any(value < 0 for value in bucket_values.values()):
+                raise ValueError("quantity and inventory bucket values cannot be negative")
+
             eq = Equipment(
                 sku=internal_sku,
                 qr_code=qr_code,
@@ -1286,18 +1277,29 @@ async def import_equipment_csv(file: UploadFile = File(...), _: UserPublic = Dep
                 location=row.get("location","").strip(),
                 daily_rate=float(row.get("daily_rate") or 0),
                 quantity=quantity,
-                available=available,
-                checked_out=checked_out,
+                **bucket_values,
                 checked_out_to=checked_out_to,
-                tracking_type=row.get("tracking_type", "serialized").strip() or "serialized",
+                location_balances={row.get("location", "").strip(): available} if available > 0 and row.get("location", "").strip() else {},
+                tracking_type=row.get("tracking_type", "").strip() or ("serialized" if qr_code or serial_number else "bulk"),
                 notes=row.get("notes","").strip(),
             )
             selector = {"qr_code": qr_code} if qr_code else {"sku": eq.sku}
-            await db.equipment.update_one(selector, {"$set": eq.model_dump()}, upsert=True)
+            equipment_data = eq.model_dump()
+            equipment_id = equipment_data.pop("id")
+            created_at = equipment_data.pop("created_at")
+            await db.equipment.update_one(
+                selector,
+                {"$set": equipment_data, "$setOnInsert": {"id": equipment_id, "created_at": created_at}},
+                upsert=True,
+            )
             count += 1
         except Exception as e:
-            logger.warning("CSV row skipped: %s", e)
-    return {"imported": count}
+            message = f"Row {row_number}: {e}"
+            errors.append(message)
+            logger.warning("CSV row skipped: %s", message)
+    if count == 0:
+        raise HTTPException(400, errors[0] if errors else "CSV has no data rows")
+    return {"imported": count, "skipped": len(errors), "errors": errors[:20]}
 
 
 @api.get("/equipment/qr/{qr_code}", response_model=Equipment)
@@ -2598,8 +2600,7 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
     }
 
 
-# ----------------------------- Push relay ---------------------------------
-_push_client: Optional[httpx.AsyncClient] = None
+# ----------------------------- Geocoding ----------------------------------
 _geo_client: Optional[httpx.AsyncClient] = None
 
 
@@ -2640,53 +2641,43 @@ async def geocode_address(q: str, _: UserPublic = Depends(get_current_user)):
             continue
     return out
 
-
-
-def push_client() -> httpx.AsyncClient:
-    global _push_client
-    if _push_client is None:
-        _push_client = httpx.AsyncClient(
-            base_url=PUSH_BASE_URL,
-            headers={"X-Push-Key": EMERGENT_PUSH_KEY},
-            timeout=10.0,
-        )
-    return _push_client
-
-
-@api.post("/register-push", status_code=201)
-async def register_push(body: RegisterPushBody):
-    # Non-blocking: never let a push provider hiccup break the app.
-    # Frontend calls this on every login/token refresh, so a 5xx here would
-    # spam users with error toasts.
-    try:
-        resp = await push_client().post("/api/v1/push/users/register", json=body.model_dump())
-        if resp.status_code == 201 or resp.status_code == 200:
-            return {"status": "registered"}
-        if resp.status_code == 401:
-            logger.warning("push register: EMERGENT_PUSH_KEY missing or invalid")
-            return {"status": "skipped", "reason": "push_key_missing"}
-        logger.warning("push register unexpected status %s: %s", resp.status_code, resp.text[:200])
-        return {"status": "skipped", "reason": f"upstream_{resp.status_code}"}
-    except Exception as e:
-        logger.warning("push register failed: %s", e)
-        return {"status": "skipped", "reason": "upstream_unreachable"}
-
-
-async def send_push(recipients: List[str], data: dict) -> None:
-    if not recipients:
-        return
-    payload = {"recipients": recipients, "data": data}
-    try:
-        resp = await push_client().post("/api/v1/push/trigger", json=payload)
-        if resp.status_code >= 500:
-            logger.warning("push trigger 5xx")
-        elif resp.status_code >= 400:
-            logger.warning("push trigger %s: %s", resp.status_code, resp.text[:200])
-    except Exception as e:
-        logger.warning("push trigger failed: %s", e)
-
-
 # ----------------------------- Startup seed -------------------------------
+async def seed_bracing_catalog():
+    """Reconcile the requested bracing/scaffolding catalog without inventing stock.
+
+    Existing records keep all quantities, locations, rates, and bucket values.
+    Missing catalog rows are placeholders at zero until their real counts are
+    entered or imported from source paperwork.
+    """
+    added = 0
+    renamed = 0
+    for sku, name, category, legacy_names in BRACING_CATALOG:
+        existing = await db.equipment.find_one({"sku": sku}, {"_id": 0})
+        if existing:
+            if existing.get("name") in legacy_names:
+                await db.equipment.update_one(
+                    {"id": existing["id"]},
+                    {"$set": {"name": name, "category": category}},
+                )
+                renamed += 1
+            continue
+
+        equipment = Equipment(
+            sku=sku,
+            name=name,
+            category=category,
+            condition="good",
+            location="Yard",
+            quantity=0,
+            available=0,
+            tracking_type="bulk",
+            notes="Catalog item — quantity not yet entered.",
+        )
+        await db.equipment.insert_one(equipment.model_dump())
+        added += 1
+    logger.info("Reconciled bracing catalog: %d added, %d legacy names updated", added, renamed)
+
+
 async def seed_tool_inventory():
     """Idempotently add the serialized tools normalized from Rusty's workbook.
 
@@ -2694,6 +2685,25 @@ async def seed_tool_inventory():
     serial number is used only for tools that do not have a QR tag yet. Every
     imported tool starts unassigned and available at Yard.
     """
+    promoted = 0
+    for qr_code in LEGACY_WORKBOOK_QR_CODES:
+        existing = await db.equipment.find_one({
+            "category": "tool",
+            "qr_code": {"$in": [None, ""]},
+            "serial_number": qr_code,
+            "notes": {"$regex": "Imported from tool inventory workbook"},
+        }, {"_id": 0})
+        if not existing:
+            continue
+        if await db.equipment.find_one({"qr_code": qr_code, "id": {"$ne": existing["id"]}}):
+            logger.warning("Cannot promote legacy tool QR %s because it is already assigned", qr_code)
+            continue
+        await db.equipment.update_one(
+            {"id": existing["id"]},
+            {"$set": {"qr_code": qr_code, "serial_number": "", "sku": f"QR-{qr_code}"}},
+        )
+        promoted += 1
+
     source = Path(__file__).with_name("tool_inventory_seed.csv")
     if not source.exists():
         logger.warning("Tool inventory seed missing: %s", source)
@@ -2764,7 +2774,7 @@ async def seed_tool_inventory():
                 created_by="System import",
             ).model_dump())
             added += 1
-    logger.info("Seeded %d serialized tools and corrected %d legacy assignments from workbook", added, corrected)
+    logger.info("Seeded %d serialized tools, promoted %d legacy QR tags, and corrected %d legacy assignments from workbook", added, promoted, corrected)
 
 
 async def seed():
@@ -2779,18 +2789,19 @@ async def seed():
 
     if await db.equipment.count_documents({}) == 0:
         samples = [
-            ("SB-001","8 ft Strongback","strongback","good","Yard A",12.0,40),
-            ("TB-001","Turnbuckle 10 ft","turnbuckle","good","Yard A",8.0,60),
-            ("WB-001","Walkboard Bracket","walkboard_bracket","good","Yard B",6.0,80),
-            ("HR-001","Hand Rail (8 ft)","hand_rail","good","Yard B",4.0,100),
-            ("EX-001","TB Extension","tb_extension","good","Yard A",3.0,50),
-            ("CU-001","Crankup Scaffold","crankup_scaffold","good","Yard C",25.0,12),
+            ("SB-001","Steel Stiffback — 8 ft","strongback","good","Yard A",12.0,40),
+            ("TB-001","Nudura Gen 1 Turnbuckle","turnbuckle","good","Yard A",8.0,60),
+            ("WB-001","Nudura Gen 1 Walk-Board Bracket","walkboard_bracket","good","Yard B",6.0,80),
+            ("HR-001","Nudura Gen 1 Handrail","hand_rail","good","Yard B",4.0,100),
+            ("EX-001","ReachCraft Extension","tb_extension","good","Yard A",3.0,50),
+            ("CU-001","Non Stop Heavy Duty Crank-Up","crankup_scaffold","good","Yard C",25.0,12),
         ]
         for sku,name,cat,cond,loc,rate,qty in samples:
             eq = Equipment(sku=sku, name=name, category=cat, condition=cond, location=loc, daily_rate=rate, quantity=qty, available=qty)
             await db.equipment.insert_one(eq.model_dump())
         logger.info("Seeded sample equipment")
 
+    await seed_bracing_catalog()
     await seed_tool_inventory()
 
     if await db.vendors.count_documents({}) == 0:
@@ -2810,9 +2821,6 @@ async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.equipment.create_index("sku", unique=True)
     await db.equipment.create_index("qr_code", unique=True, partialFilterExpression={"qr_code": {"$type": "string"}})
-    await db.user_sessions.create_index("session_token", unique=True)
-    await db.user_sessions.create_index("user_id")
-    await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.idempotency_keys.create_index([("key", 1), ("endpoint", 1)], unique=True)
     await db.idempotency_keys.create_index("created_at", expireAfterSeconds=IDEMPOTENCY_TTL_SECONDS)
     await db.mcp_agents.create_index("id", unique=True)
@@ -2830,10 +2838,8 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    global _push_client, _geo_client
+    global _geo_client
     await mobileops_mcp.stop()
-    if _push_client is not None:
-        await _push_client.aclose()
     if _geo_client is not None:
         await _geo_client.aclose()
     client.close()

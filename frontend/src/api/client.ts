@@ -105,9 +105,25 @@ export async function api<T = any>(
 export async function apiUpload<T = any>(path: string, formData: FormData): Promise<T> {
   const h: Record<string, string> = {};
   if (accessToken) h["Authorization"] = `Bearer ${accessToken}`;
-  const resp = await doFetch(`${API}${path}`, { method: "POST", headers: h, body: formData as any });
-  if (!resp.ok) throw new ApiHttpError(resp.status, `HTTP ${resp.status}`);
-  return resp.json();
+  let resp = await doFetch(`${API}${path}`, { method: "POST", headers: h, body: formData as any });
+  if (resp.status === 401) {
+    if (!refreshing) refreshing = doRefresh();
+    const newTok = await refreshing;
+    refreshing = null;
+    if (newTok) {
+      h["Authorization"] = `Bearer ${newTok}`;
+      resp = await doFetch(`${API}${path}`, { method: "POST", headers: h, body: formData as any });
+    }
+  }
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json();
+      detail = body.detail || JSON.stringify(body);
+    } catch {}
+    throw new ApiHttpError(resp.status, detail);
+  }
+  return resp.json() as Promise<T>;
 }
 
 export const apiBaseUrl = () => API;

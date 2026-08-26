@@ -32,24 +32,24 @@ source_row,name,model,serial_number,qr_code,checked_out_to,quantity
 32,DeWalt 9Ah battery,N689104,L0XY7AZ,,,1
 33,DeWalt 9Ah battery,N689104,L0F5CVP,755254,,1
 34,DeWalt circular saw,DCS578,DK7ZHB2,755277,,1
-35,DeWalt Drill,DCF887,256192,,,1
-36,DeWalt Battery,DCB205,252157,,,1
-37,DeWalt Battery,DCB205,252155,,,1
-38,DeWalt Battery,DCB205,252154,,,1
-39,Metabo Battery,36V 4.0Ah,401287,,,1
-40,Metabo Battery,36V 4.0Ah,401289,,,1
-41,Metabo Rebar Bender,VB3616DA,401277,,,1
-42,Metabo Adapter,ET36A,401252,,,1
+35,DeWalt Drill,DCF887,,256192,,1
+36,DeWalt Battery,DCB205,,252157,,1
+37,DeWalt Battery,DCB205,,252155,,1
+38,DeWalt Battery,DCB205,,252154,,1
+39,Metabo Battery,36V 4.0Ah,,401287,,1
+40,Metabo Battery,36V 4.0Ah,,401289,,1
+41,Metabo Rebar Bender,VB3616DA,,401277,,1
+42,Metabo Adapter,ET36A,,401252,,1
 43,DeWalt 4-Port Charger,DCB104,,,,1
-44,Metabo Rebar Cutter,SC3618DA,401283,,,1
-45,DeWalt Rotary Hammer,DH36DMA,401251,,,1
-46,Metabo Grinder,Unknown,401247,,,1
-47,Metabo Charger,UC18YSL3,401255,,,1
-48,Bosch Laser Level,GLL3-330CG,403290,,,1
-49,DeWalt Miter Saw,DWS780,401243,,,1
-50,DeWalt Blower,DCBL772,401245,,,1
-51,Rebar Shears,HBC25B,403353,,,1
-52,Metabo Table Saw,C3610DRJQ4,403335,,,1
+44,Metabo Rebar Cutter,SC3618DA,,401283,,1
+45,DeWalt Rotary Hammer,DH36DMA,,401251,,1
+46,Metabo Grinder,Unknown,,401247,,1
+47,Metabo Charger,UC18YSL3,,401255,,1
+48,Bosch Laser Level,GLL3-330CG,,403290,,1
+49,DeWalt Miter Saw,DWS780,,401243,,1
+50,DeWalt Blower,DCBL772,,401245,,1
+51,Rebar Shears,HBC25B,,403353,,1
+52,Metabo Table Saw,C3610DRJQ4,,403335,,1
 53,DeWalt 9ah Battery,N689104,L0M5FLO,276801,,1
 54,DeWalt 9ah Battery,N689104,2024 36-49,755753,,1
 55,DeWalt 6ah Battery,N444190,2016 43-47,755750,,1

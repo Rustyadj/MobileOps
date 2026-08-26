@@ -86,3 +86,4 @@ credentials.json
 .env
 .env.*
 *.env
+!.env.production.example

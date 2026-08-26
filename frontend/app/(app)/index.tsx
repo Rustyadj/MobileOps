@@ -4,9 +4,7 @@
 // pulled from existing endpoints (dashboard/stats, rentals, bookings,
 // equipment, maintenance, bookings/capacity) — no fabricated business data.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Platform } from "react-native";
-import * as Notifications from "expo-notifications";
-import * as Device from "expo-device";
+import { View, Text, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { Screen } from "@/src/components/Screen";
 import { PageBody } from "@/src/components/layout/PageBody";
@@ -21,7 +19,7 @@ import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { ErrorState } from "@/src/components/feedback/ErrorState";
 import { Button, Mono } from "@/src/components/ui";
-import { api, apiBaseUrl } from "@/src/api/client";
+import { api } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { useNeedsAttention, AttentionItem } from "@/src/hooks/use-needs-attention";
@@ -116,22 +114,6 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  useEffect(() => {
-    (async () => {
-      if (Platform.OS === "web" || !Device.isDevice) return;
-      try {
-        const { status } = await Notifications.requestPermissionsAsync();
-        if (status !== "granted") return;
-        const tok = await Notifications.getDevicePushTokenAsync();
-        if (!tok?.data || !user) return;
-        await fetch(`${apiBaseUrl()}/register-push`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: user.id, platform: Platform.OS, device_token: tok.data }),
-        });
-      } catch {}
-    })();
-  }, [user]);
 
   const onRefresh = async () => {
     setRefreshing(true);

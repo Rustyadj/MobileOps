@@ -38,13 +38,15 @@ Treat that password as permanently compromised:
 
 ## Self-service account creation
 
-`POST /auth/signup` and the Google auto-provision path (`POST /auth/session`)
-used to let anyone with any email address create a `crew` account with read
-access to rentals, equipment, job sites, and contact info. Both are now
-closed by default and only allow a new account when:
+`POST /auth/signup` is closed by default and only allows a new `crew` account
+when:
 - the email's domain is in `SIGNUP_ALLOWED_DOMAINS` (comma-separated env var), or
-- (signup only) the request includes an `invite_code` matching one in
+- the request includes an `invite_code` matching one in
   `SIGNUP_INVITE_CODES` (comma-separated env var).
 
 With neither configured, self-service signup is fully disabled and accounts
 must be created by an admin via `POST /auth/register`.
+
+The account-creation form includes the invite code in its signup request. Treat
+configured codes as shared credentials and rotate them after distributing them
+to a new group of users.

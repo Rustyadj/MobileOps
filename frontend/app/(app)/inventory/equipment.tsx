@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, Platform, FlatList } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { Screen } from "@/src/components/Screen";
-import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
+import { Input, Button, Mono, SectionLabel, Row } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
 import { FilterChips } from "@/src/components/data/FilterBar";
 import { SearchInput } from "@/src/components/data/SearchInput";
@@ -19,19 +19,32 @@ import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { Ionicons } from "@expo/vector-icons";
-import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
+import { api, apiUpload } from "@/src/api/client";
 import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
+import { familyOptionsFor, matchesEquipmentFamily, matchesEquipmentTab } from "@/src/utils/equipment-taxonomy";
+import type { EquipmentTab } from "@/src/utils/equipment-taxonomy";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-const CATEGORIES = [
+const EQUIPMENT_TABS = [
   { key: "all", label: "All" },
   { key: "tool", label: "Tools" },
-  { key: "strongback", label: "Strongback" },
-  { key: "turnbuckle", label: "Turnbuckle" },
-  { key: "walkboard_bracket", label: "Walkboard" },
-  { key: "hand_rail", label: "Hand Rail" },
-  { key: "tb_extension", label: "TB Ext" },
+  { key: "bracing", label: "Bracing" },
+  { key: "icf_block", label: "ICF Block" },
+];
+
+const EQUIPMENT_CATEGORIES = [
+  { key: "strongback", label: "SB · Stiffback" },
+  { key: "turnbuckle", label: "TB · Turnbuckle" },
+  { key: "walkboard_bracket", label: "WBB · Walk-Board Bracket" },
+  { key: "hand_rail", label: "HR · Handrail" },
+  { key: "tb_extension", label: "EXT · Extension" },
   { key: "crankup_scaffold", label: "Scaffold" },
+  { key: "shoring_post", label: "Shoring Post" },
+  { key: "tool", label: "Tools" },
+  { key: "icf_block_nudura", label: "Nudura ICF Block" },
+  { key: "icf_block_foxblocks", label: "FoxBlocks ICF Block" },
+  { key: "icf_block_amvic", label: "Amvic ICF Block" },
+  { key: "icf_block_buildblock", label: "BuildBlock ICF Block" },
 ];
 
 type Equipment = {
@@ -73,8 +86,8 @@ export default function EquipmentScreen() {
   const items = equipmentRes.data;
   const maintenance = maintenanceRes.data;
   const rentals = rentalsRes.data;
-  const [cat, setCat] = useState("all");
-  const [location, setLocation] = useState("all");
+  const [tab, setTab] = useState<EquipmentTab>("all");
+  const [family, setFamily] = useState("all");
   const [condition, setCondition] = useState("all");
   const [availability, setAvailability] = useState("all");
   const [search, setSearch] = useState("");
@@ -111,11 +124,15 @@ export default function EquipmentScreen() {
     return () => { cancelled = true; };
   }, [selected]);
 
-  const mobileItems = cat === "all" ? items : items.filter((item) => item.category === cat);
-  const locationOptions = useMemo(() => [
-    { key: "all", label: "All locations" },
-    ...Array.from(new Set(items.map((item) => item.location).filter(Boolean))).sort().map((value) => ({ key: value, label: value })),
-  ], [items]);
+  const mobileItems = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return items.filter((item) => {
+      if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
+      if (!query) return true;
+      return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
+        .some((value) => value?.toLowerCase().includes(query));
+    }).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  }, [family, items, search, tab]);
   const conditionOptions = useMemo(() => [
     { key: "all", label: "All conditions" },
     ...Array.from(new Set(items.map((item) => item.condition).filter(Boolean))).sort().map((value) => ({ key: value, label: pretty(value) })),
@@ -123,8 +140,7 @@ export default function EquipmentScreen() {
   const desktopItems = useMemo(() => {
     const query = search.trim().toLowerCase();
     const rows = items.filter((item) => {
-      if (cat !== "all" && item.category !== cat) return false;
-      if (location !== "all" && item.location !== location) return false;
+      if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (condition !== "all" && item.condition !== condition) return false;
       if (availability === "available" && item.available <= 0) return false;
       if (availability === "unavailable" && item.available > 0) return false;
@@ -140,7 +156,12 @@ export default function EquipmentScreen() {
         : String(av || "").localeCompare(String(bv || ""), undefined, { numeric: true, sensitivity: "base" });
       return sortDirection === "asc" ? compared : -compared;
     });
-  }, [availability, cat, condition, items, location, search, sortDirection, sortKey]);
+  }, [availability, condition, family, items, search, sortDirection, sortKey, tab]);
+
+  const changeTab = (nextTab: string) => {
+    setTab(nextTab as EquipmentTab);
+    setFamily("all");
+  };
 
   const handleSort = (key: string) => {
     if (key === sortKey) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
@@ -215,18 +236,24 @@ export default function EquipmentScreen() {
   const exportCSV = async () => {
     setShowFileMenu(false);
     try {
-      const tok = getAccessToken();
-      const resp = await fetch(`${apiBaseUrl()}/equipment/export.csv`, { headers: { Authorization: `Bearer ${tok}` } });
-      const text = await resp.text();
+      const text = await api<string>("/equipment/export.csv");
       if (Platform.OS === "web") {
         const blob = new Blob([text], { type: "text/csv" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = url; a.download = "equipment.csv"; a.click(); URL.revokeObjectURL(url);
+        a.href = url;
+        a.download = "equipment.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
       } else {
-        const path = (FileSystem.documentDirectory || "") + "equipment.csv";
-        await FileSystem.writeAsStringAsync(path, text);
-        if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(path);
+        const directory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+        if (!directory) throw new Error("A writable export folder is not available on this device.");
+        const path = `${directory}equipment.csv`;
+        await FileSystem.writeAsStringAsync(path, text, { encoding: FileSystem.EncodingType.UTF8 });
+        if (!(await Sharing.isAvailableAsync())) throw new Error("File sharing is not available on this device.");
+        await Sharing.shareAsync(path, { mimeType: "text/csv", dialogTitle: "Export equipment CSV" });
       }
     } catch (e: any) { Alert.alert("Export failed", e.message); }
   };
@@ -237,12 +264,22 @@ export default function EquipmentScreen() {
       if (res.canceled || !res.assets?.[0]) return;
       const file = res.assets[0];
       const form = new FormData();
-      // @ts-ignore React Native file objects are accepted by FormData at runtime.
-      form.append("file", { uri: file.uri, name: file.name || "equipment.csv", type: file.mimeType || "text/csv" } as any);
-      const tok = getAccessToken();
-      const resp = await fetch(`${apiBaseUrl()}/equipment/import.csv`, { method: "POST", headers: { Authorization: `Bearer ${tok}` }, body: form as any });
-      const result = await resp.json();
-      Alert.alert("Imported", `${result.imported} rows`); equipmentRes.onRefresh();
+      if (Platform.OS === "web") {
+        let webFile: Blob | undefined = file.file;
+        if (!webFile) webFile = await fetch(file.uri).then((response) => response.blob());
+        if (!webFile) throw new Error("The selected CSV could not be read.");
+        form.append("file", webFile, file.name || "equipment.csv");
+      } else {
+        // React Native FormData accepts a local URI descriptor for native uploads.
+        form.append("file", { uri: file.uri, name: file.name || "equipment.csv", type: file.mimeType || "text/csv" } as any);
+      }
+      const result = await apiUpload<{ imported: number; skipped?: number; errors?: string[] }>("/equipment/import.csv", form);
+      const skipped = result.skipped || 0;
+      Alert.alert(
+        skipped ? "Imported with warnings" : "Import complete",
+        `${result.imported} row${result.imported === 1 ? "" : "s"} imported${skipped ? `; ${skipped} skipped.\n${result.errors?.[0] || ""}` : ""}`,
+      );
+      equipmentRes.onRefresh();
     } catch (e: any) { Alert.alert("Import failed", e.message); }
   };
 
@@ -268,7 +305,7 @@ export default function EquipmentScreen() {
   return (
     <Screen title="Equipment" subtitle={`${items.length} assets · ${items.reduce((sum, item) => sum + item.available, 0)} available`} back
       rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" } : undefined}
-      onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={!isShellWide}>
+      onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={false}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
@@ -285,8 +322,8 @@ export default function EquipmentScreen() {
             </View>
           </PageToolbar>
           <View style={styles.filterStack}>
-            <FilterChips options={CATEGORIES} value={cat} onChange={setCat} testIDPrefix="cat" />
-            <FilterChips options={locationOptions} value={location} onChange={setLocation} testIDPrefix="location" />
+            <FilterChips options={EQUIPMENT_TABS} value={tab} onChange={changeTab} testIDPrefix="equipment-tab" />
+            {tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
             <FilterChips options={conditionOptions} value={condition} onChange={setCondition} testIDPrefix="condition" />
             <FilterChips options={[{ key: "all", label: "Any availability" }, { key: "available", label: "Available" }, { key: "unavailable", label: "Unavailable" }]} value={availability} onChange={setAvailability} testIDPrefix="availability" />
           </View>
@@ -297,43 +334,44 @@ export default function EquipmentScreen() {
           </View>
         </View>
       ) : (
-        <>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ marginHorizontal: -spacing.lg, paddingHorizontal: spacing.lg, marginBottom: spacing.md }}>
-            {CATEGORIES.map((category) => (
-              <TouchableOpacity key={category.key} onPress={() => setCat(category.key)} style={[styles.chip, cat === category.key && styles.chipActive]} testID={`cat-${category.key}`}>
-                <Text style={[styles.chipText, cat === category.key && { color: colors.inverse }]}>{category.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-            {canEdit ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View></RequiresOnline> : null}
-            <View style={{ flex: 1 }}><Button title="Export CSV" onPress={exportCSV} variant="outline" testID="export-csv-btn" /></View>
-          </Row>
-          {mobileItems.length === 0 ? <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No equipment in this category.</Text></Card> : mobileItems.map((item) => (
-            <Card key={item.id} style={{ marginBottom: spacing.sm }} testID={`equipment-row-${item.sku}`}>
-              <Row style={{ marginBottom: 4, gap: 8, alignItems: "flex-start" }}><View style={{ flex: 1 }}>
-                <Mono style={[{ fontSize: 11, color: colors.inkMuted }, !item.qr_code && styles.unassigned]}>{equipmentIdentifier(item)}</Mono><H3>{item.name}</H3>
-                {item.model || item.serial_number ? <Text style={[typo.bodySmall, { marginTop: 2 }]}>{item.model || "No model"}{item.serial_number ? ` · S/N ${item.serial_number}` : ""}</Text> : null}
-                <Text style={[typo.label, { marginTop: 2 }]}>{pretty(item.category)} · {item.location || "—"}</Text>
-                {item.checked_out_to ? <Text style={[typo.bodySmall, { color: colors.info, marginTop: 2 }]}>Checked out to {item.checked_out_to}</Text> : null}
-              </View><Pill color={item.available > 0 ? colors.success : colors.error} bg={item.available > 0 ? colors.successSoft : colors.errorSoft}>{item.available}/{item.quantity}</Pill></Row>
-              <Row style={{ gap: spacing.md, marginTop: 8 }}><Text style={typo.label}>Cond <Mono style={{ fontSize: 13 }}>{item.condition}</Mono></Text><Text style={typo.label}>Owned <Mono style={{ fontSize: 13 }}>{item.quantity}</Mono></Text></Row>
-              <Row style={{ gap: spacing.md, marginTop: 6, flexWrap: "wrap" }}>
-                <Text style={typo.label}>Resv <Mono style={{ fontSize: 13 }}>{item.reserved || 0}</Mono></Text>
-                <Text style={typo.label}>Rental <Mono style={{ fontSize: 13 }}>{item.on_rental || 0}</Mono></Text>
-                {item.in_maintenance > 0 ? <Text style={typo.label}>Maint <Mono style={{ fontSize: 13, color: colors.warning }}>{item.in_maintenance}</Mono></Text> : null}
-                {item.missing > 0 ? <Text style={typo.label}>Missing <Mono style={{ fontSize: 13, color: colors.error }}>{item.missing}</Mono></Text> : null}
-              </Row>
-              {canEdit || canAdmin ? (
-                <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
-                  {canEdit ? <View style={{ flex: 1 }}><Button title="Edit" onPress={() => setEditing(item)} variant="outline" testID={`edit-${item.sku}`} /></View> : null}
-                  {canAdmin ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Delete" onPress={() => setDeleting(item)} variant="danger" testID={`delete-${item.sku}`} /></View></RequiresOnline> : null}
-                </Row>
-              ) : null}
-              {canEdit && item.category === "tool" ? <View style={{ marginTop: spacing.sm }}>{item.checked_out > 0 ? <Button title="Check In to Yard" onPress={() => checkin(item)} variant="outline" testID={`checkin-${item.sku}`} /> : <Button title="Check Out to Foreman" onPress={() => { setCheckoutTarget(item); setCheckoutAssignee(""); }} variant="outline" disabled={item.available <= 0} testID={`checkout-${item.sku}`} />}</View> : null}
-            </Card>
-          ))}
-        </>
+        <FlatList<Equipment>
+          data={mobileItems}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.mobileListContent}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          ListHeaderComponent={<View style={styles.mobileListHeader}>
+            <View style={styles.mobileTabs}>
+              {EQUIPMENT_TABS.map((option) => (
+                <TouchableOpacity key={option.key} onPress={() => changeTab(option.key)} style={[styles.mobileTab, tab === option.key && styles.mobileTabActive]} testID={`equipment-tab-${option.key}`} accessibilityRole="tab" accessibilityState={{ selected: tab === option.key }}>
+                  <Text style={[styles.mobileTabText, tab === option.key && styles.mobileTabTextActive]}>{option.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
+            <SearchInput value={search} onChangeText={setSearch} placeholder="Search equipment…" testID="equipment-search" style={styles.mobileSearch} />
+            <Row style={{ gap: spacing.sm }}>
+              {canEdit ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View></RequiresOnline> : null}
+              <View style={{ flex: 1 }}><Button title="Export CSV" onPress={exportCSV} variant="outline" testID="export-csv-btn" /></View>
+            </Row>
+          </View>}
+          ListEmptyComponent={<View style={styles.mobileEmpty}><Ionicons name="construct-outline" size={24} color={colors.inkMuted} /><Text style={styles.mobileEmptyText}>No equipment matches this view.</Text></View>}
+          ItemSeparatorComponent={() => <View style={styles.mobileSeparator} />}
+          renderItem={({ item }) => (
+            <TouchableOpacity onPress={() => setSelected(item)} style={styles.mobileRow} testID={`equipment-row-${item.sku}`} accessibilityRole="button" accessibilityLabel={`Open ${item.name}`}>
+              <View style={styles.mobileIdentity}>
+                <Text style={styles.mobileName} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.mobileMeta} numberOfLines={1}>{item.model || "No model"} · {item.location || "No location"} · {equipmentIdentifier(item)}</Text>
+                {item.checked_out_to ? <Text style={styles.mobileAssignment} numberOfLines={1}>Checked out to {item.checked_out_to}</Text> : null}
+              </View>
+              <View style={styles.mobileCounts}>
+                <Mono style={[styles.mobileAvailable, { color: item.available > 0 ? colors.success : colors.inkMuted }]}>{item.available}</Mono>
+                <Text style={styles.mobileCountLabel}>available</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.inkMuted} />
+            </TouchableOpacity>
+          )}
+        />
       )}
 
       <DetailDrawer visible={!!selected} title={selected?.name || "Equipment"} subtitle={selected ? `${equipmentIdentifier(selected)} · ${pretty(selected.category)}` : undefined}
@@ -375,7 +413,7 @@ export default function EquipmentScreen() {
           <Input label="Model" value={editing?.model || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, model: text }))} mono testID="edit-model" />
           <Input label="Serial Number" value={editing?.serial_number || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, serial_number: text }))} mono testID="edit-serial-number" />
           <SectionLabel>Category</SectionLabel>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{CATEGORIES.filter((category) => category.key !== "all").map((category) => <TouchableOpacity key={category.key} onPress={() => setEditing((entry) => ({ ...entry!, category: category.key }))} style={[styles.chip, editing?.category === category.key && styles.chipActive]} testID={`edit-cat-${category.key}`}><Text style={[styles.chipText, editing?.category === category.key && { color: colors.inverse }]}>{category.label}</Text></TouchableOpacity>)}</ScrollView>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{EQUIPMENT_CATEGORIES.map((category) => <TouchableOpacity key={category.key} onPress={() => setEditing((entry) => ({ ...entry!, category: category.key }))} style={[styles.chip, editing?.category === category.key && styles.chipActive]} testID={`edit-cat-${category.key}`}><Text style={[styles.chipText, editing?.category === category.key && { color: colors.inverse }]}>{category.label}</Text></TouchableOpacity>)}</ScrollView>
           <Input label="Condition" value={editing?.condition || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, condition: text }))} testID="edit-condition" />
           <Input label="Location" value={editing?.location || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, location: text }))} testID="edit-location" />
           <Input label="Quantity" value={String(editing?.quantity ?? "")} onChangeText={(text) => setEditing((entry) => ({ ...entry!, quantity: Number(text) || 0, available: Number(text) || 0 }))} keyboardType="number-pad" mono testID="edit-quantity" />
@@ -407,6 +445,20 @@ const styles = StyleSheet.create({
   filterStack: { paddingHorizontal: spacing.xl, gap: spacing.xs, paddingBottom: spacing.md },
   tableWrap: { flex: 1, marginHorizontal: spacing.xl, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" }, tableMono: { fontSize: 12 }, unassigned: { color: colors.warning, fontStyle: "italic" },
   chip: { paddingHorizontal: 14, height: 36, justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, flexShrink: 0 }, chipActive: { backgroundColor: colors.ink, borderColor: colors.ink }, chipText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary },
+  mobileListContent: { paddingHorizontal: spacing.lg, paddingBottom: 80, flexGrow: 1 },
+  mobileListHeader: { paddingTop: spacing.md, paddingBottom: spacing.md, gap: spacing.md },
+  mobileTabs: { flexDirection: "row", padding: 3, backgroundColor: colors.bgMuted, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border },
+  mobileTab: { flex: 1, minHeight: 36, alignItems: "center", justifyContent: "center", borderRadius: radii.sm },
+  mobileTabActive: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderStrong },
+  mobileTabText: { ...typo.label, color: colors.inkSecondary }, mobileTabTextActive: { color: colors.primary },
+  mobileSearch: { minWidth: 0, width: "100%" },
+  mobileRow: { minHeight: 72, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm },
+  mobileIdentity: { flex: 1, minWidth: 0 }, mobileName: { ...typo.h3, fontSize: 15 },
+  mobileMeta: { ...typo.bodySmall, marginTop: 3 }, mobileAssignment: { ...typo.bodySmall, color: colors.info, marginTop: 2 },
+  mobileCounts: { minWidth: 62, alignItems: "flex-end" }, mobileAvailable: { fontSize: 18, fontWeight: "700" },
+  mobileCountLabel: { ...typo.caption, fontSize: 9, letterSpacing: 0.3 }, mobileRental: { ...typo.label, color: colors.info, marginTop: 2 },
+  mobileSeparator: { height: 1, backgroundColor: colors.border },
+  mobileEmpty: { flex: 1, minHeight: 180, alignItems: "center", justifyContent: "center", gap: spacing.sm }, mobileEmptyText: { ...typo.body, color: colors.inkMuted },
   drawerEdit: { height: 32, paddingHorizontal: spacing.sm, flexDirection: "row", alignItems: "center", gap: 4 }, drawerEditText: { ...typo.label, color: colors.primary },
   detailGrid: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -spacing.xs, marginBottom: spacing.lg }, detailStat: { width: "50%", padding: spacing.xs, gap: 4 }, detailText: { marginBottom: spacing.lg },
   historyRow: { flexDirection: "row", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border, marginBottom: spacing.sm },

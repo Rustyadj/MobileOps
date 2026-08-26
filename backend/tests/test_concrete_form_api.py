@@ -1,4 +1,5 @@
 """Concrete Form API regression suite."""
+import csv
 import io
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -163,6 +164,61 @@ class TestEquipment:
         )
         assert r.status_code == 200, r.text
         assert r.json().get("imported", 0) >= 1
+
+    def test_csv_round_trip_preserves_id_and_inventory_fields(self, api_client, auth_headers):
+        suffix = uuid.uuid4().hex[:8]
+        qr_code = f"TEST-CSV-QR-{suffix}"
+        sku = f"TEST-CSV-{suffix}"
+        csv_data = (
+            "\ufeffinternal_sku,qr_code,name,category,condition,location,checked_out_to,"
+            "quantity,available,checked_out,missing,daily_rate,tracking_type,notes\n"
+            f'{sku},{qr_code},"Pump, concrete",tool,fair,Yard A,Project Alpha,'
+            '4,1,2,1,12.5,serialized,"Needs, calibration"\n'
+        )
+        files = {"file": ("equipment.csv", csv_data, "text/csv")}
+        imported = requests.post(
+            f"{BASE_URL}/api/equipment/import.csv",
+            headers={"Authorization": auth_headers["Authorization"]},
+            files=files,
+        )
+        assert imported.status_code == 200, imported.text
+        assert imported.json() == {"imported": 1, "skipped": 0, "errors": []}
+
+        before = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers)
+        assert before.status_code == 200, before.text
+        item_before = next(item for item in before.json() if item.get("qr_code") == qr_code)
+
+        try:
+            exported = api_client.get(f"{BASE_URL}/api/equipment/export.csv", headers=auth_headers)
+            assert exported.status_code == 200, exported.text
+            reader = csv.DictReader(io.StringIO(exported.text))
+            exported_row = next(row for row in reader if row["qr_code"] == qr_code)
+            assert exported_row["internal_sku"] == sku
+            assert exported_row["daily_rate"] == "12.5"
+            assert exported_row["checked_out"] == "2"
+            assert exported_row["missing"] == "1"
+            assert exported_row["notes"] == "Needs, calibration"
+
+            round_trip = io.StringIO()
+            writer = csv.DictWriter(round_trip, fieldnames=reader.fieldnames)
+            writer.writeheader()
+            writer.writerow(exported_row)
+            reimported = requests.post(
+                f"{BASE_URL}/api/equipment/import.csv",
+                headers={"Authorization": auth_headers["Authorization"]},
+                files={"file": ("equipment.csv", round_trip.getvalue(), "text/csv")},
+            )
+            assert reimported.status_code == 200, reimported.text
+            assert reimported.json()["skipped"] == 0
+
+            after = api_client.get(f"{BASE_URL}/api/equipment", headers=auth_headers)
+            item_after = next(item for item in after.json() if item.get("qr_code") == qr_code)
+            assert item_after["id"] == item_before["id"]
+            assert item_after["daily_rate"] == 12.5
+            assert item_after["checked_out"] == 2
+            assert item_after["missing"] == 1
+        finally:
+            api_client.delete(f"{BASE_URL}/api/equipment/{item_before['id']}", headers=auth_headers)
 
 
 # ---------- 3. Bracing ----------

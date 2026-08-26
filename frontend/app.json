@@ -16,7 +16,7 @@
         "NSDocumentsFolderUsageDescription": "Save delivery ticket PDFs",
         "NSLocationWhenInUseUsageDescription": "Pin rental sites on the map from your current location"
       },
-      "bundleIdentifier": "com.emergent.icftools.i7hhav"
+      "bundleIdentifier": "com.concreteform.mobileops"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,12 +27,10 @@
       "permissions": [
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
-        "POST_NOTIFICATIONS",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"
       ],
-      "googleServicesFile": "./google-services.json",
-      "package": "com.emergent.icftools.i7hhav"
+      "package": "com.concreteform.mobileops"
     },
     "web": {
       "bundler": "metro",
@@ -51,7 +49,6 @@
         }
       ],
       "expo-font",
-      "expo-notifications",
       [
         "expo-image-picker",
         {

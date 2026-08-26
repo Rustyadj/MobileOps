@@ -1,8 +1,5 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import * as Notifications from "expo-notifications";
-import * as Linking from "expo-linking";
-import { Platform } from "react-native";
 import { useEffect } from "react";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -12,27 +9,6 @@ import { AuthProvider, useAuth } from "@/src/context/AuthContext";
 
 // Keep the native splash visible until icon fonts register.
 SplashScreen.preventAutoHideAsync();
-
-// Push notification setup at module scope (native only).
-if (Platform.OS !== "web") {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
-  });
-}
-
-if (Platform.OS === "android") {
-  Notifications.setNotificationChannelAsync("default", {
-    name: "Default",
-    importance: Notifications.AndroidImportance.MAX,
-    sound: "default",
-  });
-}
 
 function AuthGate() {
   const { user, loading } = useAuth();
@@ -54,28 +30,6 @@ function AuthGate() {
 }
 
 function RootInner() {
-  const router = useRouter();
-
-  useEffect(() => {
-    if (Platform.OS === "web") return;
-    const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
-      const data: any = resp.notification.request.content.data || {};
-      const url = data.deeplink || data.action_url;
-      if (!url) return;
-      if (String(url).startsWith("http")) Linking.openURL(url);
-      else router.push(url);
-    });
-    Notifications.getLastNotificationResponseAsync().then((resp) => {
-      if (!resp) return;
-      const data: any = resp.notification.request.content.data || {};
-      const url = data.deeplink || data.action_url;
-      if (!url) return;
-      if (String(url).startsWith("http")) Linking.openURL(url);
-      else router.push(url);
-    });
-    return () => sub.remove();
-  }, [router]);
-
   return (
     <>
       <AuthGate />

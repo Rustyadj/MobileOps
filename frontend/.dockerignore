@@ -1,0 +1,6 @@
+node_modules
+dist
+.expo
+.metro-cache
+npm-debug.log*
+yarn-error.log*

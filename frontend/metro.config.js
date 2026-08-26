@@ -5,6 +5,19 @@ const { FileStore } = require('metro-cache');
 
 const config = getDefaultConfig(__dirname);
 
+// expo-sqlite's web worker loads its database engine as a WASM asset.
+config.resolver.assetExts.push('wasm');
+
+// SharedArrayBuffer is required by the SQLite web worker during local dev.
+// Production serves the equivalent headers from nginx.conf.
+config.server.enhanceMiddleware = (middleware) => {
+  return (req, res, next) => {
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    middleware(req, res, next);
+  };
+};
+
 // Use a stable on-disk store (shared across web/android)
 const root = process.env.METRO_CACHE_ROOT || path.join(__dirname, '.metro-cache');
 config.cacheStores = [

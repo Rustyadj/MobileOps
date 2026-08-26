@@ -33,7 +33,7 @@ from pymongo.errors import DuplicateKeyError
 
 HERMES_AGENT_ID = "hermes-agent"
 HERMES_AGENT_NAME = "Hermes Agent"
-HERMES_AGENT_EMAIL = "hermes-agent@mobileops.local"
+HERMES_AGENT_EMAIL = "hermes-agent@icfops.srv1427612.hstgr.cloud"
 CONFIRMATION_TTL_SECONDS = 300
 AUDIT_RESULT_LIMIT_BYTES = 512_000
 DEFAULT_TOKEN_HASH_FILE = Path(__file__).with_name("hermes-agent-token.sha256")
@@ -238,7 +238,7 @@ class MobileOpsMCP:
             "MCP_CONFIRMATION_SECRET", backend.JWT_SECRET
         ).encode("utf-8")
         public_url = os.environ.get(
-            "MCP_PUBLIC_URL", "https://icf-tools.preview.emergentagent.com"
+            "MCP_PUBLIC_URL", "https://icfops.srv1427612.hstgr.cloud"
         ).rstrip("/")
         issuer_url = os.environ.get("MCP_ISSUER_URL", public_url)
         public_origin = urlparse(public_url)

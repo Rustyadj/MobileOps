@@ -43,9 +43,9 @@ MCP_CONFIRMATION_SECRET=<different random signing secret>
 MCP_PUBLIC_URL=https://mobileops.example.com
 ```
 
-The checked-in default public origin is the current MobileOps preview host,
-`https://icf-tools.preview.emergentagent.com`. Set `MCP_PUBLIC_URL` when
-deploying under any other hostname.
+The checked-in default public origin is the production MobileOps host,
+`https://icfops.srv1427612.hstgr.cloud`. Set `MCP_PUBLIC_URL` when deploying
+under any other hostname.
 
 For the connected Lisa deployment, the repository contains only the SHA-256
 digest in `backend/hermes-agent-token.sha256`; the high-entropy bearer token is
