@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone, date
 from enum import Enum
@@ -3347,14 +3348,24 @@ async def on_startup():
     await db.dispatches.create_index([("direction", 1), ("status", 1)])
     await db.ledger_entries.create_index("booking_id")
     await db.ledger_entries.create_index("rental_id")
+    await db.mcp_agents.create_index("id", unique=True)
+    await db.mcp_agents.create_index("token_hash", unique=True, partialFilterExpression={"token_hash": {"$type": "string"}})
+    await db.mcp_audit_log.create_index("id", unique=True)
+    await db.mcp_audit_log.create_index([("agent_identity", 1), ("timestamp", -1)])
+    await db.mcp_audit_log.create_index([("tool", 1), ("timestamp", -1)])
+    await db.mcp_confirmations.create_index("jti", unique=True)
+    await db.mcp_confirmations.create_index("expires_at", expireAfterSeconds=0)
     await seed()
     await backfill_rental_booking_ids()
+    await seed_hermes_agent(db)
+    await mobileops_mcp.start()
     logger.info("Concrete Form API ready")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     global _push_client, _geo_client
+    await mobileops_mcp.stop()
     if _push_client is not None:
         await _push_client.aclose()
     if _geo_client is not None:
@@ -3363,3 +3374,13 @@ async def on_shutdown():
 
 
 app.include_router(api)
+
+# The MCP transport is an additive, independently-authenticated ASGI layer.
+# Existing mobile API routes keep their paths and dependency chain unchanged.
+try:
+    from .mcp_server import create_mobileops_mcp, seed_hermes_agent
+except ImportError:  # uvicorn server:app when backend/ is the working directory
+    from mcp_server import create_mobileops_mcp, seed_hermes_agent
+
+mobileops_mcp = create_mobileops_mcp(sys.modules[__name__])
+app.mount("/api/mcp", mobileops_mcp.asgi_app, name="mobileops-mcp")
