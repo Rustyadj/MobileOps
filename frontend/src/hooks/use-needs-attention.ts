@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
+import { DISPATCH_STATUS, isBookingActive, isDispatchLive, isRentalReturned } from "@/src/domain/status";
 
 type RentalLine = { equipment_id: string; sku: string; name: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = { id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null; status: string; lines: RentalLine[] };
@@ -21,7 +22,8 @@ type ShopTask = {
 type DispatchDoc = {
   id: string; direction: "outbound" | "inbound"; status: string;
   scheduled_date: string | null; customer_name: string; job_site: string;
-  rental_id: string | null; driver_name: string; truck: string;
+  rental_id: string | null; driver_name?: string; truck?: string;
+  planning_only?: boolean;
 };
 
 const arrayResponse = <T,>(value: unknown): T[] => Array.isArray(value) ? value as T[] : [];
@@ -85,7 +87,7 @@ export function useNeedsAttention(): AttentionData {
 
       for (const rental of rentals) {
         const units = outstandingUnits(rental);
-        if (rental.status === "returned" || units === 0) continue;
+        if (isRentalReturned(rental.status) || units === 0) continue;
         const due = rental.due_date ? new Date(rental.due_date) : null;
         const threshold = due ?? new Date(new Date(rental.start_date).getTime() + ACTIVE_RENTAL_OVERDUE_DAYS * DAY_MS);
         if (threshold < now) {
@@ -102,7 +104,7 @@ export function useNeedsAttention(): AttentionData {
       }
 
       for (const booking of bookings) {
-        if (booking.status === "cancelled") continue;
+        if (!isBookingActive(booking.status)) continue;
         const endDate = new Date(booking.end_date);
         if (sameLocalDay(endDate, now)) {
           for (const item of booking.items) {
@@ -140,7 +142,7 @@ export function useNeedsAttention(): AttentionData {
       }
 
       for (const booking of bookings) {
-        if (booking.status !== "cancelled" && !booking.job_site.trim()) {
+        if (isBookingActive(booking.status) && !booking.job_site.trim()) {
           out.push({ id: `booking-site-${booking.id}`, kind: "booking-missing-site", title: `${booking.customer_name} booking has no job site`, subtitle: "Add a job site before dispatch", route: `/(app)/operations/bookings?open=${booking.id}` });
         }
       }
@@ -160,28 +162,28 @@ export function useNeedsAttention(): AttentionData {
         out.push({ id: `loadout-${task.id}`, kind: "loadout-incomplete", title: `Loadout for ${booking?.job_site || booking?.customer_name || task.title} not complete`, subtitle: `Starts ${startsAt.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`, route: "/(app)/shop/staging" });
       }
 
-      const liveDispatches = dispatches.filter((d) => d.status !== "completed" && d.status !== "cancelled");
+      const liveDispatches = dispatches.filter((d) => isDispatchLive(d.status));
       for (const d of liveDispatches) {
         const label = d.job_site || d.customer_name;
         if (d.direction === "inbound") {
-          if (d.scheduled_date && new Date(d.scheduled_date) < now && d.status === "scheduled") {
+          if (d.scheduled_date && new Date(d.scheduled_date) < now && d.status === DISPATCH_STATUS.scheduled) {
             out.push({ id: `pickup-overdue-${d.id}`, kind: "pickup-overdue", title: `${d.customer_name} pickup overdue`, subtitle: `${label} · was scheduled ${new Date(d.scheduled_date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`, route: `/(app)/operations/dispatch?open=${d.id}` });
           }
-          if (d.status === "at_yard") {
+          if (d.status === DISPATCH_STATUS.atYard) {
             out.push({ id: `not-checked-in-${d.id}`, kind: "inbound-not-checked-in", title: `${d.customer_name} arrived at yard, not checked in`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
           }
         }
-        const needsAssignment = d.direction === "outbound" ? ["loaded", "dispatched"].includes(d.status) : d.status !== "scheduled";
-        if (needsAssignment && !d.driver_name.trim()) {
+        const needsAssignment = !d.planning_only && (d.direction === "outbound" ? ([DISPATCH_STATUS.loaded, DISPATCH_STATUS.dispatched] as string[]).includes(d.status) : d.status !== DISPATCH_STATUS.scheduled);
+        if (needsAssignment && !d.driver_name?.trim()) {
           out.push({ id: `unassigned-driver-${d.id}`, kind: "dispatch-unassigned", title: `${d.customer_name} ${d.direction} has no driver assigned`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
-        } else if (needsAssignment && !d.truck.trim()) {
+        } else if (needsAssignment && !d.truck?.trim()) {
           out.push({ id: `unassigned-truck-${d.id}`, kind: "dispatch-unassigned", title: `${d.customer_name} ${d.direction} has no truck assigned`, subtitle: label, route: `/(app)/operations/dispatch?open=${d.id}` });
         }
       }
 
       const rentalsWithLivePickup = new Set(liveDispatches.filter((d) => d.direction === "inbound" && d.rental_id).map((d) => d.rental_id));
       for (const rental of rentals) {
-        if (rental.status === "returned" || rentalsWithLivePickup.has(rental.id)) continue;
+        if (isRentalReturned(rental.status) || rentalsWithLivePickup.has(rental.id)) continue;
         // Rentals created by an outbound Dispatch completing (the primary
         // Booking -> Dispatch -> Rental path) never get a due_date — fall
         // back to the same 30-active-day threshold rental-overdue uses,

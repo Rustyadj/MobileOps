@@ -20,6 +20,7 @@ import { usePermissions } from "@/src/hooks/use-permissions";
 import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
+import { RENTAL_STATUS, isDispatchLive, isRentalReturned } from "@/src/domain/status";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
 type Line = {
@@ -47,10 +48,15 @@ type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: strin
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
-  { key: "active", label: "Active" },
-  { key: "partially_returned", label: "Partial return" },
-  { key: "returned", label: "Returned" },
+  { key: RENTAL_STATUS.active, label: "Active" },
+  { key: RENTAL_STATUS.partiallyReturned, label: "Partial return" },
+  { key: RENTAL_STATUS.returned, label: "Returned" },
 ];
+
+// Direction tabs group rentals into "outbound" (nothing back yet) vs.
+// "inbound" (some or all units back) — a rental has started its return if
+// it's carrying either return status.
+const HAS_ANY_RETURN_STATUSES: readonly string[] = [RENTAL_STATUS.partiallyReturned, RENTAL_STATUS.returned];
 
 const lineLifecycle = (line: Line) => {
   const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
@@ -278,7 +284,7 @@ export default function RentalsScreen() {
           id: tempId,
           customer_name: body.customer_name, customer_phone: body.customer_phone, customer_email: body.customer_email,
           job_site: body.job_site, start_date: body.start_date, due_date: null, deposit: body.deposit, notes: body.notes,
-          lines: body.lines, status: "active", delivered_by: "", received_by: "",
+          lines: body.lines, status: RENTAL_STATUS.active, delivered_by: "", received_by: "",
           lat: body.lat, lng: body.lng,
         }),
       });
@@ -292,7 +298,7 @@ export default function RentalsScreen() {
   };
 
   const pickupFor = (rentalId: string) => dispatches.find(
-    (d) => d.direction === "inbound" && d.rental_id === rentalId && d.status !== "completed" && d.status !== "cancelled"
+    (d) => d.direction === "inbound" && d.rental_id === rentalId && isDispatchLive(d.status)
   );
 
   // Queues offline — scheduled from the job site once the crew knows a
@@ -355,7 +361,7 @@ export default function RentalsScreen() {
       body: [{ equipment_id: returnPrompt.line.equipment_id, qty, damaged_qty: damagedQty }],
       optimisticPatch: {
         lines: nextLines,
-        status: allReturned ? "returned" : anyReturned ? "partially_returned" : "active",
+        status: allReturned ? RENTAL_STATUS.returned : anyReturned ? RENTAL_STATUS.partiallyReturned : RENTAL_STATUS.active,
       },
     });
     setReturnPrompt(null);
@@ -424,14 +430,14 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
   };
 
   const directionCounts = useMemo(() => ({
-    outbound: rentals.filter((rental) => !["partially_returned", "returned"].includes(rental.status)).length,
-    inbound: rentals.filter((rental) => ["partially_returned", "returned"].includes(rental.status)).length,
+    outbound: rentals.filter((rental) => !HAS_ANY_RETURN_STATUSES.includes(rental.status)).length,
+    inbound: rentals.filter((rental) => HAS_ANY_RETURN_STATUSES.includes(rental.status)).length,
   }), [rentals]);
 
   const directionRentals = useMemo(
     () => rentals.filter((rental) => direction === "inbound"
-      ? ["partially_returned", "returned"].includes(rental.status)
-      : !["partially_returned", "returned"].includes(rental.status)),
+      ? HAS_ANY_RETURN_STATUSES.includes(rental.status)
+      : !HAS_ANY_RETURN_STATUSES.includes(rental.status)),
     [direction, rentals],
   );
 
@@ -491,7 +497,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
   };
 
   return (
-    <Screen title="Rentals" subtitle={`${rentals.length} total · ${rentals.filter(r => r.status === "active").length} active`} back
+    <Screen title="Rentals" subtitle={`${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
       rightAction={canEdit ? { icon: "add", onPress: newRental, testID: "new-rental-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
@@ -536,8 +542,8 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <H3>{r.customer_name}</H3>
                 <Text style={[typo.bodySmall, { marginTop: 2 }]}>{r.job_site || "—"}</Text>
               </View>
-              <Pill color={r.status === "returned" ? colors.success : r.status === "active" ? colors.primary : colors.warning}
-                    bg={r.status === "returned" ? colors.successSoft : r.status === "active" ? colors.primarySoft : colors.warningSoft}>
+              <Pill color={isRentalReturned(r.status) ? colors.success : r.status === RENTAL_STATUS.active ? colors.primary : colors.warning}
+                    bg={isRentalReturned(r.status) ? colors.successSoft : r.status === RENTAL_STATUS.active ? colors.primarySoft : colors.warningSoft}>
                 {r.status}
               </Pill>
             </Row>
@@ -563,7 +569,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                   <Text style={typo.body}>{l.name}</Text>
                   <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(l)}</Mono>
                 </View>
-                {canEdit && lineLifecycle(l).onSite > 0 && r.status !== "returned" ? (
+                {canEdit && lineLifecycle(l).onSite > 0 && !isRentalReturned(r.status) ? (
                   <TouchableOpacity onPress={() => openReturn(r, l)} style={styles.smallBtn} testID={`return-${r.id}-${l.equipment_id}`}>
                     <Text style={styles.smallBtnText}>Return</Text>
                   </TouchableOpacity>
@@ -575,7 +581,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <View style={{ marginTop: spacing.sm }}>
               <PickupStatus
                 dispatch={pickupFor(r.id)}
-                rentalReturned={r.status === "returned"}
+                rentalReturned={isRentalReturned(r.status)}
                 onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
                 onSchedule={() => schedulePickup(r.id)}
                 busy={pickupBusy}
@@ -642,7 +648,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                   <Row style={{ width: "100%" }}>
                     <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{line.name}</Text><Mono style={styles.detailSku}>{equipmentIdentifier(line)}</Mono></View>
                     <Mono style={styles.detailAmount}>{line.qty} ordered</Mono>
-                    {canEdit && lineLifecycle(line).onSite > 0 && selected.status !== "returned" ? (
+                    {canEdit && lineLifecycle(line).onSite > 0 && !isRentalReturned(selected.status) ? (
                       <TouchableOpacity onPress={() => openReturn(selected, line)} style={styles.smallBtn} testID={`return-${selected.id}-${line.equipment_id}`}>
                         <Text style={styles.smallBtnText}>Return</Text>
                       </TouchableOpacity>
@@ -656,7 +662,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <DetailSection label="Pickup">
               <PickupStatus
                 dispatch={pickupFor(selected.id)}
-                rentalReturned={selected.status === "returned"}
+                rentalReturned={isRentalReturned(selected.status)}
                 onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
                 onSchedule={() => schedulePickup(selected.id)}
                 busy={pickupBusy}

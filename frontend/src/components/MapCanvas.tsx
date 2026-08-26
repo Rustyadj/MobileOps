@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, radii, type as typo } from "@/src/theme";
 import { Button, Row } from "@/src/components/ui";
 import { api } from "@/src/api/client";
+import { RENTAL_STATUS } from "@/src/domain/status";
 
 // Load native map lazily so web doesn't fail at import time.
 let MapView: any = null;
@@ -41,8 +42,9 @@ const DEFAULT_REGION = {
 };
 
 function statusColor(s?: string) {
-  if (s === "returned") return colors.success;
-  if (s === "partially_returned") return colors.warning;
+  if (s === "shop") return colors.accent;
+  if (s === RENTAL_STATUS.returned) return colors.success;
+  if (s === RENTAL_STATUS.partiallyReturned) return colors.warning;
   return colors.primary;
 }
 

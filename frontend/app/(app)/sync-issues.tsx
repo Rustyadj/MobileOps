@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { Screen } from "@/src/components/Screen";
-import { Card, Row, Button, Mono } from "@/src/components/ui";
+import { Card, Row, Button } from "@/src/components/ui";
 import { colors, spacing, type as typo } from "@/src/theme";
 import { failedRows, subscribeQueueChanged, retryFailed, discardFailed } from "@/src/sync/syncEngine";
 import type { QueueRow } from "@/src/sync/queue";
@@ -32,7 +32,7 @@ export default function SyncIssuesScreen() {
       ) : rows.map((row) => (
         <Card key={row.id} style={{ marginBottom: spacing.sm }} testID={`sync-issue-${row.id}`}>
           <Text style={typo.h3}>{describe(row)}</Text>
-          <Mono style={styles.reason} numberOfLines={3}>{row.last_error || "Sync failed"}</Mono>
+          <Text style={[typo.mono, styles.reason]} numberOfLines={3}>{row.last_error || "Sync failed"}</Text>
           <Text style={[typo.label, { marginTop: spacing.xs }]}>Queued {new Date(row.created_at).toLocaleString()}</Text>
           <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
             <View style={{ flex: 1 }}>

@@ -9,6 +9,7 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { PageHeader } from "@/src/components/layout/PageHeader";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
+import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
@@ -16,6 +17,7 @@ import { usePermissions } from "@/src/hooks/use-permissions";
 import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
+import { DISPATCH_STATUS, TERMINAL_DISPATCH_STATUSES, isDispatchLive, isRentalReturned } from "@/src/domain/status";
 
 type Direction = "outbound" | "inbound";
 type DLine = { equipment_id: string; sku: string; name: string; qty: number };
@@ -28,45 +30,70 @@ type Dispatch = {
   rental_id?: string | null; booking_id?: string | null;
   driver_name: string; truck: string; trailer: string; crew: string;
   lines: DLine[]; notes: string; created_by: string;
+  planning_only?: boolean; requirements?: string[]; source_date_text?: string;
+  date_confirmed?: boolean; raw_text?: string;
   started_at?: string | null; arrived_at?: string | null; completed_at?: string | null;
 };
 
 // Mirrors backend DISPATCH_FLOWS — each entry maps the *current* status to
 // the action button that advances it, and the status that action produces.
 const OUTBOUND_STEPS: Record<string, { label: string; next: string }> = {
-  scheduled: { label: "Start Staging", next: "staging" },
-  staging: { label: "Mark Ready", next: "ready" },
-  ready: { label: "Mark Loaded", next: "loaded" },
-  loaded: { label: "Dispatch", next: "dispatched" },
-  dispatched: { label: "Mark Arrived", next: "arrived" },
-  arrived: { label: "Complete Delivery", next: "completed" },
+  [DISPATCH_STATUS.scheduled]: { label: "Start Staging", next: DISPATCH_STATUS.staging },
+  [DISPATCH_STATUS.staging]: { label: "Mark Ready", next: DISPATCH_STATUS.ready },
+  [DISPATCH_STATUS.ready]: { label: "Mark Loaded", next: DISPATCH_STATUS.loaded },
+  [DISPATCH_STATUS.loaded]: { label: "Dispatch", next: DISPATCH_STATUS.dispatched },
+  [DISPATCH_STATUS.dispatched]: { label: "Mark Arrived", next: DISPATCH_STATUS.arrived },
+  [DISPATCH_STATUS.arrived]: { label: "Complete Delivery", next: DISPATCH_STATUS.completed },
 };
 const INBOUND_STEPS: Record<string, { label: string; next: string }> = {
-  scheduled: { label: "Dispatch Driver", next: "dispatched" },
-  dispatched: { label: "Arrived at Job", next: "arrived" },
-  arrived: { label: "Mark Loaded", next: "loaded" },
-  loaded: { label: "Returning to Yard", next: "returning" },
-  returning: { label: "Arrived at Yard", next: "at_yard" },
-  at_yard: { label: "Check In", next: "completed" },
+  [DISPATCH_STATUS.scheduled]: { label: "Dispatch Driver", next: DISPATCH_STATUS.dispatched },
+  [DISPATCH_STATUS.dispatched]: { label: "Arrived at Job", next: DISPATCH_STATUS.arrived },
+  [DISPATCH_STATUS.arrived]: { label: "Mark Loaded", next: DISPATCH_STATUS.loaded },
+  [DISPATCH_STATUS.loaded]: { label: "Returning to Yard", next: DISPATCH_STATUS.returning },
+  [DISPATCH_STATUS.returning]: { label: "Arrived at Yard", next: DISPATCH_STATUS.atYard },
+  [DISPATCH_STATUS.atYard]: { label: "Check In", next: DISPATCH_STATUS.completed },
 };
-const nextStep = (d: Dispatch) => (d.direction === "outbound" ? OUTBOUND_STEPS : INBOUND_STEPS)[d.status];
-const isLive = (d: Dispatch) => d.status !== "completed" && d.status !== "cancelled";
+const nextStep = (d: Dispatch) => d.planning_only ? undefined : (d.direction === "outbound" ? OUTBOUND_STEPS : INBOUND_STEPS)[d.status];
+const isLive = (d: Dispatch) => isDispatchLive(d.status);
+type PlanningAction = { label: string; status: "active_rental" | "ready_for_pickup" | "completed"; message: string };
+const planningAction = (d: Dispatch): PlanningAction => {
+  if (d.direction === "outbound") return {
+    label: "Mark Delivered",
+    status: DISPATCH_STATUS.activeRental,
+    message: "This moves the planning item directly to Inbound as a gray Active Rental. Continue?",
+  };
+  if (d.status === DISPATCH_STATUS.activeRental) return {
+    label: "Mark Ready for Pickup",
+    status: DISPATCH_STATUS.readyForPickup,
+    message: "This marks the inbound item Ready for Pickup. Continue?",
+  };
+  return {
+    label: "Mark Picked Up",
+    status: DISPATCH_STATUS.completed,
+    message: "This archives the completed planning item for later reference without moving rental or inventory buckets. Continue?",
+  };
+};
 
-const equipmentSummary = (lines: DLine[]) => {
-  if (lines.length === 0) return "No equipment";
+const equipmentSummary = (lines: DLine[], requirements: string[] = []) => {
+  if (lines.length === 0 && requirements.length > 0) {
+    if (requirements.length <= 2) return requirements.join(" · ");
+    return `${requirements[0]} · ${requirements[1]} · +${requirements.length - 2} more`;
+  }
+  if (lines.length === 0) return "Equipment list pending";
   if (lines.length === 1) return `${lines[0].qty} ${lines[0].name}`;
   const total = lines.reduce((s, l) => s + l.qty, 0);
   return `${total} units · ${lines.length} lines`;
 };
 const shortDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Unscheduled";
+const dispatchDate = (dispatch: Dispatch) => dispatch.source_date_text || shortDateTime(dispatch.scheduled_date);
 
 type Tab = "all" | "outbound" | "inbound" | "completed";
 const TABS: { key: Tab; label: string }[] = [
   { key: "all", label: "All" },
   { key: "outbound", label: "Outbound" },
   { key: "inbound", label: "Inbound" },
-  { key: "completed", label: "Completed" },
+  { key: "completed", label: "Archive" },
 ];
 
 export default function DispatchScreen() {
@@ -94,6 +121,9 @@ export default function DispatchScreen() {
   const [outboundLines, setOutboundLines] = useState<DLine[]>([]);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
   const [pickupRentalId, setPickupRentalId] = useState<string>("");
+  const [pendingConfirmation, setPendingConfirmation] = useState<{
+    title: string; message: string; confirmLabel: string; destructive?: boolean; onConfirm: () => void;
+  } | null>(null);
 
   useEffect(() => {
     if (!params.open || dispatches.length === 0) return;
@@ -128,12 +158,27 @@ export default function DispatchScreen() {
   // than a single-field patch, so the equipment list's numbers catch up
   // once this syncs rather than updating instantly — the dispatch's own
   // status (what this screen is about) updates immediately either way.
-  const advance = (d: Dispatch, status: string) => {
+  const advance = async (d: Dispatch, status: string) => {
+    if (d.planning_only) {
+      setBusy(true);
+      try {
+        const updated = await api<Dispatch>(`/dispatches/${d.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+        dispatchesRes.onRefresh();
+        if (TERMINAL_DISPATCH_STATUSES.includes(updated.status)) setTab("completed");
+        else if (d.direction === "outbound" && updated.direction === "inbound") setTab("inbound");
+      } catch (e: any) {
+        Alert.alert("Update failed", e.message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const now = new Date().toISOString();
     const patch: Partial<Dispatch> = { status };
-    if (status === "dispatched" && !d.started_at) patch.started_at = now;
-    if (status === "arrived" && !d.arrived_at) patch.arrived_at = now;
-    if (status === "completed" || status === "cancelled") patch.completed_at = now;
+    if (status === DISPATCH_STATUS.dispatched && !d.started_at) patch.started_at = now;
+    if (status === DISPATCH_STATUS.arrived && !d.arrived_at) patch.arrived_at = now;
+    if (TERMINAL_DISPATCH_STATUSES.includes(status)) patch.completed_at = now;
     mutate<Dispatch>({
       kind: "command",
       entityType: "dispatches",
@@ -146,10 +191,24 @@ export default function DispatchScreen() {
   };
 
   const cancelDispatch = (d: Dispatch) => {
-    Alert.alert("Cancel dispatch", "This releases any equipment this dispatch reserved or moved. Continue?", [
-      { text: "Keep it", style: "cancel" },
-      { text: "Cancel dispatch", style: "destructive", onPress: () => advance(d, "cancelled") },
-    ]);
+    setPendingConfirmation({
+      title: "Cancel dispatch", message: "This releases any equipment this dispatch reserved or moved. Continue?",
+      confirmLabel: "Cancel dispatch", destructive: true, onConfirm: () => advance(d, "cancelled"),
+    });
+  };
+
+  const confirmPlanAction = (d: Dispatch, action: PlanningAction) => {
+    setPendingConfirmation({
+      title: action.label, message: action.message, confirmLabel: action.label,
+      onConfirm: () => advance(d, action.status),
+    });
+  };
+
+  const cancelPlan = (d: Dispatch) => {
+    setPendingConfirmation({
+      title: "Cancel Plan", message: "This cancels the planning item without changing inventory. Continue?",
+      confirmLabel: "Cancel Plan", destructive: true, onConfirm: () => advance(d, "cancelled"),
+    });
   };
 
   const saveAssignment = async () => {
@@ -220,7 +279,7 @@ export default function DispatchScreen() {
     }
   };
 
-  const pickupEligibleRentals = useMemo(() => rentals.filter((r) => r.status !== "returned"), [rentals]);
+  const pickupEligibleRentals = useMemo(() => rentals.filter((r) => !isRentalReturned(r.status)), [rentals]);
 
   const counts = useMemo(() => ({
     all: dispatches.filter(isLive).length,
@@ -239,7 +298,7 @@ export default function DispatchScreen() {
     });
     if (query) {
       rows = rows.filter((d) =>
-        [d.id, d.customer_name, d.job_site, d.driver_name, d.truck, ...d.lines.flatMap((l) => [l.sku, l.name])]
+        [d.id, d.customer_name, d.job_site, d.driver_name, d.truck, d.notes, d.raw_text, ...(d.requirements || []), ...d.lines.flatMap((l) => [l.sku, l.name])]
           .some((v) => v?.toLowerCase().includes(query))
       );
     }
@@ -251,7 +310,7 @@ export default function DispatchScreen() {
 
   const columns = useMemo<ColumnDef<Dispatch>[]>(() => {
     const identity: ColumnDef<Dispatch>[] = [
-      { key: "scheduled_date", label: "Time", width: 100, render: (d) => <Mono style={styles.tableMono}>{shortDateTime(d.scheduled_date)}</Mono> },
+      { key: "scheduled_date", label: "Time", width: 100, render: (d) => <Mono style={styles.tableMono}>{dispatchDate(d)}</Mono> },
       { key: "direction", label: "Direction", width: 92, render: (d) => <DirectionTag direction={d.direction} /> },
       { key: "customer_name", label: "Customer / Job", flex: 1.2, render: (d) => (
         <View><Text numberOfLines={1}>{d.customer_name}</Text><Text style={styles.subCell} numberOfLines={1}>{d.job_site || "—"}</Text></View>
@@ -262,7 +321,7 @@ export default function DispatchScreen() {
     }
     return [
       ...identity,
-      { key: "equipment", label: "Equipment", flex: 1, render: (d) => <Text numberOfLines={1}>{equipmentSummary(d.lines)}</Text> },
+      { key: "equipment", label: "Equipment", flex: 1, render: (d) => <Text numberOfLines={1}>{equipmentSummary(d.lines, d.requirements)}</Text> },
       { key: "driver_name", label: "Driver", width: 110, render: (d) => d.driver_name || "—" },
       { key: "truck", label: "Truck", width: 90, render: (d) => d.truck || "—" },
       { key: "status", label: "Status", width: 110, render: (d) => <StatusBadge label={d.status} /> },
@@ -305,14 +364,14 @@ export default function DispatchScreen() {
               <Card style={{ marginBottom: spacing.sm }}>
                 <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
                   <View style={{ flex: 1 }}>
-                    <Row style={{ gap: 6 }}><DirectionTag direction={d.direction} /><Mono style={{ fontSize: 11, color: colors.inkMuted }}>{shortDateTime(d.scheduled_date)}</Mono></Row>
+                    <Row style={{ gap: 6 }}><DirectionTag direction={d.direction} /><Mono style={{ fontSize: 11, color: colors.inkMuted }}>{dispatchDate(d)}</Mono></Row>
                     <H3 style={{ marginTop: 4 }}>{d.customer_name}</H3>
                     <Text style={[typo.bodySmall, { marginTop: 2 }]}>{d.job_site || "—"}</Text>
                   </View>
                   <StatusBadge label={d.status} />
                 </Row>
-                <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>{equipmentSummary(d.lines)}</Text>
-                {d.driver_name ? <Text style={[typo.caption, { marginTop: 4 }]}>Driver: {d.driver_name}{d.truck ? ` · ${d.truck}` : ""}</Text> : null}
+                <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>{equipmentSummary(d.lines, d.requirements)}</Text>
+                {d.driver_name ? <Text style={[typo.caption, { marginTop: 4 }]}>{d.planning_only ? "Owner" : "Driver"}: {d.driver_name}{d.truck ? ` · ${d.truck}` : ""}</Text> : null}
               </Card>
             </TouchableOpacity>
           ))}
@@ -320,9 +379,9 @@ export default function DispatchScreen() {
       )}
 
       <DetailDrawer
-        visible={isShellWide && !!selected}
+        visible={!!selected}
         title={selected ? (selected.direction === "outbound" ? "Outbound" : "Inbound") : "Dispatch detail"}
-        subtitle={selected ? `${selected.customer_name} · ${shortDateTime(selected.scheduled_date)}` : undefined}
+        subtitle={selected ? `${selected.customer_name} · ${dispatchDate(selected)}` : undefined}
         onClose={() => setSelected(null)}
         width={460}
         testID="dispatch-detail-drawer"
@@ -336,43 +395,84 @@ export default function DispatchScreen() {
             <DetailSection label="Job site">
               <Text style={styles.detailTitle}>{selected.job_site || "No job site"}</Text>
             </DetailSection>
-            <DetailSection label={`Equipment (${selected.lines.length})`}>
-              {selected.lines.map((l) => (
-                <Row key={l.equipment_id} style={{ justifyContent: "space-between", paddingVertical: 4 }}>
-                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{l.name}</Text><Mono style={styles.detailSku}>{l.sku}</Mono></View>
-                  <Mono style={styles.detailAmount}>{l.qty}</Mono>
-                </Row>
-              ))}
-            </DetailSection>
-            <DetailSection label="Assignment">
-              <Input
-                label="Scheduled date/time (yyyy-mm-ddThh:mm)"
-                value={assignDraft?.scheduled_date || ""}
-                onChangeText={(t) => setAssignDraft((a) => a ? { ...a, scheduled_date: t } : a)}
-                mono
-                autoCapitalize="none"
-                testID="assign-scheduled-date"
-              />
-              <Input label="Driver" value={assignDraft?.driver_name || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, driver_name: t } : a)} testID="assign-driver" />
-              <Row style={{ gap: spacing.md }}>
-                <View style={{ flex: 1 }}><Input label="Truck" value={assignDraft?.truck || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, truck: t } : a)} testID="assign-truck" /></View>
-                <View style={{ flex: 1 }}><Input label="Trailer" value={assignDraft?.trailer || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, trailer: t } : a)} testID="assign-trailer" /></View>
-              </Row>
-              {canEdit ? <Button title="Save assignment" onPress={saveAssignment} variant="outline" loading={busy} testID="save-assignment-btn" /> : null}
-            </DetailSection>
+            {selected.planning_only ? (
+              <>
+                <View style={styles.planNotice} testID="outbound-plan-notice">
+                  <Ionicons name="information-circle-outline" size={18} color={colors.info} />
+                  <Text style={styles.planNoticeText}>Planning item only · inventory is not reserved</Text>
+                </View>
+                <DetailSection label={`Requirements (${selected.requirements?.length || 0})`}>
+                  {(selected.requirements || []).length ? (selected.requirements || []).map((requirement, index) => (
+                    <Row key={`${selected.id}-requirement-${index}`} style={styles.requirementRow}>
+                      <Ionicons name="cube-outline" size={15} color={colors.inkMuted} />
+                      <Text style={[styles.detailText, { flex: 1 }]}>{requirement}</Text>
+                    </Row>
+                  )) : <Text style={styles.detailText}>Equipment list pending.</Text>}
+                </DetailSection>
+                {selected.driver_name ? <DetailSection label="Owner"><Text style={styles.detailTitle}>{selected.driver_name}</Text></DetailSection> : null}
+              </>
+            ) : (
+              <>
+                <DetailSection label={`Equipment (${selected.lines.length})`}>
+                  {selected.lines.map((l) => (
+                    <Row key={l.equipment_id} style={{ justifyContent: "space-between", paddingVertical: 4 }}>
+                      <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{l.name}</Text><Mono style={styles.detailSku}>{l.sku}</Mono></View>
+                      <Mono style={styles.detailAmount}>{l.qty}</Mono>
+                    </Row>
+                  ))}
+                </DetailSection>
+                <DetailSection label="Assignment">
+                  <Input
+                    label="Scheduled date/time (yyyy-mm-ddThh:mm)"
+                    value={assignDraft?.scheduled_date || ""}
+                    onChangeText={(t) => setAssignDraft((a) => a ? { ...a, scheduled_date: t } : a)}
+                    mono
+                    autoCapitalize="none"
+                    testID="assign-scheduled-date"
+                  />
+                  <Input label="Driver" value={assignDraft?.driver_name || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, driver_name: t } : a)} testID="assign-driver" />
+                  <Row style={{ gap: spacing.md }}>
+                    <View style={{ flex: 1 }}><Input label="Truck" value={assignDraft?.truck || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, truck: t } : a)} testID="assign-truck" /></View>
+                    <View style={{ flex: 1 }}><Input label="Trailer" value={assignDraft?.trailer || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, trailer: t } : a)} testID="assign-trailer" /></View>
+                  </Row>
+                  {canEdit ? <Button title="Save assignment" onPress={saveAssignment} variant="outline" loading={busy} testID="save-assignment-btn" /> : null}
+                </DetailSection>
+              </>
+            )}
             {selected.notes ? <DetailSection label="Notes"><Text style={styles.detailText}>{selected.notes}</Text></DetailSection> : null}
+            {selected.planning_only && selected.raw_text ? <DetailSection label="Original reminder"><Text style={styles.detailText}>{selected.raw_text}</Text></DetailSection> : null}
             {selected.rental_id ? <DetailSection label="Linked rental"><Mono style={styles.detailText}>{selected.rental_id.slice(0, 12)}</Mono></DetailSection> : null}
             <View style={styles.drawerActions}>
               {canEdit && isLive(selected) && nextStep(selected) ? (
                 <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} testID="dispatch-advance-btn" />
               ) : null}
-              {canEdit && isLive(selected) ? (
+              {canEdit && isLive(selected) && selected.planning_only ? (
+                <Button title={planningAction(selected).label} onPress={() => confirmPlanAction(selected, planningAction(selected))} loading={busy} testID="planning-item-complete-btn" />
+              ) : null}
+              {canEdit && isLive(selected) && selected.planning_only ? (
+                <Button title="Cancel Plan" onPress={() => cancelPlan(selected)} variant="danger" testID="planning-item-cancel-btn" />
+              ) : canEdit && isLive(selected) && !selected.planning_only ? (
                 <Button title="Cancel Dispatch" onPress={() => cancelDispatch(selected)} variant="danger" testID="dispatch-cancel-btn" />
               ) : null}
             </View>
           </View>
         ) : null}
       </DetailDrawer>
+
+      <ConfirmDialog
+        visible={!!pendingConfirmation}
+        title={pendingConfirmation?.title || "Confirm"}
+        message={pendingConfirmation?.message}
+        confirmLabel={pendingConfirmation?.confirmLabel}
+        destructive={pendingConfirmation?.destructive || false}
+        onCancel={() => setPendingConfirmation(null)}
+        onConfirm={() => {
+          const onConfirm = pendingConfirmation?.onConfirm;
+          setPendingConfirmation(null);
+          onConfirm?.();
+        }}
+        testID="dispatch-confirm"
+      />
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen
@@ -464,19 +564,22 @@ const DirectionTag: React.FC<{ direction: Direction }> = ({ direction }) => (
   </Row>
 );
 
-const DispatchTabs: React.FC<{ tab: Tab; counts: Record<Tab, number>; onChange: (t: Tab) => void }> = ({ tab, counts, onChange }) => (
-  <View style={styles.tabsWrap} testID="dispatch-tabs">
-    {TABS.map(({ key, label }) => {
-      const active = tab === key;
-      return (
-        <TouchableOpacity key={key} onPress={() => onChange(key)} style={[styles.tabItem, active && styles.tabItemActive]} testID={`dispatch-tab-${key}`}>
-          <Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text>
-          <View style={[styles.tabCount, active && styles.tabCountActive]}><Text style={[styles.tabCountText, active && styles.tabCountTextActive]}>{counts[key]}</Text></View>
-        </TouchableOpacity>
-      );
-    })}
-  </View>
-);
+const DispatchTabs: React.FC<{ tab: Tab; counts: Record<Tab, number>; onChange: (t: Tab) => void }> = ({ tab, counts, onChange }) => {
+  const { isShellWide } = useBreakpoint();
+  return (
+    <View style={[styles.tabsWrap, !isShellWide && styles.tabsWrapMobile]} testID="dispatch-tabs">
+      {TABS.map(({ key, label }) => {
+        const active = tab === key;
+        return (
+          <TouchableOpacity key={key} onPress={() => onChange(key)} style={[styles.tabItem, !isShellWide && styles.tabItemMobile, active && styles.tabItemActive]} testID={`dispatch-tab-${key}`}>
+            <Text numberOfLines={1} style={[styles.tabText, !isShellWide && styles.tabTextMobile, active && styles.tabTextActive]}>{label}</Text>
+            {isShellWide ? <View style={[styles.tabCount, active && styles.tabCountActive]}><Text style={[styles.tabCountText, active && styles.tabCountTextActive]}>{counts[key]}</Text></View> : null}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+};
 
 const DetailSection: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <View style={styles.detailSection}><Text style={styles.detailLabel}>{label}</Text>{children}</View>
@@ -486,9 +589,12 @@ const styles = StyleSheet.create({
   desktopWorkspace: { flex: 1, paddingTop: spacing.lg },
   tabRow: { paddingHorizontal: spacing.xl, marginBottom: spacing.sm },
   tabsWrap: { flexDirection: "row", gap: spacing.xs, marginBottom: spacing.md, paddingHorizontal: spacing.xl },
+  tabsWrapMobile: { paddingHorizontal: spacing.sm, gap: 4 },
   tabItem: { height: 38, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
+  tabItemMobile: { flex: 1, minWidth: 0, justifyContent: "center", gap: 4, paddingHorizontal: 4 },
   tabItemActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
   tabText: { fontSize: 13, fontWeight: "700", color: colors.inkSecondary },
+  tabTextMobile: { fontSize: 11.5 },
   tabTextActive: { color: colors.primary },
   tabCount: { minWidth: 20, height: 20, paddingHorizontal: 5, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgTint },
   tabCountActive: { backgroundColor: colors.bg },
@@ -509,6 +615,9 @@ const styles = StyleSheet.create({
   detailText: { ...typo.bodySmall, marginTop: 2 },
   detailSku: { fontSize: 10.5, color: colors.inkMuted },
   detailAmount: { width: 50, textAlign: "right", fontSize: 12 },
+  planNotice: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.md, padding: spacing.sm, borderRadius: radii.md, backgroundColor: colors.primarySoft },
+  planNoticeText: { ...typo.bodySmall, flex: 1, color: colors.info, fontWeight: "700" },
+  requirementRow: { alignItems: "flex-start", gap: spacing.sm, paddingVertical: 5 },
   drawerActions: { paddingTop: spacing.lg, gap: spacing.sm },
   eqRow: { flexDirection: "row", alignItems: "center", padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
   eqRowSelected: { backgroundColor: colors.primarySoft },

@@ -5,6 +5,8 @@
   "scripts": {
     "preinstall": "./scripts/check-pkg.js",
     "start": "expo start",
+    "demo": "node ./scripts/start-demo.js",
+    "demo:api": "node ./scripts/demo-api.js",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",

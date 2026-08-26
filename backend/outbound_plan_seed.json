@@ -1,0 +1,268 @@
+[
+  {
+    "source_key": "bracing-outbound-2026-08-19-grande-saline",
+    "scheduled_date": "2026-08-19T12:00:00Z",
+    "source_date_text": "8.19.26",
+    "date_confirmed": true,
+    "customer_name": "Grande Saline",
+    "job_site": "Grande Saline",
+    "driver_name": "Jon",
+    "status": "partially_delivered",
+    "requirements": [
+      "60 × 20 ft stiffbacks remaining",
+      "120 × Reechcraft turnbuckles remaining",
+      "75 × walkboard brackets (Gen 1) remaining",
+      "70 × handrails (Gen 1) remaining",
+      "47 × Reechcraft extensions remaining"
+    ],
+    "notes": "Partial delivery on 8/19: 60 × 20 ft stiffbacks, 120 × Reechcraft turnbuckles, 70 × walkboard brackets (Gen 1), 75 × handrails (Gen 1), and 73 × Reechcraft extensions. Remaining quantities are shown in Requirements.",
+    "raw_text": "8.19.26? / Grande Saline / 120 - 20's / 120 EXT / 145 WBB G1 / 145 HR G1 / 240 TB RC? / 120 ext / Jon"
+  },
+  {
+    "source_key": "bracing-outbound-2026-08-21-crowley",
+    "scheduled_date": "2026-08-21T12:00:00Z",
+    "source_date_text": "8.21.26",
+    "date_confirmed": true,
+    "customer_name": "Crowley",
+    "job_site": "Crowley",
+    "status": "completed",
+    "requirements": [
+      "100 × 12 ft stiffbacks (80 yellow, 20 green Gen 2)",
+      "120 × walkboard brackets",
+      "120 × handrails",
+      "100 × extensions"
+    ],
+    "notes": "Delivered 8.22.",
+    "raw_text": "8.21.26 / Crowley / 100 - 12's / 120 WBB / 120 HR / 100 EXT / Yellow"
+  },
+  {
+    "source_key": "bracing-outbound-2026-08-27-grandview",
+    "scheduled_date": "2026-08-27T12:00:00Z",
+    "source_date_text": "8/27/26??",
+    "date_confirmed": false,
+    "customer_name": "Grandview",
+    "job_site": "Grandview, TX",
+    "driver_name": "Tyler Black",
+    "status": "scheduled",
+    "requirements": [
+      "43 × 12 ft stiffbacks",
+      "12 × 16 ft stiffbacks",
+      "14 × 20 ft stiffbacks",
+      "26 × mid-bracing",
+      "26 × extensions"
+    ],
+    "notes": "Residential BB.",
+    "raw_text": "8/27/26?? - Tyler Black - Grandview TX / 43 - 12's / 12 - 16's / 14 - 20's / 26 midbracing / 26 - TB ext / Residential BB"
+  },
+  {
+    "source_key": "bracing-outbound-2026-08-31-edison-es",
+    "scheduled_date": "2026-08-31T12:00:00Z",
+    "source_date_text": "8.31.26?",
+    "date_confirmed": false,
+    "customer_name": "Edison ES",
+    "job_site": "Gainesville",
+    "driver_name": "Adrian",
+    "status": "needs_confirmation",
+    "requirements": [
+      "110 × 20 ft stiffbacks",
+      "38 × 12 ft stiffbacks (tentative; 16 ft if available)"
+    ],
+    "notes": "Confirm whether the 38 stiffbacks should be 12 ft or 16 ft.",
+    "raw_text": "8.31.26? / Edison ES / Gainesville / 110 - 20's / 38 - 12's? Could be 16's if available / Adrian"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-03-mesquite",
+    "scheduled_date": "2026-09-03T12:00:00Z",
+    "source_date_text": "9.3.26?",
+    "date_confirmed": false,
+    "customer_name": "Mesquite",
+    "job_site": "Mesquite",
+    "driver_name": "Jon",
+    "status": "needs_confirmation",
+    "requirements": [
+      "140 × stiffbacks (20 ft tentative; could use 12 ft or 16 ft)",
+      "280 × turnbuckles",
+      "165 × walkboard brackets",
+      "165 × handrails"
+    ],
+    "notes": "Waiting on final stiffback size. 560 linear ft, multi-level, long rental.",
+    "raw_text": "9.3.26? / Mesquite / 140 - 20's? Could go 12 or 16 now / waiting on final SB size / 280 TB / 165 WBB / 165 HR / Jon"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-04-carrollton",
+    "scheduled_date": "2026-09-04T12:00:00Z",
+    "source_date_text": "9.4.26?",
+    "date_confirmed": false,
+    "customer_name": "Carrollton",
+    "job_site": "Carrollton",
+    "driver_name": "Marco",
+    "status": "scheduled",
+    "requirements": [
+      "84 × 16 ft stiffbacks (Gen 2, yellow or green if available)",
+      "Crankup scaffolds (likely)"
+    ],
+    "notes": "On crankups more than likely.",
+    "raw_text": "9.4.26? / Carrollton / 84 - 16's / Gen 2 Yellow or Green if available / Marco"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-18-community-hs",
+    "scheduled_date": "2026-09-18T12:00:00Z",
+    "source_date_text": "9.18.26?",
+    "date_confirmed": false,
+    "customer_name": "Community HS",
+    "job_site": "Nevada · Unit J1",
+    "driver_name": "Marco",
+    "status": "waiting_on_permit",
+    "requirements": [
+      "56 × 20 ft stiffbacks",
+      "27 × 16 ft stiffbacks",
+      "20 × extensions (possible)",
+      "Crankup scaffolds (alternate for 32 ft of wall at 26 ft 8 in)"
+    ],
+    "notes": "After Crandall lift 1 tentatively. Weird two-story sequencing needs discussion for one or two phases. Possible 163 ft of crankups because of limited second-level access or scissor lifts. Waiting on permit.",
+    "raw_text": "9.18.26? / Nevada / Community HS / Unit J1 / 56 - 20's / 27 - 16's / possible 20' extensions for 32' of wall @ 26' 8\" or Crankup / after Crandall lift 1 tentatively / Marco"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-28-ferris",
+    "scheduled_date": "2026-09-28T12:00:00Z",
+    "source_date_text": "9.28.26?",
+    "date_confirmed": false,
+    "customer_name": "Ferris",
+    "job_site": "Ferris",
+    "driver_name": "Marco",
+    "status": "scheduled",
+    "requirements": [
+      "131 × 16 ft stiffbacks",
+      "12 × 20 ft stiffbacks"
+    ],
+    "notes": "",
+    "raw_text": "9.28.26? / Ferris / 131 - 16's / 12 - 20's / Marco"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-28-joshua-es",
+    "scheduled_date": "2026-09-28T12:00:00Z",
+    "source_date_text": "9.28.26?",
+    "date_confirmed": false,
+    "customer_name": "Joshua ES",
+    "job_site": "Joshua",
+    "status": "waiting_on_permit",
+    "requirements": [
+      "84 × 16 ft stiffbacks (tentative)",
+      "Crankup scaffolds"
+    ],
+    "notes": "With crankups. Waiting on permit.",
+    "raw_text": "9.28.26? / Joshua ES / 84 - 16's? / With Crankups / Waiting on permit"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-28-red-oak-cte",
+    "scheduled_date": "2026-09-28T12:00:00Z",
+    "source_date_text": "9.28.26?",
+    "date_confirmed": false,
+    "customer_name": "Red Oak CTE",
+    "job_site": "Red Oak",
+    "driver_name": "Marco",
+    "status": "waiting_on_shops",
+    "requirements": [
+      "120 × 20 ft stiffbacks (tentative)"
+    ],
+    "notes": "Need shops.",
+    "raw_text": "9.28.26? / Red Oak CTE / 120? - 20's? / Marco / Need shops"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-28-frisco-baptist",
+    "scheduled_date": "2026-09-28T12:00:00Z",
+    "source_date_text": "9.28.26?",
+    "date_confirmed": false,
+    "customer_name": "Frisco Baptist",
+    "job_site": "Frisco",
+    "driver_name": "Adrian",
+    "status": "waiting_on_shops",
+    "requirements": [],
+    "notes": "Waiting on shops. Equipment list not yet provided.",
+    "raw_text": "9.28.26? / Frisco Baptist / Frisco / Adrian / Waiting on shops"
+  },
+  {
+    "source_key": "bracing-outbound-2026-10-01-radius-school",
+    "scheduled_date": "2026-10-01T12:00:00Z",
+    "source_date_text": "10.1.26?",
+    "date_confirmed": false,
+    "customer_name": "Radius School",
+    "job_site": "Crowley",
+    "status": "needs_equipment_list",
+    "requirements": [
+      "150 × 16 ft stiffbacks (tentative)"
+    ],
+    "notes": "Pushed from March. Pushed to September; steel has to go first. Need equipment list. Tried moving up; did not happen.",
+    "raw_text": "10.1.26? / Crowley / 150? - 16's / Radius School"
+  },
+  {
+    "source_key": "bracing-outbound-2026-10-04-monster-mark",
+    "scheduled_date": "2026-10-04T12:00:00Z",
+    "source_date_text": "10.4.26?",
+    "date_confirmed": false,
+    "customer_name": "Monster Mark",
+    "job_site": "Bells",
+    "status": "scheduled",
+    "requirements": [
+      "60 × 10 ft stiffbacks"
+    ],
+    "notes": "Main level; basement done.",
+    "raw_text": "10.4.26? / Bells / Monster Mark / 60 - 10's"
+  },
+  {
+    "source_key": "bracing-outbound-2026-09-22-louisiana",
+    "scheduled_date": "2026-09-22T12:00:00Z",
+    "source_date_text": "9.22.26?",
+    "date_confirmed": false,
+    "customer_name": "Louisiana",
+    "job_site": "Location pending",
+    "driver_name": "Kirk",
+    "status": "waiting_on_permit",
+    "requirements": [
+      "51 × stiffbacks (10 ft or 12 ft; tentative)"
+    ],
+    "notes": "Need location and takeoff. Waiting on permit.",
+    "raw_text": "9.22.26? / Louisiana - Kirk / 51 - 10's or 12's / Need location and takeoff yet / Waiting on permit"
+  },
+  {
+    "source_key": "bracing-outbound-2026-10-18-ft-worth",
+    "scheduled_date": "2026-10-18T12:00:00Z",
+    "source_date_text": "10.18.26??",
+    "date_confirmed": false,
+    "customer_name": "Fort Worth",
+    "job_site": "33 ft gym",
+    "driver_name": "Andy",
+    "status": "needs_follow_up",
+    "requirements": [
+      "120–130 × 20 ft stiffbacks"
+    ],
+    "notes": "Andy needs to follow up. Probably cancelled.",
+    "raw_text": "10.18.26?? / Ft Worth / Andy / 120 - 130 - 20's / 33' Gym"
+  },
+  {
+    "source_key": "bracing-outbound-2028-11-16-salazar-grimes",
+    "scheduled_date": "2028-11-16T12:00:00Z",
+    "source_date_text": "11.16.28?",
+    "date_confirmed": false,
+    "customer_name": "Salazar Grimes",
+    "job_site": "Carrollton",
+    "driver_name": "Adrian",
+    "status": "waiting_on_shops",
+    "requirements": [],
+    "notes": "Waiting on shops. The source says 11.16.28; preserved as written.",
+    "raw_text": "11.16.28? / Salazar Grimes / Carrollton / Adrian / Waiting on shops"
+  },
+  {
+    "source_key": "bracing-outbound-2026-12-14-anna-isd-harlow-es",
+    "scheduled_date": "2026-12-14T12:00:00Z",
+    "source_date_text": "12.14.26?",
+    "date_confirmed": false,
+    "customer_name": "Anna ISD Harlow ES",
+    "job_site": "Anna",
+    "driver_name": "Adrian",
+    "status": "waiting_on_shops",
+    "requirements": [],
+    "notes": "Waiting on shops. Equipment list not yet provided.",
+    "raw_text": "12.14.26? / Anna ISD Harlow ES / Anna / Adrian / Waiting on shops"
+  }
+]

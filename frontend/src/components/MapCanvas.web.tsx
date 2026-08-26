@@ -6,6 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "@/src/api/client";
 import { Button, Input, Row } from "@/src/components/ui";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
+import { RENTAL_STATUS } from "@/src/domain/status";
 
 export type Pin = {
   id: string;
@@ -39,8 +40,9 @@ function ensureLeaflet(): Promise<any> {
 }
 
 function statusColor(status?: string) {
-  if (status === "returned") return colors.success;
-  if (status === "partially_returned") return colors.warning;
+  if (status === "shop") return colors.accent;
+  if (status === RENTAL_STATUS.returned) return colors.success;
+  if (status === RENTAL_STATUS.partiallyReturned) return colors.warning;
   return colors.primary;
 }
 
@@ -114,8 +116,9 @@ export const MapCanvas: React.FC<{
     const bounds: [number, number][] = [];
     pins.forEach((pin) => {
       const selected = pin.id === selectedId;
+      const isShop = pin.status === "shop";
       const marker = L.circleMarker([pin.lat, pin.lng], {
-        radius: selected ? 11 : 8,
+        radius: selected ? 11 : isShop ? 10 : 8,
         color: "#FFFFFF",
         weight: selected ? 4 : 3,
         fillColor: statusColor(pin.status),

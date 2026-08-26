@@ -1,0 +1,178 @@
+[
+  {
+    "source_key": "bracing-inbound-pending-granbury-al",
+    "scheduled_date": null,
+    "source_date_text": "Date pending",
+    "date_confirmed": false,
+    "customer_name": "Granbury AL",
+    "job_site": "Granbury",
+    "status": "ready_for_pickup",
+    "requirements": [
+      "10 × 12 ft stiffbacks",
+      "5 × 16 ft stiffbacks",
+      "5 × extensions (Gen 1 tentative)",
+      "Gen 1 walkboard brackets (count pending)",
+      "Gen 1 handrails (count pending)",
+      "Nudura 12 ft stiffbacks (count pending)"
+    ],
+    "notes": "Ready for pickup. Needs picked up. Confirm whether the Gen 1 note applies to the extensions and confirm the unlisted quantities.",
+    "raw_text": "?? / Granbury AL / 10-12's / 5-16's / 5 ext / gen 1? / gen 1 WBB / gen 1 HR / Nudura 12' SB / Ready for pu / NEEDS PICKED UP"
+  },
+  {
+    "source_key": "bracing-inbound-pending-waxahachie",
+    "scheduled_date": null,
+    "source_date_text": "Date pending",
+    "date_confirmed": false,
+    "customer_name": "Waxahachie",
+    "job_site": "Waxahachie",
+    "status": "needs_pickup",
+    "requirements": [
+      "120 × Gen 2 turnbuckles only",
+      "Feet must be marked before pickup"
+    ],
+    "notes": "Mid-brace job with existing Nudura bracing on site. Billing notes: billed through 5/8; 5/9–5/22 sent 5/20; 5/23–6/5 sent 6/8; 6/6–6/19 sent 6/22; 6/20–7/3 sent 7/17; 7/4–7/17 sent 7/17; 7/18–7/31 created but not sent.",
+    "raw_text": "?? / Waxahatchie / 120 Gen 2 Turnbuckles only / feet must be marked / mid brace job with existing Nudura bracing there"
+  },
+  {
+    "source_key": "bracing-inbound-2026-07-15-abilene",
+    "scheduled_date": "2026-07-15T12:00:00Z",
+    "source_date_text": "7.15.26?",
+    "date_confirmed": false,
+    "customer_name": "Abilene",
+    "job_site": "Abilene",
+    "status": "needs_pickup",
+    "requirements": [
+      "103 × 9 ft stiffbacks",
+      "Fine-thread turnbuckles (count pending)"
+    ],
+    "notes": "Job scope from reminder: 338 linear ft, 16 corners, and 2 tees.",
+    "raw_text": "7.15.26? / Abilene / 338' / 16 corners / 2 tees / 103-9' / Fine Thread TB"
+  },
+  {
+    "source_key": "bracing-inbound-2026-06-17-community-hs-unit-m",
+    "scheduled_date": "2026-06-17T12:00:00Z",
+    "source_date_text": "6.17.26",
+    "date_confirmed": true,
+    "customer_name": "Community HS",
+    "job_site": "Nevada · Unit M · second-level pour",
+    "status": "moved_to_other_jobs",
+    "requirements": [
+      "88 × 16 ft stiffbacks (yellow Gen 2)"
+    ],
+    "notes": "Job scope: 300 exterior, 20 inset door, 8 corners, 15 ft 4 in to first level, 30 ft 8 in to deck, and 34 ft. Invoice 6/4–6/17; invoice 6/18 plus pickup. GG&S moved the bracing to Anna and McKinney.",
+    "raw_text": "6.17.26 / Nevada / Community HS / Unit M / Second Level Pour / 88-16's / 300 exterior / 20 inset door / 8 corners / 15'4\" to 1st level / 30'8\" to deck / 34' / Yellow Gen 2"
+  },
+  {
+    "source_key": "bracing-inbound-2026-06-25-kaufman-shelter",
+    "scheduled_date": "2026-06-25T12:00:00Z",
+    "source_date_text": "6.25.26",
+    "date_confirmed": true,
+    "customer_name": "Shelter",
+    "job_site": "Kaufman",
+    "status": "picked_up_needs_verification",
+    "requirements": [
+      "125 × 20 ft stiffbacks",
+      "125 × extensions",
+      "250 × turnbuckles",
+      "155 × walkboard brackets",
+      "155 × handrails",
+      "Gen 2"
+    ],
+    "notes": "All picked up; verify counts and damages to bill. The outbound plan needed excess from Nevada and may have been short on 20 ft stiffbacks. Pending weather. Loads 5/20 and 5/22. Invoices: 5/20–6/2 sent; 6/3–6/16 sent; 6/17–6/25 called off and sent.",
+    "raw_text": "6.25 / Kaufman / 125-20's / 125 Ext / 250 TB / 155 WBB / 155 HR / Shelter / Gen 2 / All picked up. Need to verify counts / Need to verify damages to bill"
+  },
+  {
+    "source_key": "bracing-inbound-pending-shirley-warehouse",
+    "scheduled_date": null,
+    "source_date_text": "Date pending",
+    "date_confirmed": false,
+    "customer_name": "Shirley warehouse",
+    "job_site": "Shirley warehouse",
+    "status": "needs_pickup",
+    "requirements": [
+      "2 × Gen 1 turnbuckles"
+    ],
+    "notes": "Standalone reminder item; pickup date is not listed.",
+    "raw_text": "2 Gen 1 TB at Shirley warehouse"
+  },
+  {
+    "source_key": "bracing-inbound-2026-08-13-crandall-es-7",
+    "scheduled_date": "2026-08-13T12:00:00Z",
+    "source_date_text": "8.13.26?",
+    "date_confirmed": false,
+    "customer_name": "Crandall ES #7",
+    "job_site": "Crandall",
+    "status": "ready_for_pickup",
+    "requirements": [
+      "85 × 16 ft stiffbacks",
+      "Yellow turnbuckles (count pending)",
+      "Walkboard brackets (count pending)",
+      "Handrails (count pending)"
+    ],
+    "notes": "Ready for pickup as of 8/8. On crankups around the 17th from Joshua and Yard. Delivered 6/8; billing began 6/10. Invoice 6/12–6/25 sent 6/25; 6/26–7/9 sent 7/17; 7/10–7/23 created but not sent.",
+    "raw_text": "8.13.26? / Crandall ES #7 / 85-16's / Yellow TB / WBB / HR / 8.8 Ready for pu"
+  },
+  {
+    "source_key": "bracing-inbound-2026-06-18-anna-es",
+    "scheduled_date": "2026-06-18T12:00:00Z",
+    "source_date_text": "6.18.26?",
+    "date_confirmed": false,
+    "customer_name": "Anna ES",
+    "job_site": "Anna",
+    "status": "picked_up_needs_verification",
+    "requirements": [
+      "82 × 20 ft stiffbacks (16 ft substitution was tentative)",
+      "Crankup scaffolds (count pending)"
+    ],
+    "notes": "Done and moved to the GG&S yard; counts still need confirmation. Crankups came from Princeton and equipment came from Community Unit M. Invoice 6/25–7/8 sent; 7/9–7/22 created but not sent.",
+    "raw_text": "6.18.26? / Anna ES / 82-20's (16's if not enough 20's) / need to confirm counts / sub 16's / or make 20's / short x 20's? / Done and moved to GG&S yard"
+  },
+  {
+    "source_key": "bracing-inbound-pending-mckinney-christian",
+    "scheduled_date": null,
+    "source_date_text": "Date pending",
+    "date_confirmed": false,
+    "customer_name": "McKinney Christian",
+    "job_site": "McKinney",
+    "status": "completed",
+    "requirements": [
+      "72 × 20 ft stiffbacks",
+      "72 × extensions",
+      "72 × turnbuckles (tentative)",
+      "72 × walkboard brackets",
+      "72 × handrails"
+    ],
+    "notes": "Done and moved to the GG&S yard. Invoice for 7/6–7/19 was sent.",
+    "raw_text": "?? / McKinney Christian / 72-20's / 72 ext / 72 TB? / 72 WBB / 72 HR / Done and moved to GG&S yard"
+  },
+  {
+    "source_key": "bracing-inbound-2026-08-14-bells-monster-mark",
+    "scheduled_date": "2026-08-14T12:00:00Z",
+    "source_date_text": "8.14.26?",
+    "date_confirmed": false,
+    "customer_name": "Monster Mark",
+    "job_site": "Bells",
+    "status": "picked_up_needs_verification",
+    "requirements": [
+      "60 × 10 ft stiffbacks"
+    ],
+    "notes": "Ready for pickup 8/12. Done; counts need verification.",
+    "raw_text": "8.14.26? / Bells / Monster Mark / 60-10's / 8.12.26 Ready for pu / Done. Need counts verified"
+  },
+  {
+    "source_key": "bracing-inbound-2026-08-21-frisco-safe-room",
+    "scheduled_date": "2026-08-21T12:00:00Z",
+    "source_date_text": "8.21.26?",
+    "date_confirmed": false,
+    "customer_name": "Safe Room & ICF Deck",
+    "job_site": "Frisco",
+    "driver_name": "Marco",
+    "status": "needs_pickup",
+    "requirements": [
+      "24 × 12 ft stiffbacks",
+      "Shoring (count pending)"
+    ],
+    "notes": "Delivered 8/6 and poured 8/18.",
+    "raw_text": "8.21.26? / Frisco / Safe Room & ICF Deck / 24-12's / Plus Shoring / Marco / Delivered 8.6.26 / Poured 8.18"
+  }
+]

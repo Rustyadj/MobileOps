@@ -21,8 +21,8 @@ const TONE_MAP: Record<StatusTone, { fg: string; bg: string }> = {
 // to override.
 export function toneForStatus(status: string): StatusTone {
   const s = status.toLowerCase();
-  if (["returned", "resolved", "confirmed", "good"].includes(s)) return "success";
-  if (["partially_returned", "in_progress", "tentative", "fair"].includes(s)) return "warning";
+  if (["returned", "resolved", "confirmed", "completed", "good"].includes(s)) return "success";
+  if (["partially_returned", "partially_delivered", "ready_for_pickup", "needs_pickup", "picked_up_needs_verification", "in_progress", "tentative", "fair"].includes(s)) return "warning";
   if (["cancelled", "open", "poor", "broken", "conflict"].includes(s)) return "error";
   return "neutral";
 }

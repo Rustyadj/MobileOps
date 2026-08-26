@@ -31,11 +31,15 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "operations",
     label: "Operations",
     items: [
-      { key: "dispatch", label: "Dispatch", route: "/(app)/operations/dispatch", icon: "navigate-outline", testID: "nav-dispatch" },
+      // Jobs (the unified Booking+Rental+Dispatch pipeline, at the section's
+      // own root route) is the primary destination here. Dispatch/Rentals/
+      // Bookings/Returns are demoted out of primary nav — their screens
+      // still exist and are still reachable by deep link (from Jobs' detail
+      // drawer and from the Dashboard), they're just not top-level nav items
+      // anymore. Map and Capacity stay as secondary, still-linked views.
+      { key: "jobs", label: "Jobs", route: "/(app)/operations", icon: "layers-outline", testID: "nav-jobs" },
       { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
-      { key: "rentals", label: "Rentals", route: "/(app)/operations/rentals", icon: "receipt-outline", testID: "nav-rentals" },
-      { key: "bookings", label: "Bookings / Upcoming Jobs", route: "/(app)/operations/bookings", icon: "calendar-outline", testID: "nav-bookings" },
-      { key: "returns", label: "Returns", route: "/(app)/operations/returns", icon: "arrow-undo-outline", testID: "nav-returns" },
+      { key: "capacity", label: "Capacity", route: "/(app)/operations/capacity", icon: "bar-chart-outline", testID: "nav-capacity" },
     ],
   },
   {

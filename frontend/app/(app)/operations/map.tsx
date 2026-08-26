@@ -26,6 +26,8 @@ import { Button, H3, Mono, Pill, Row, SectionLabel } from "@/src/components/ui";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
+import { DEFAULT_SHOP, shopPin } from "@/src/config/shop-location";
+import { RENTAL_STATUS, isRentalReturned } from "@/src/domain/status";
 
 type Line = {
   equipment_id: string;
@@ -62,11 +64,13 @@ type Site = {
   company_address: string;
   company_phone: string;
   company_email: string;
+  shop_lat?: number;
+  shop_lng?: number;
 };
 
 type MapFilter = "all" | "active" | "partially_returned" | "missing";
 
-const isOpenRental = (rental: Rental) => rental.status !== "returned";
+const isOpenRental = (rental: Rental) => !isRentalReturned(rental.status);
 const hasLocation = (rental: Rental) => rental.lat != null && rental.lng != null;
 
 const lineOnSite = (line: Line) => {
@@ -77,12 +81,12 @@ const lineOnSite = (line: Line) => {
 const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + lineOnSite(line), 0);
 
 const statusTone = (status: string) => {
-  if (status === "partially_returned") return { color: colors.warning, bg: colors.warningSoft };
-  if (status === "returned") return { color: colors.success, bg: colors.successSoft };
+  if (status === RENTAL_STATUS.partiallyReturned) return { color: colors.warning, bg: colors.warningSoft };
+  if (status === RENTAL_STATUS.returned) return { color: colors.success, bg: colors.successSoft };
   return { color: colors.primary, bg: colors.primarySoft };
 };
 
-const displayStatus = (status: string) => status === "partially_returned" ? "Partial return" : status.replaceAll("_", " ");
+const displayStatus = (status: string) => status === RENTAL_STATUS.partiallyReturned ? "Partial return" : status.replaceAll("_", " ");
 
 const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({
   "&": "&amp;",
@@ -131,7 +135,7 @@ function RentalListRow({ rental, selected, onPress, onSetLocation }: {
   );
 }
 
-function RentalListPanel({ rentals, selectedId, search, filter, totalOpen, pinnedCount, missingCount, onSearch, onFilter, onSelect, onSetLocation }: {
+function RentalListPanel({ rentals, selectedId, search, filter, totalOpen, pinnedCount, missingCount, shopAddress, onSearch, onFilter, onSelect, onSetLocation }: {
   rentals: Rental[];
   selectedId?: string;
   search: string;
@@ -139,6 +143,7 @@ function RentalListPanel({ rentals, selectedId, search, filter, totalOpen, pinne
   totalOpen: number;
   pinnedCount: number;
   missingCount: number;
+  shopAddress: string;
   onSearch: (value: string) => void;
   onFilter: (value: MapFilter) => void;
   onSelect: (rental: Rental) => void;
@@ -157,6 +162,7 @@ function RentalListPanel({ rentals, selectedId, search, filter, totalOpen, pinne
           <View>
             <SectionLabel style={{ marginBottom: 2 }}>Rental locations</SectionLabel>
             <Text style={styles.panelTitle}>{pinnedCount} mapped · {missingCount} need action</Text>
+            <Text style={styles.shopAddress} numberOfLines={2}>Shop / Yard · {shopAddress}</Text>
           </View>
           <View style={styles.liveBadge}>
             <View style={styles.liveDot} />
@@ -345,7 +351,7 @@ export default function MapScreen() {
     });
   }, [filter, openRentals, search]);
 
-  const pins = useMemo<Pin[]>(() => filteredRentals.filter(hasLocation).map((rental) => ({
+  const rentalPins = useMemo<Pin[]>(() => filteredRentals.filter(hasLocation).map((rental) => ({
     id: rental.id,
     lat: rental.lat!,
     lng: rental.lng!,
@@ -353,6 +359,7 @@ export default function MapScreen() {
     subtitle: `${rental.job_site || "No job site"} · ${rentalUnits(rental)} on site`,
     status: rental.status,
   })), [filteredRentals]);
+  const pins = useMemo<Pin[]>(() => [shopPin(site), ...rentalPins], [rentalPins, site]);
 
   const selectRental = useCallback((rental: Rental) => setSelected(rental), []);
   const onPinPress = useCallback((pin: Pin) => {
@@ -443,6 +450,7 @@ ${rental.notes ? `<div class="box" style="margin-top:24px"><div class="label">No
       totalOpen={openRentals.length}
       pinnedCount={pinnedCount}
       missingCount={missingCount}
+      shopAddress={site?.company_address || DEFAULT_SHOP.address}
       onSearch={setSearch}
       onFilter={setFilter}
       onSelect={selectRental}
@@ -453,7 +461,7 @@ ${rental.notes ? `<div class="box" style="margin-top:24px"><div class="label">No
   return (
     <Screen
       title="Rental Map"
-      subtitle={`${pinnedCount} mapped${missingCount ? ` · ${missingCount} need location` : ""}`}
+      subtitle={`${pinnedCount} rentals mapped · Shop / Yard in Ponder${missingCount ? ` · ${missingCount} need location` : ""}`}
       back
       rightAction={{ icon: "refresh", onPress: onRefresh, testID: "map-refresh" }}
       scroll={false}
@@ -477,7 +485,7 @@ ${rental.notes ? `<div class="box" style="margin-top:24px"><div class="label">No
               />
               <View style={styles.mapSummary} pointerEvents="none">
                 <View style={styles.liveDot} />
-                <Text style={styles.mapSummaryText}>{pins.length} visible</Text>
+                <Text style={styles.mapSummaryText}>Shop / Yard + {rentalPins.length} rentals</Text>
                 <View style={styles.mapSummaryDivider} />
                 <Text style={[styles.mapSummaryText, missingCount > 0 && { color: colors.error }]}>{missingCount} need location</Text>
               </View>
@@ -487,12 +495,12 @@ ${rental.notes ? `<div class="box" style="margin-top:24px"><div class="label">No
                   <TouchableOpacity onPress={load}><Text style={styles.retryText}>Retry</Text></TouchableOpacity>
                 </View>
               ) : null}
-              {pins.length === 0 ? (
+              {rentalPins.length === 0 ? (
                 <View style={styles.emptyOverlay} pointerEvents="none">
                   <Ionicons name="location-outline" size={24} color={colors.primary} />
-                  <Text style={[typo.h3, { marginTop: 6 }]}>{missingCount ? "Locations need attention" : "No active rental locations"}</Text>
+                  <Text style={[typo.h3, { marginTop: 6 }]}>{missingCount ? "Locations need attention" : "Shop / Yard is home base"}</Text>
                   <Text style={[typo.bodySmall, { textAlign: "center", marginTop: 4 }]}>
-                    {missingCount ? `${missingCount} active rental${missingCount === 1 ? "" : "s"} must be pinned from the work queue.` : "Active rentals with saved coordinates will appear here."}
+                    {missingCount ? `${missingCount} active rental${missingCount === 1 ? "" : "s"} must be pinned from the work queue. The Ponder shop remains visible.` : DEFAULT_SHOP.address}
                   </Text>
                 </View>
               ) : null}
@@ -574,6 +582,7 @@ const styles = StyleSheet.create({
   sidePanel: { flex: 1, backgroundColor: colors.bg },
   panelHeader: { padding: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
   panelTitle: { fontSize: 14, fontWeight: "700", color: colors.ink },
+  shopAddress: { marginTop: 4, maxWidth: 280, fontSize: 11, lineHeight: 15, color: colors.accent, fontWeight: "600" },
   liveBadge: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.successSoft, paddingHorizontal: 8, paddingVertical: 5, borderRadius: radii.md },
   liveText: { fontSize: 10, fontWeight: "800", color: colors.success, textTransform: "uppercase", letterSpacing: 0.5 },
   rentalRow: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },

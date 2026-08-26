@@ -16,6 +16,7 @@ import { mutate } from "@/src/sync/mutate";
 import { api } from "@/src/api/client";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
+import { isRentalOpen } from "@/src/domain/status";
 
 type Line = { equipment_id: string; sku: string; qr_code?: string | null; name: string; qty: number; delivered_qty: number; returned_qty: number; damaged_qty: number };
 type Rental = { id: string; customer_name: string; job_site: string; start_date: string; status: string; lines: Line[] };
@@ -35,7 +36,7 @@ export default function ReturnsScreen() {
   const { canEdit } = usePermissions();
   const rentalsRes = useCachedResource<Rental>("rentals", () => api<Rental[]>("/rentals"));
   const rentals = useMemo(
-    () => rentalsRes.data.filter((r) => r.status === "active" || r.status === "partially_returned"),
+    () => rentalsRes.data.filter((r) => isRentalOpen(r.status)),
     [rentalsRes.data],
   );
   const [qty, setQty] = useState("");
