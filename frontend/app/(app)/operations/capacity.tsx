@@ -15,6 +15,7 @@ import { api } from "@/src/api/client";
 import { colors, spacing, type as typo } from "@/src/theme";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
+import { OPEN_BOOKING_STATUSES, OPEN_RENTAL_STATUSES } from "@/src/domain/status";
 
 type Equipment = { id: string; sku: string; qr_code?: string | null; name: string; category: string; quantity: number };
 type Rental = { id: string; status: string; lines: { equipment_id: string; qty: number; returned_qty: number }[] };
@@ -51,7 +52,7 @@ export default function CapacityScreen() {
   const rows: CapRow[] = useMemo(() => {
     const rented: Record<string, number> = {};
     for (const r of rentals) {
-      if (!["active", "partially_returned"].includes(r.status)) continue;
+      if (!OPEN_RENTAL_STATUSES.includes(r.status)) continue;
       for (const line of r.lines) {
         const rem = line.qty - line.returned_qty;
         if (rem > 0) rented[line.equipment_id] = (rented[line.equipment_id] || 0) + rem;
@@ -62,7 +63,7 @@ export default function CapacityScreen() {
     const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const targetDay = dayOnly(target);
     for (const b of bookings) {
-      if (!["tentative", "confirmed"].includes(b.status)) continue;
+      if (!OPEN_BOOKING_STATUSES.includes(b.status)) continue;
       const sdDay = dayOnly(new Date(b.start_date));
       const edDay = dayOnly(new Date(b.end_date));
       if (sdDay <= targetDay && targetDay <= edDay) {

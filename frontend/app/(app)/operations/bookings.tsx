@@ -17,6 +17,7 @@ import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
+import { BOOKING_STATUS } from "@/src/domain/status";
 
 type BookingLine = { equipment_id: string; sku: string; qr_code?: string | null; name: string; qty: number; returned_qty: number; daily_rate: number };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string; dispatched_rental_id?: string | null };
@@ -26,10 +27,10 @@ type BookingSortKey = "customer_name" | "job_site" | "start_date" | "end_date" |
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
-  { key: "tentative", label: "Tentative" },
-  { key: "confirmed", label: "Confirmed" },
-  { key: "dispatched", label: "Dispatched" },
-  { key: "cancelled", label: "Cancelled" },
+  { key: BOOKING_STATUS.tentative, label: "Tentative" },
+  { key: BOOKING_STATUS.confirmed, label: "Confirmed" },
+  { key: BOOKING_STATUS.dispatched, label: "Dispatched" },
+  { key: BOOKING_STATUS.cancelled, label: "Cancelled" },
 ];
 
 export default function BookingsScreen() {
@@ -106,7 +107,7 @@ export default function BookingsScreen() {
   const newBooking = () => {
     const now = new Date();
     const end = new Date(now.getTime() + 3 * 86400000);
-    setDraft({ customer_name: "", job_site: "", start_date: now.toISOString(), end_date: end.toISOString(), status: "tentative", items: [], notes: "" });
+    setDraft({ customer_name: "", job_site: "", start_date: now.toISOString(), end_date: end.toISOString(), status: BOOKING_STATUS.tentative, items: [], notes: "" });
     setEqSearch("");
     setCreating(true);
   };
@@ -203,7 +204,7 @@ export default function BookingsScreen() {
       ) : tab === "pipeline" ? (
         bookings.length === 0 ? <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No bookings. Tap + to add.</Text></Card> : bookings.map((booking) => (
           <Card key={booking.id} style={{ marginBottom: spacing.sm }} testID={`booking-${booking.id}`}>
-            <Row style={{ justifyContent: "space-between" }}><View style={{ flex: 1 }}><H3>{booking.customer_name}</H3><Text style={[typo.label, { marginTop: 2 }]}>{booking.job_site || "—"}</Text></View><Pill color={booking.status === "confirmed" ? colors.success : booking.status === "cancelled" ? colors.error : colors.warning} bg={booking.status === "confirmed" ? colors.successSoft : booking.status === "cancelled" ? colors.errorSoft : colors.warningSoft}>{booking.status}</Pill></Row>
+            <Row style={{ justifyContent: "space-between" }}><View style={{ flex: 1 }}><H3>{booking.customer_name}</H3><Text style={[typo.label, { marginTop: 2 }]}>{booking.job_site || "—"}</Text></View><Pill color={booking.status === BOOKING_STATUS.confirmed ? colors.success : booking.status === BOOKING_STATUS.cancelled ? colors.error : colors.warning} bg={booking.status === BOOKING_STATUS.confirmed ? colors.successSoft : booking.status === BOOKING_STATUS.cancelled ? colors.errorSoft : colors.warningSoft}>{booking.status}</Pill></Row>
             <Mono style={{ fontSize: 12, marginTop: 8 }}>{new Date(booking.start_date).toLocaleDateString()} → {new Date(booking.end_date).toLocaleDateString()}</Mono>
             {canEdit ? <RequiresOnline><Button title="Delete" onPress={() => setDeleting(booking)} variant="outline" testID={`del-booking-${booking.id}`} /></RequiresOnline> : null}
           </Card>
@@ -219,10 +220,10 @@ export default function BookingsScreen() {
           {(selected.items || []).length ? (selected.items || []).map((item) => <View key={item.equipment_id} style={styles.detailRow}><View style={{ flex: 1 }}><Text style={typo.body}>{item.name}</Text><Mono style={styles.tableMono}>{equipmentIdentifier(item)}</Mono></View><Mono>{item.qty}</Mono></View>) : <Text style={[typo.bodySmall, { marginBottom: spacing.lg }]}>No equipment reserved.</Text>}
           <SectionLabel>Notes</SectionLabel>
           <Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text>
-          {selected.status === "confirmed" ? (
+          {selected.status === BOOKING_STATUS.confirmed ? (
             <Button title="Dispatch → Start Rental" onPress={() => dispatch(selected)} testID={`dispatch-booking-${selected.id}`} style={{ marginBottom: spacing.sm }} />
           ) : null}
-          {selected.status === "dispatched" && selected.dispatched_rental_id ? (
+          {selected.status === BOOKING_STATUS.dispatched && selected.dispatched_rental_id ? (
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />
           ) : null}
           {canEdit ? <RequiresOnline><Button title="Delete Booking" onPress={() => setDeleting(selected)} variant="danger" testID={`del-booking-${selected.id}`} /></RequiresOnline> : null}
@@ -239,7 +240,7 @@ export default function BookingsScreen() {
           </Row>
           <SectionLabel>Status</SectionLabel>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>
-            {["tentative", "confirmed", "cancelled"].map((status) => <SegBtn key={status} label={status} active={draft?.status === status} onPress={() => setDraft({ ...draft, status })} testID={`bk-status-${status}`} />)}
+            {[BOOKING_STATUS.tentative, BOOKING_STATUS.confirmed, BOOKING_STATUS.cancelled].map((status) => <SegBtn key={status} label={status} active={draft?.status === status} onPress={() => setDraft({ ...draft, status })} testID={`bk-status-${status}`} />)}
           </ScrollView>
 
           <SectionLabel>Equipment ({(draft?.items || []).length})</SectionLabel>

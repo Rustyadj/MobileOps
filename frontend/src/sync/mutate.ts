@@ -43,7 +43,7 @@ type MutateCommandInput = {
   entityId: string;
   path: string;
   method: Extract<QueueMethod, "POST" | "PATCH">;
-  body: Record<string, unknown>;
+  body: unknown;
   // Only the fields this command is known to affect — e.g. checkout:
   // { available: n - 1, checked_out: n + 1, checked_out_to: "..." }.
   optimisticPatch: Record<string, unknown>;

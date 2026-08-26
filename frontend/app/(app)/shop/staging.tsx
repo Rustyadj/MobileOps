@@ -12,6 +12,7 @@ import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
+import { isDispatchLive } from "@/src/domain/status";
 
 type ChecklistItem = { text: string; done: boolean };
 type ShopTask = {
@@ -60,7 +61,7 @@ export default function StagingScreen() {
   const progress = (t: ShopTask) => t.checklist.length ? `${t.checklist.filter((i) => i.done).length}/${t.checklist.length} staged` : "No checklist";
   const progressPct = (t: ShopTask) => t.checklist.length ? Math.round((t.checklist.filter((i) => i.done).length / t.checklist.length) * 100) : 0;
   const dispatchFor = (bookingId: string | null) => bookingId
-    ? dispatches.find((d) => d.direction === "outbound" && d.booking_id === bookingId && d.status !== "completed" && d.status !== "cancelled")
+    ? dispatches.find((d) => d.direction === "outbound" && d.booking_id === bookingId && isDispatchLive(d.status))
     : undefined;
 
   const toggleChecklistItem = async (task: ShopTask, idx: number) => {

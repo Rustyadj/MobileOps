@@ -16,7 +16,8 @@ export const DashboardMap: React.FC<{
   onOpenMap: () => void;
   onRefresh: () => void;
   lastUpdated: Date;
-}> = ({ pins, missingLocationCount, onPinPress, onOpenMap, onRefresh, lastUpdated }) => {
+  shopAddress: string;
+}> = ({ pins, missingLocationCount, onPinPress, onOpenMap, onRefresh, lastUpdated, shopAddress }) => {
   const sites = useMemo(() => Array.from(new Set(pins.map((p) => p.subtitle).filter(Boolean))) as string[], [pins]);
   const [siteFilter, setSiteFilter] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -64,9 +65,9 @@ export const DashboardMap: React.FC<{
       </View>
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>{pins.length} pinned · {missingLocationCount} missing location</Text>
+        <Text style={[styles.footerText, { flex: 1 }]} numberOfLines={1}>Shop / Yard · {shopAddress}</Text>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={styles.footerText}>Last updated {lastUpdated.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</Text>
+          <Text style={styles.footerText}>{Math.max(0, pins.length - 1)} rentals · {missingLocationCount} missing · {lastUpdated.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</Text>
           <TouchableOpacity onPress={onRefresh} testID="dashboard-map-refresh">
             <Ionicons name="refresh" size={13} color={colors.inkSecondary} />
           </TouchableOpacity>

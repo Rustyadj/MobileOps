@@ -15,7 +15,7 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { KpiStrip, KpiTile } from "@/src/components/dashboard/KpiStrip";
 import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
 import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
-import { WhatsNext, NextMovement } from "@/src/components/dashboard/WhatsNext";
+import { WhatsNext, NextMovement, ManualNextInput, ManualNextItem } from "@/src/components/dashboard/WhatsNext";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -25,7 +25,10 @@ import { api, apiBaseUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { useNeedsAttention, AttentionItem } from "@/src/hooks/use-needs-attention";
+import { usePermissions } from "@/src/hooks/use-permissions";
+import { DEFAULT_SHOP, shopPin, SiteWithShop } from "@/src/config/shop-location";
 import { colors, spacing } from "@/src/theme";
+import { isBookingActive, isDispatchLive, isRentalReturned } from "@/src/domain/status";
 
 type Stats = {
   total_quantity: number;
@@ -51,6 +54,7 @@ type Booking = { id: string; customer_name: string; job_site: string; start_date
 type ShortageRow = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
 type ShopTask = { id: string; title: string; assignee: string; priority: string; status: string; created_at: string };
 type DispatchDoc = NextMovement;
+type Site = SiteWithShop & { brand_name?: string };
 
 const EMPTY_STATS: Stats = {
   total_quantity: 0, total_available: 0, total_reserved: 0, total_on_rental: 0,
@@ -75,6 +79,7 @@ const TASK_STATUS_LABEL: Record<string, string> = {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { canEdit } = usePermissions();
   const router = useRouter();
   const { isShellWide } = useBreakpoint();
   const { items: attention, reload: reloadAttention } = useNeedsAttention();
@@ -84,6 +89,8 @@ export default function Dashboard() {
   const [shortageRows, setShortageRows] = useState<ShortageRow[]>([]);
   const [shopTasks, setShopTasks] = useState<ShopTask[]>([]);
   const [dispatches, setDispatches] = useState<DispatchDoc[]>([]);
+  const [manualNextItems, setManualNextItems] = useState<ManualNextItem[]>([]);
+  const [site, setSite] = useState<Site | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [selectedAttention, setSelectedAttention] = useState<AttentionItem | null>(null);
@@ -93,13 +100,15 @@ export default function Dashboard() {
     let hadError = false;
     const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
       p.catch(() => { hadError = true; return fallback; });
-    const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks, nextDispatches] = await Promise.all([
+    const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks, nextDispatches, nextManualItems, nextSite] = await Promise.all([
       guard(api<unknown>("/dashboard/stats").then(statsResponse), EMPTY_STATS),
       guard(api<Rental[]>("/rentals"), []),
       guard(api<Booking[]>("/bookings"), []),
       guard(api<{ rows: ShortageRow[] }>("/dashboard/shortages?days=14"), { rows: [] }),
       guard(api<ShopTask[]>("/shop-tasks"), []),
       guard(api<DispatchDoc[]>("/dispatches"), []),
+      guard(api<ManualNextItem[]>("/dashboard/items"), []),
+      guard(api<Site>("/site"), null),
     ]);
     setStats(nextStats);
     setRentals(nextRentals);
@@ -107,8 +116,10 @@ export default function Dashboard() {
     setShortageRows(nextShortages.rows);
     setShopTasks(nextShopTasks);
     setDispatches(nextDispatches);
+    setManualNextItems(nextManualItems);
+    setSite(nextSite);
     setLastUpdated(new Date());
-    // The dashboard is a Promise.all of six independent calls with a fallback
+    // The dashboard is a Promise.all of eight independent calls with a fallback
     // each so ONE flaky endpoint doesn't blank the whole screen — but a
     // fallback of "zero"/"empty" looks identical to a genuinely idle fleet
     // unless we also surface that a fetch actually failed.
@@ -140,12 +151,12 @@ export default function Dashboard() {
   };
 
   const activeRentals = useMemo(
-    () => rentals.filter((r) => r.status !== "returned").sort((a, b) => +new Date(b.start_date) - +new Date(a.start_date)),
+    () => rentals.filter((r) => !isRentalReturned(r.status)).sort((a, b) => +new Date(b.start_date) - +new Date(a.start_date)),
     [rentals],
   );
   const upcomingBookings = useMemo(() => {
     const now = new Date();
-    return bookings.filter((b) => b.status !== "cancelled" && new Date(b.end_date) >= now).sort((a, b) => +new Date(a.start_date) - +new Date(b.start_date));
+    return bookings.filter((b) => isBookingActive(b.status) && new Date(b.end_date) >= now).sort((a, b) => +new Date(a.start_date) - +new Date(b.start_date));
   }, [bookings]);
   const shortages = useMemo(
     () => [...shortageRows].sort((a, b) => a.date.localeCompare(b.date) || b.shortage - a.shortage),
@@ -158,17 +169,27 @@ export default function Dashboard() {
       .sort((a, b) => (order[a.priority] ?? 1) - (order[b.priority] ?? 1) || +new Date(a.created_at) - +new Date(b.created_at));
   }, [shopTasks]);
   const whatsNext = useMemo(() => {
-    const live = dispatches.filter((d) => d.status !== "completed" && d.status !== "cancelled");
+    const live = dispatches.filter((d) => isDispatchLive(d.status));
     return [...live].sort((a, b) => {
       const aTime = a.scheduled_date ? +new Date(a.scheduled_date) : Number.MAX_SAFE_INTEGER;
       const bTime = b.scheduled_date ? +new Date(b.scheduled_date) : Number.MAX_SAFE_INTEGER;
       return aTime - bTime;
     });
   }, [dispatches]);
-  const pins: Pin[] = useMemo(
-    () => activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_name, subtitle: r.job_site, status: r.status })),
-    [activeRentals],
-  );
+  const pins: Pin[] = useMemo(() => [
+    shopPin(site),
+    ...activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_name, subtitle: r.job_site, status: r.status })),
+  ], [activeRentals, site]);
+
+  const createManualNextItem = async (input: ManualNextInput) => {
+    const created = await api<ManualNextItem>("/dashboard/items", { method: "POST", body: JSON.stringify(input) });
+    setManualNextItems((current) => [created, ...current]);
+  };
+
+  const completeManualNextItem = async (item: ManualNextItem) => {
+    await api<ManualNextItem>(`/dashboard/items/${item.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "done" }) });
+    setManualNextItems((current) => current.filter((entry) => entry.id !== item.id));
+  };
 
   const openAttention = (item: AttentionItem) => {
     if (item.kind === "shortage" && item.jobs?.length) {
@@ -220,19 +241,25 @@ export default function Dashboard() {
       </KpiStrip>
 
       <WhatsNext
-        items={whatsNext.slice(0, 6)}
+        items={whatsNext}
+        manualItems={manualNextItems}
+        canEdit={canEdit}
+        compact={!isShellWide}
         onPressItem={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
         onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
+        onCreateManual={createManualNextItem}
+        onCompleteManual={completeManualNextItem}
       />
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
         <DashboardMap
           pins={pins}
-          missingLocationCount={Math.max(0, activeRentals.length - pins.length)}
+          missingLocationCount={Math.max(0, activeRentals.length - Math.max(0, pins.length - 1))}
           onPinPress={(pin) => router.push(`/(app)/operations/rentals?open=${pin.id}` as any)}
           onOpenMap={() => router.push("/(app)/operations/map" as any)}
           onRefresh={onRefresh}
           lastUpdated={lastUpdated}
+          shopAddress={site?.company_address || DEFAULT_SHOP.address}
         />
         <NeedsAttention
           items={attention.slice(0, 5)}
