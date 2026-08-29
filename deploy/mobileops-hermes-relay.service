@@ -5,7 +5,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c 'gateway=$(/usr/bin/docker network inspect mobileops_private --format "{{(index .IPAM.Config 0).Gateway}}"); test -n "$gateway"; exec /usr/bin/socat TCP-LISTEN:4863,bind="$gateway",fork,reuseaddr TCP:127.0.0.1:4862'
+ExecStart=/bin/sh -c 'gateway=$(/usr/bin/docker network inspect bridge --format "{{(index .IPAM.Config 0).Gateway}}"); test -n "$gateway"; exec /usr/bin/socat TCP-LISTEN:4863,bind="$gateway",fork,reuseaddr TCP:127.0.0.1:4862'
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
