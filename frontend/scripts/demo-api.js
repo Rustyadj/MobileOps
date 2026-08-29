@@ -55,14 +55,17 @@ let inventoryCounts = [];
 
 const seededDispatches = [
   ...loadSeed("outbound_plan_seed.json").map((row) => ({
-    id: row.source_key, direction: "outbound", planning_only: true, lines: [], truck: "", trailer: "", crew: "", driver_name: "", created_by: "Demo import", created_at: now(), updated_at: now(), ...row,
+    id: row.source_key, direction: row.status === "active_rental" ? "inbound" : "outbound", planning_only: true, lines: [], truck: "", trailer: "", crew: "", driver_name: "", created_by: "Demo import", created_at: now(), updated_at: now(), ...row,
   })),
   ...loadSeed("inbound_plan_seed.json").map((row) => ({
     id: row.source_key, direction: "inbound", planning_only: true, lines: [], truck: "", trailer: "", crew: "", driver_name: "", created_by: "Demo import", created_at: now(), updated_at: now(), ...row,
   })),
 ];
 const savedDispatches = new Map((Array.isArray(savedState?.dispatches) ? savedState.dispatches : []).map((item) => [item.id, item]));
-const dispatches = seededDispatches.map((item) => savedDispatches.get(item.id) || item);
+const normalizeDeliveredPlan = (item) => item.planning_only && item.direction === "outbound" && ["completed", "partially_delivered", "active_rental"].includes(item.status)
+  ? { ...item, direction: "inbound", status: "active_rental", rental_completed: false, completed_at: null, updated_at: now() }
+  : item;
+const dispatches = seededDispatches.map((item) => normalizeDeliveredPlan(savedDispatches.get(item.id) || item));
 
 function persistState() {
   fs.mkdirSync(demoDataRoot, { recursive: true });

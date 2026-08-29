@@ -4154,15 +4154,58 @@ async def seed_dispatch_plans(filename: str, direction: str, label: str):
     for row in rows:
         if await db.dispatches.find_one({"source_key": row["source_key"]}, {"_id": 1}):
             continue
+        # A completed outbound delivery is no longer an outbound movement;
+        # it is an active customer rental until an admin closes it into the
+        # inbound pickup flow. Planning imports do not move inventory, but
+        # they follow the same operator-facing lifecycle.
+        plan_direction = (
+            "inbound"
+            if direction == "outbound" and row.get("status") == DispatchStatus.ACTIVE_RENTAL
+            else direction
+        )
         plan = Dispatch(
             **row,
-            direction=direction,
+            direction=plan_direction,
             planning_only=True,
             created_by="System import",
         )
         await db.dispatches.insert_one(plan.model_dump())
         added += 1
     logger.info("Seeded %d %s planning records", added, label)
+
+
+async def promote_delivered_outbound_plans() -> int:
+    """Move legacy delivered outbound reminders into Active Rentals.
+
+    Older imports used ``completed`` or ``partially_delivered`` to describe
+    the delivery itself. Those jobs still have equipment on site, so treating
+    them as archived hides an open rental. This narrowly promotes only
+    planning-only outbound records with a delivered status; future scheduled
+    outbound work and real inventory-backed dispatches are untouched.
+    """
+    result = await db.dispatches.update_many(
+        {
+            "planning_only": True,
+            "direction": "outbound",
+            "status": {
+                "$in": [
+                    "completed",
+                    "partially_delivered",
+                    DispatchStatus.ACTIVE_RENTAL,
+                ]
+            },
+        },
+        {
+            "$set": {
+                "direction": "inbound",
+                "status": DispatchStatus.ACTIVE_RENTAL,
+                "rental_completed": False,
+                "completed_at": None,
+                "updated_at": now_utc(),
+            }
+        },
+    )
+    return result.modified_count
 
 
 async def seed():
@@ -4193,6 +4236,9 @@ async def seed():
     await seed_tool_inventory()
     await seed_dispatch_plans("outbound_plan_seed.json", "outbound", "Bracing Outbound")
     await seed_dispatch_plans("inbound_plan_seed.json", "inbound", "Bracing Inbound")
+    promoted_rentals = await promote_delivered_outbound_plans()
+    if promoted_rentals:
+        logger.info("Promoted %d delivered outbound plans to Active Rentals", promoted_rentals)
 
     if await db.vendors.count_documents({}) == 0:
         await db.vendors.insert_one(Vendor(

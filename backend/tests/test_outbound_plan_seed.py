@@ -54,7 +54,7 @@ def test_uncertain_source_values_remain_explicit():
 def test_grande_saline_tracks_only_the_remaining_load():
     grande_saline = next(row for row in load_rows() if row["customer_name"] == "Grande Saline")
 
-    assert grande_saline["status"] == "partially_delivered"
+    assert grande_saline["status"] == "active_rental"
     assert grande_saline["requirements"] == [
         "60 × 20 ft stiffbacks remaining",
         "120 × Reechcraft turnbuckles remaining",
@@ -64,3 +64,17 @@ def test_grande_saline_tracks_only_the_remaining_load():
     ]
     assert "70 × walkboard brackets" in grande_saline["notes"]
     assert "75 × handrails" in grande_saline["notes"]
+
+
+def test_delivered_unreturned_jobs_are_active_rentals():
+    rows = load_rows()
+    delivered_jobs = {
+        row["customer_name"]: row["status"]
+        for row in rows
+        if row["customer_name"] in {"Grande Saline", "Crowley"}
+    }
+
+    assert delivered_jobs == {
+        "Grande Saline": "active_rental",
+        "Crowley": "active_rental",
+    }
