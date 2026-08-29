@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements-prod.txt ./
 RUN pip install --no-cache-dir -r requirements-prod.txt
 
-COPY server.py mcp_server.py tool_inventory_seed.csv inbound_plan_seed.json outbound_plan_seed.json hermes-agent-token.sha256 ./
+COPY server.py whiteboard_service.py mcp_server.py tool_inventory_seed.csv inbound_plan_seed.json outbound_plan_seed.json hermes-agent-token.sha256 ./
 
 RUN useradd --create-home --uid 10001 mobileops \
     && chown -R mobileops:mobileops /app

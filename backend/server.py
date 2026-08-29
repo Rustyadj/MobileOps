@@ -7,6 +7,7 @@ Vendors, Site Admin (brand + logo), Bracing Engine, Dashboard, Push relay.
 from __future__ import annotations
 
 import csv
+import asyncio
 import io
 import json
 import logging
@@ -23,13 +24,14 @@ from typing import Any, List, Optional
 import httpx
 from bson import ObjectId  # noqa: F401  (kept for type hints)
 from dotenv import load_dotenv
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, UploadFile, File, status
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, UploadFile, File, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import PlainTextResponse
 from pymongo.errors import DuplicateKeyError
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
+from whiteboard_service import HermesNathanGateway, build_nathan_prompt, mentioned_handles, normalize_handle
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
@@ -911,6 +913,22 @@ class DashboardItemStatusUpdate(BaseModel):
     status: str
 
 
+class WhiteboardMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=8000)
+    thread_id: str = Field(default="dashboard", min_length=1, max_length=120)
+    parent_id: Optional[str] = None
+    context_type: Optional[str] = Field(default=None, max_length=40)
+    context_id: Optional[str] = Field(default=None, max_length=120)
+
+
+class WhiteboardMessageEdit(BaseModel):
+    body: str = Field(min_length=1, max_length=8000)
+
+
+class WhiteboardReadUpdate(BaseModel):
+    thread_id: str = Field(default="dashboard", min_length=1, max_length=120)
+
+
 class Vendor(BaseModel):
     id: str = Field(default_factory=gen_id)
     name: str
@@ -1298,6 +1316,51 @@ def require_role(min_role: Role):
             raise HTTPException(403, "Insufficient privileges")
         return user
     return dep
+
+
+class WhiteboardRealtimeHub:
+    """Process-local fan-out for the single production API instance."""
+
+    def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def add(self, socket: WebSocket) -> None:
+        async with self._lock:
+            self.connections.add(socket)
+
+    async def remove(self, socket: WebSocket) -> None:
+        async with self._lock:
+            self.connections.discard(socket)
+
+    async def broadcast(self, event: dict) -> None:
+        stale: list[WebSocket] = []
+        for socket in tuple(self.connections):
+            try:
+                await socket.send_json(jsonable_encoder(event))
+            except Exception:
+                stale.append(socket)
+        if stale:
+            async with self._lock:
+                for socket in stale:
+                    self.connections.discard(socket)
+
+
+whiteboard_hub = WhiteboardRealtimeHub()
+nathan_gateway = HermesNathanGateway()
+
+
+async def user_from_access_token(token: str) -> UserPublic:
+    try:
+        payload = decode_token(token, refresh=False)
+    except JWTError as exc:
+        raise HTTPException(401, "Invalid or expired token") from exc
+    if payload.get("type") != "access":
+        raise HTTPException(401, "Wrong token type")
+    user = await db.users.find_one({"id": payload.get("sub")})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
 
 
 # ----------------------------- App ----------------------------------------
@@ -3302,6 +3365,348 @@ async def update_dashboard_item_status(
     return DashboardItem(**updated)
 
 
+# ----------------------------- Whiteboard --------------------------------
+WHITEBOARD_EDIT_WINDOW = timedelta(minutes=15)
+WHITEBOARD_ATTACHMENT_LIMIT = 8 * 1024 * 1024
+WHITEBOARD_NATHAN = {
+    "id": "nathan2", "handle": "Nathan", "normalized_handle": "nathan",
+    "display_name": "Nathan", "entity_type": "agent", "label": "AI Agent",
+}
+whiteboard_background_tasks: set[asyncio.Task] = set()
+
+
+async def whiteboard_audit(action: str, actor: UserPublic | dict, message_id: str, details: Optional[dict] = None) -> None:
+    await db.whiteboard_audit.insert_one({
+        "id": gen_id(), "action": action, "message_id": message_id,
+        "actor_id": str(actor.get("id") if isinstance(actor, dict) else actor.id),
+        "actor_name": str(actor.get("name") if isinstance(actor, dict) else actor.name),
+        "timestamp": now_utc(), "details": details or {},
+    })
+
+
+async def resolve_whiteboard_mentions(body: str) -> list[dict]:
+    handles = mentioned_handles(body)
+    if not handles:
+        return []
+    users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(1000)
+    directory: dict[str, dict] = {
+        "nathan": WHITEBOARD_NATHAN,
+        "everyone": {
+            "id": "everyone", "handle": "everyone", "normalized_handle": "everyone",
+            "display_name": "Everyone", "entity_type": "group", "label": "Team",
+        },
+    }
+    for user in users:
+        candidates = [normalize_handle(user.get("name", "")), normalize_handle(user.get("email", "").split("@", 1)[0])]
+        handle = next((candidate for candidate in candidates if candidate), "")
+        for candidate in candidates:
+            if candidate and candidate not in directory:
+                directory[candidate] = {
+                    "id": user["id"], "handle": handle, "normalized_handle": candidate,
+                    "display_name": user.get("name") or user.get("email"),
+                    "entity_type": "user", "label": "Employee",
+                }
+    return [directory[handle] for handle in handles if handle in directory]
+
+
+async def hydrate_whiteboard_messages(docs: list[dict]) -> list[dict]:
+    if not docs:
+        return []
+    ids = [doc["id"] for doc in docs]
+    mentions = await db.whiteboard_mentions.find({"message_id": {"$in": ids}}, {"_id": 0}).to_list(5000)
+    attachments = await db.whiteboard_attachments.find({"message_id": {"$in": ids}}, {"_id": 0}).to_list(5000)
+    reply_counts: dict[str, int] = {}
+    async for row in db.whiteboard_messages.aggregate([
+        {"$match": {"parent_id": {"$in": ids}}}, {"$group": {"_id": "$parent_id", "count": {"$sum": 1}}},
+    ]):
+        reply_counts[str(row["_id"])] = int(row["count"])
+    mentions_by: dict[str, list] = {}
+    attachments_by: dict[str, list] = {}
+    for mention in mentions:
+        mentions_by.setdefault(mention["message_id"], []).append(mention)
+    for attachment in attachments:
+        attachments_by.setdefault(attachment["message_id"], []).append(attachment)
+    result = []
+    for source in docs:
+        doc = dict(source)
+        doc.pop("_id", None)
+        if doc.get("is_deleted"):
+            doc["body"] = "Message deleted"
+        doc["mentions"] = mentions_by.get(doc["id"], [])
+        doc["attachments"] = attachments_by.get(doc["id"], [])
+        doc["reply_count"] = reply_counts.get(doc["id"], 0)
+        result.append(doc)
+    return result
+
+
+async def whiteboard_operations_context(message: dict) -> dict:
+    kind, entity_id = message.get("context_type"), message.get("context_id")
+    collections = {
+        "rental": db.rentals, "dispatch": db.dispatches,
+        "booking": db.bookings, "shop_task": db.shop_tasks,
+    }
+    if kind in collections and entity_id:
+        doc = await collections[kind].find_one({"id": entity_id}, {"_id": 0})
+        if doc:
+            allowed = {
+                "id", "customer_name", "job_site", "status", "direction", "scheduled_date",
+                "start_date", "end_date", "due_date", "title", "description", "assignee",
+                "priority", "notes", "lines", "items",
+            }
+            return {"context_type": kind, "entity": {key: value for key, value in doc.items() if key in allowed}}
+    return {
+        "scope": "dashboard_summary",
+        "active_rentals": await db.rentals.count_documents({"status": {"$in": list(RentalStatus.OPEN)}}),
+        "live_dispatches": await db.dispatches.count_documents({"status": {"$nin": list(DispatchStatus.TERMINAL)}}),
+        "open_shop_tasks": await db.shop_tasks.count_documents({"status": {"$ne": "done"}}),
+    }
+
+
+async def post_nathan_response(source_message_id: str) -> None:
+    source = await db.whiteboard_messages.find_one({"id": source_message_id}, {"_id": 0})
+    if not source or source.get("is_deleted"):
+        return
+    await db.whiteboard_messages.update_one({"id": source_message_id}, {"$set": {"invocation_status": "responding"}})
+    await whiteboard_hub.broadcast({"type": "nathan.status", "message_id": source_message_id, "status": "responding"})
+    try:
+        history = await db.whiteboard_messages.find(
+            {"thread_id": source["thread_id"], "created_at": {"$lte": source["created_at"]}}, {"_id": 0},
+        ).sort("created_at", -1).limit(12).to_list(12)
+        history.reverse()
+        prompt = build_nathan_prompt(
+            message=source["body"], author=source["author_name"], timestamp=source["created_at"].isoformat(),
+            thread_history=history, operations_context=await whiteboard_operations_context(source),
+        )
+        result = await nathan_gateway.invoke(title=f"MobileOps: {source['author_name']}", prompt=prompt)
+        created_at = now_utc()
+        response_doc = {
+            "id": gen_id(), "thread_id": source["thread_id"], "parent_id": source.get("parent_id") or source["id"],
+            "body": result.text, "body_original": result.text,
+            "author_type": "agent", "author_id": "nathan2", "author_name": "Nathan", "author_avatar": "N2",
+            "agent_label": "AI Agent", "created_at": created_at, "edited_at": None,
+            "is_deleted": False, "deleted_at": None, "deleted_by": None,
+            "pinned": False, "pinned_by": None, "pinned_at": None,
+            "invocation_status": result.status, "context_type": source.get("context_type"), "context_id": source.get("context_id"),
+        }
+        await db.whiteboard_messages.insert_one(response_doc)
+        await db.whiteboard_messages.update_one({"id": source_message_id}, {"$set": {"invocation_status": "complete", "nathan_response_id": response_doc["id"]}})
+        await whiteboard_audit("nathan_response", {"id": "nathan2", "name": "Nathan"}, response_doc["id"], {"source_message_id": source_message_id, "status": result.status})
+        hydrated = (await hydrate_whiteboard_messages([response_doc]))[0]
+        await whiteboard_hub.broadcast({"type": "message.created", "message": hydrated})
+        await whiteboard_hub.broadcast({"type": "nathan.status", "message_id": source_message_id, "status": "complete"})
+    except Exception as exc:
+        logger.warning("Nathan whiteboard invocation failed: %s", type(exc).__name__)
+        await db.whiteboard_messages.update_one({"id": source_message_id}, {"$set": {"invocation_status": "failed", "invocation_error": "Nathan could not respond. Try mentioning him again."}})
+        await whiteboard_audit("nathan_failed", {"id": "nathan2", "name": "Nathan"}, source_message_id, {"error_type": type(exc).__name__})
+        await whiteboard_hub.broadcast({"type": "nathan.status", "message_id": source_message_id, "status": "failed"})
+
+
+@api.get("/whiteboard/mentionables")
+async def list_whiteboard_mentionables(_: UserPublic = Depends(get_current_user)):
+    users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1}).sort("name", 1).to_list(1000)
+    entries = [WHITEBOARD_NATHAN, {"id": "everyone", "handle": "everyone", "display_name": "Everyone", "entity_type": "group", "label": "Team"}]
+    for user in users:
+        entries.append({
+            "id": user["id"], "handle": normalize_handle(user.get("name") or user["email"].split("@", 1)[0]),
+            "display_name": user.get("name") or user["email"], "entity_type": "user", "label": "Employee",
+        })
+    return entries
+
+
+@api.get("/whiteboard/messages")
+async def list_whiteboard_messages(
+    thread_id: str = "dashboard", parent_id: Optional[str] = None, limit: int = 80,
+    _: UserPublic = Depends(get_current_user),
+):
+    query: dict[str, Any] = {"thread_id": thread_id}
+    if parent_id:
+        query["$or"] = [{"id": parent_id}, {"parent_id": parent_id}]
+    docs = await db.whiteboard_messages.find(query, {"_id": 0}).sort([("pinned", -1), ("created_at", -1)]).limit(min(max(limit, 1), 200)).to_list(200)
+    docs.reverse()
+    return await hydrate_whiteboard_messages(docs)
+
+
+@api.post("/whiteboard/messages", status_code=201)
+async def create_whiteboard_message(body: WhiteboardMessageCreate, user: UserPublic = Depends(get_current_user)):
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(400, "Message is required")
+    if body.parent_id:
+        parent = await db.whiteboard_messages.find_one({"id": body.parent_id, "thread_id": body.thread_id}, {"_id": 0, "id": 1})
+        if not parent:
+            raise HTTPException(404, "Parent message not found")
+    created_at = now_utc()
+    mentions = await resolve_whiteboard_mentions(text)
+    invokes_nathan = any(item["entity_type"] == "agent" and item["id"] == "nathan2" for item in mentions)
+    doc = {
+        "id": gen_id(), "thread_id": body.thread_id, "parent_id": body.parent_id,
+        "body": text, "body_original": text, "author_type": "user", "author_id": user.id,
+        "author_name": user.name, "author_avatar": "".join(part[:1] for part in user.name.split()[:2]).upper() or "U",
+        "agent_label": None, "created_at": created_at, "edited_at": None, "edit_history": [],
+        "is_deleted": False, "deleted_at": None, "deleted_by": None,
+        "pinned": False, "pinned_by": None, "pinned_at": None,
+        "invocation_status": "pending" if invokes_nathan else None,
+        "context_type": body.context_type, "context_id": body.context_id,
+    }
+    await db.whiteboard_messages.insert_one(doc)
+    if mentions:
+        await db.whiteboard_mentions.insert_many([{
+            "id": gen_id(), "message_id": doc["id"], "thread_id": doc["thread_id"],
+            "entity_type": item["entity_type"], "entity_id": item["id"], "handle": item["handle"],
+            "display_name": item["display_name"], "created_at": created_at,
+        } for item in mentions])
+    await whiteboard_audit("message_created", user, doc["id"], {"mentions": [item["id"] for item in mentions], "nathan_invoked": invokes_nathan})
+    hydrated = (await hydrate_whiteboard_messages([doc]))[0]
+    await whiteboard_hub.broadcast({"type": "message.created", "message": hydrated})
+    if invokes_nathan:
+        task = asyncio.create_task(post_nathan_response(doc["id"]))
+        whiteboard_background_tasks.add(task)
+        task.add_done_callback(whiteboard_background_tasks.discard)
+    return hydrated
+
+
+@api.patch("/whiteboard/messages/{message_id}")
+async def edit_whiteboard_message(message_id: str, body: WhiteboardMessageEdit, user: UserPublic = Depends(get_current_user)):
+    doc = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    if not doc or doc.get("is_deleted"):
+        raise HTTPException(404, "Message not found")
+    is_admin = user.role == Role.admin
+    if doc.get("author_type") != "user" or (doc.get("author_id") != user.id and not is_admin):
+        raise HTTPException(403, "You can only edit your own messages")
+    if not is_admin and now_utc() - doc["created_at"] > WHITEBOARD_EDIT_WINDOW:
+        raise HTTPException(403, "The edit window has closed")
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(400, "Message is required")
+    mentions = await resolve_whiteboard_mentions(text)
+    invokes_nathan = not doc.get("invocation_status") and any(item["entity_type"] == "agent" and item["id"] == "nathan2" for item in mentions)
+    message_update: dict[str, Any] = {"body": text, "edited_at": now_utc()}
+    if invokes_nathan:
+        message_update["invocation_status"] = "pending"
+    await db.whiteboard_messages.update_one({"id": message_id}, {"$set": message_update, "$push": {"edit_history": {"body": doc["body"], "edited_at": now_utc(), "edited_by": user.id}}})
+    await db.whiteboard_mentions.delete_many({"message_id": message_id})
+    if mentions:
+        await db.whiteboard_mentions.insert_many([{"id": gen_id(), "message_id": message_id, "thread_id": doc["thread_id"], "entity_type": item["entity_type"], "entity_id": item["id"], "handle": item["handle"], "display_name": item["display_name"], "created_at": now_utc()} for item in mentions])
+    await whiteboard_audit("message_edited", user, message_id, {"mentions": [item["id"] for item in mentions], "nathan_invoked": invokes_nathan})
+    updated = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    hydrated = (await hydrate_whiteboard_messages([updated]))[0]
+    await whiteboard_hub.broadcast({"type": "message.updated", "message": hydrated})
+    if invokes_nathan:
+        task = asyncio.create_task(post_nathan_response(message_id))
+        whiteboard_background_tasks.add(task)
+        task.add_done_callback(whiteboard_background_tasks.discard)
+    return hydrated
+
+
+@api.delete("/whiteboard/messages/{message_id}")
+async def delete_whiteboard_message(message_id: str, user: UserPublic = Depends(get_current_user)):
+    doc = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    if not doc or doc.get("is_deleted"):
+        raise HTTPException(404, "Message not found")
+    is_admin = user.role == Role.admin
+    if not is_admin and (doc.get("author_type") != "user" or doc.get("author_id") != user.id):
+        raise HTTPException(403, "You can only delete your own messages")
+    if not is_admin and now_utc() - doc["created_at"] > WHITEBOARD_EDIT_WINDOW:
+        raise HTTPException(403, "The delete window has closed")
+    updated_at = now_utc()
+    await db.whiteboard_messages.update_one({"id": message_id}, {"$set": {"is_deleted": True, "deleted_at": updated_at, "deleted_by": user.id, "pinned": False}})
+    await whiteboard_audit("message_deleted", user, message_id)
+    updated = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    hydrated = (await hydrate_whiteboard_messages([updated]))[0]
+    await whiteboard_hub.broadcast({"type": "message.updated", "message": hydrated})
+    return hydrated
+
+
+@api.patch("/whiteboard/messages/{message_id}/pin")
+async def pin_whiteboard_message(message_id: str, pinned: bool = Body(embed=True), user: UserPublic = Depends(require_role(Role.admin))):
+    doc = await db.whiteboard_messages.find_one({"id": message_id, "is_deleted": False}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Message not found")
+    update = {"pinned": pinned, "pinned_by": user.id if pinned else None, "pinned_at": now_utc() if pinned else None}
+    await db.whiteboard_messages.update_one({"id": message_id}, {"$set": update})
+    await whiteboard_audit("message_pinned" if pinned else "message_unpinned", user, message_id)
+    updated = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    hydrated = (await hydrate_whiteboard_messages([updated]))[0]
+    await whiteboard_hub.broadcast({"type": "message.updated", "message": hydrated})
+    return hydrated
+
+
+@api.post("/whiteboard/messages/{message_id}/attachments", status_code=201)
+async def add_whiteboard_attachments(message_id: str, files: List[UploadFile] = File(...), user: UserPublic = Depends(get_current_user)):
+    message = await db.whiteboard_messages.find_one({"id": message_id, "is_deleted": False}, {"_id": 0})
+    if not message:
+        raise HTTPException(404, "Message not found")
+    created = []
+    for upload in files[:5]:
+        data = await upload.read(WHITEBOARD_ATTACHMENT_LIMIT + 1)
+        if len(data) > WHITEBOARD_ATTACHMENT_LIMIT:
+            raise HTTPException(413, f"{upload.filename or 'Attachment'} exceeds 8 MB")
+        attachment_id = gen_id()
+        safe_name = Path(upload.filename or "attachment").name[:180]
+        meta = {"id": attachment_id, "message_id": message_id, "filename": safe_name, "content_type": upload.content_type or "application/octet-stream", "size": len(data), "uploaded_by": user.id, "created_at": now_utc()}
+        await db.whiteboard_attachment_blobs.insert_one({"id": attachment_id, "data": data})
+        # Motor adds `_id` to the dict passed to insert_one; insert a copy so
+        # the API metadata response remains JSON-safe.
+        await db.whiteboard_attachments.insert_one(dict(meta))
+        created.append(meta)
+    await whiteboard_audit("attachments_added", user, message_id, {"attachment_ids": [item["id"] for item in created]})
+    updated = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
+    hydrated = (await hydrate_whiteboard_messages([updated]))[0]
+    await whiteboard_hub.broadcast({"type": "message.updated", "message": hydrated})
+    return created
+
+
+@api.get("/whiteboard/attachments/{attachment_id}")
+async def download_whiteboard_attachment(attachment_id: str, _: UserPublic = Depends(get_current_user)):
+    meta = await db.whiteboard_attachments.find_one({"id": attachment_id}, {"_id": 0})
+    blob = await db.whiteboard_attachment_blobs.find_one({"id": attachment_id}, {"_id": 0})
+    if not meta or not blob:
+        raise HTTPException(404, "Attachment not found")
+    return Response(content=bytes(blob["data"]), media_type=meta["content_type"], headers={"Content-Disposition": f'attachment; filename="{meta["filename"].replace(chr(34), "")}"'})
+
+
+@api.post("/whiteboard/read")
+async def mark_whiteboard_read(body: WhiteboardReadUpdate, user: UserPublic = Depends(get_current_user)):
+    read_at = now_utc()
+    await db.whiteboard_read_states.update_one({"user_id": user.id, "thread_id": body.thread_id}, {"$set": {"last_read_at": read_at}}, upsert=True)
+    return {"thread_id": body.thread_id, "last_read_at": read_at}
+
+
+@api.get("/whiteboard/unread")
+async def whiteboard_unread(thread_id: str = "dashboard", user: UserPublic = Depends(get_current_user)):
+    state = await db.whiteboard_read_states.find_one({"user_id": user.id, "thread_id": thread_id})
+    query: dict[str, Any] = {"thread_id": thread_id, "author_id": {"$ne": user.id}}
+    if state and state.get("last_read_at"):
+        query["created_at"] = {"$gt": state["last_read_at"]}
+    return {"count": await db.whiteboard_messages.count_documents(query)}
+
+
+@api.get("/whiteboard/audit")
+async def list_whiteboard_audit(limit: int = 100, _: UserPublic = Depends(require_role(Role.admin))):
+    return await db.whiteboard_audit.find({}, {"_id": 0}).sort("timestamp", -1).limit(min(max(limit, 1), 500)).to_list(500)
+
+
+@api.websocket("/whiteboard/ws")
+async def whiteboard_websocket(socket: WebSocket):
+    await socket.accept()
+    try:
+        auth = await asyncio.wait_for(socket.receive_json(), timeout=10)
+        if auth.get("type") != "authenticate" or not auth.get("token"):
+            await socket.close(code=4401)
+            return
+        user = await user_from_access_token(str(auth["token"]))
+        await whiteboard_hub.add(socket)
+        await socket.send_json({"type": "ready", "user_id": user.id})
+        while True:
+            event = await socket.receive_json()
+            if event.get("type") == "ping":
+                await socket.send_json({"type": "pong"})
+    except (WebSocketDisconnect, asyncio.TimeoutError, HTTPException):
+        pass
+    finally:
+        await whiteboard_hub.remove(socket)
+
+
 @api.get("/dashboard/stats")
 async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
     """Operational KPIs only — no dollar figures. MobileOps tracks equipment
@@ -3660,6 +4065,15 @@ async def on_startup():
     await db.idempotency_keys.create_index([("key", 1), ("endpoint", 1)], unique=True)
     await db.idempotency_keys.create_index("created_at", expireAfterSeconds=IDEMPOTENCY_TTL_SECONDS)
     await db.dashboard_items.create_index([("status", 1), ("due_date", 1), ("created_at", -1)])
+    await db.whiteboard_messages.create_index("id", unique=True)
+    await db.whiteboard_messages.create_index([("thread_id", 1), ("pinned", -1), ("created_at", -1)])
+    await db.whiteboard_messages.create_index([("parent_id", 1), ("created_at", 1)])
+    await db.whiteboard_mentions.create_index([("entity_type", 1), ("entity_id", 1), ("created_at", -1)])
+    await db.whiteboard_mentions.create_index("message_id")
+    await db.whiteboard_attachments.create_index("message_id")
+    await db.whiteboard_attachment_blobs.create_index("id", unique=True)
+    await db.whiteboard_read_states.create_index([("user_id", 1), ("thread_id", 1)], unique=True)
+    await db.whiteboard_audit.create_index([("message_id", 1), ("timestamp", -1)])
     # Phase 0 (Jobs composition seam): indexes the future /jobs endpoint's
     # cross-collection lookups need — join bookings/rentals/dispatches/
     # ledger_entries by booking_id/rental_id, and filter each by its own

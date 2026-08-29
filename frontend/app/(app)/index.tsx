@@ -13,7 +13,8 @@ import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { KpiStrip, KpiTile } from "@/src/components/dashboard/KpiStrip";
 import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
 import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
-import { WhatsNext, NextMovement, ManualNextInput, ManualNextItem } from "@/src/components/dashboard/WhatsNext";
+import { Upcoming, NextMovement, ManualNextInput, ManualNextItem } from "@/src/components/dashboard/WhatsNext";
+import { WhiteboardFeed } from "@/src/components/whiteboard/WhiteboardFeed";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -46,11 +47,11 @@ type Stats = {
 type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = {
   id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null;
-  status: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
+  status: string; notes?: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
 };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string };
 type ShortageRow = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
-type ShopTask = { id: string; title: string; assignee: string; priority: string; status: string; created_at: string };
+type ShopTask = { id: string; title: string; assignee: string; priority: string; status: string; created_at: string; due_date?: string | null; notes?: string };
 type DispatchDoc = NextMovement;
 type Site = SiteWithShop & { brand_name?: string };
 
@@ -150,7 +151,7 @@ export default function Dashboard() {
       .filter((t) => t.status !== "done")
       .sort((a, b) => (order[a.priority] ?? 1) - (order[b.priority] ?? 1) || +new Date(a.created_at) - +new Date(b.created_at));
   }, [shopTasks]);
-  const whatsNext = useMemo(() => {
+  const upcomingDispatches = useMemo(() => {
     const live = dispatches.filter((d) => isDispatchLive(d.status));
     return [...live].sort((a, b) => {
       const aTime = a.scheduled_date ? +new Date(a.scheduled_date) : Number.MAX_SAFE_INTEGER;
@@ -222,16 +223,23 @@ export default function Dashboard() {
         <KpiTile label="Equipment shortages" value={String(stats.shortage_count)} meta={stats.shortage_count ? "Constrained in next 14 days" : "No upcoming shortages"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
       </KpiStrip>
 
-      <WhatsNext
-        items={whatsNext}
-        manualItems={manualNextItems}
-        canEdit={canEdit}
-        compact={!isShellWide}
-        onPressItem={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
-        onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
-        onCreateManual={createManualNextItem}
-        onCompleteManual={completeManualNextItem}
-      />
+      <View style={[styles.dashboardTopRow, !isShellWide && styles.stackGrid]}>
+        <Upcoming
+          dispatches={upcomingDispatches}
+          rentals={activeRentals}
+          shopTasks={openShopTasks}
+          manualItems={manualNextItems}
+          canEdit={canEdit}
+          compact={!isShellWide}
+          onPressDispatch={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
+          onPressRental={(item) => router.push(`/(app)/operations/rentals?open=${item.id}` as any)}
+          onPressTask={(item) => router.push(`/(app)/shop/tasks?open=${item.id}` as any)}
+          onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
+          onCreateManual={createManualNextItem}
+          onCompleteManual={completeManualNextItem}
+        />
+        <WhiteboardFeed compact />
+      </View>
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
         <DashboardMap
@@ -321,6 +329,7 @@ export default function Dashboard() {
 const styles = StyleSheet.create({
   desktopPage: { flex: 1, backgroundColor: colors.bgMuted },
   commandCenter: { paddingTop: spacing.md, minWidth: 0 },
+  dashboardTopRow: { flexDirection: "row", gap: 12, alignItems: "stretch", marginBottom: 12 },
   mainRow: { flexDirection: "row", gap: 12, height: 360, marginBottom: 12 },
   tableRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
   stackGrid: { height: "auto", flexDirection: "column" },

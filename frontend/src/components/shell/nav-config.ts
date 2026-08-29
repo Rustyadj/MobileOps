@@ -25,6 +25,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Overview",
     items: [
       { key: "dashboard", label: "Dashboard", route: "/(app)", icon: "grid-outline", testID: "nav-dashboard" },
+      { key: "whiteboard", label: "Whiteboard", route: "/(app)/whiteboard", icon: "chatbubbles-outline", testID: "nav-whiteboard" },
     ],
   },
   {
