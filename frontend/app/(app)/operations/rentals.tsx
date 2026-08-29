@@ -20,7 +20,7 @@ import { usePermissions } from "@/src/hooks/use-permissions";
 import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
-import { RENTAL_STATUS, isDispatchLive, isRentalOpen, isRentalReturned } from "@/src/domain/status";
+import { DISPATCH_STATUS, RENTAL_STATUS, isDispatchLive, isRentalOpen, isRentalReturned } from "@/src/domain/status";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
 type Line = {
@@ -48,11 +48,17 @@ type CommunicationEntry = {
   trigger_key?: string; created_by: string; created_at: string;
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
-type Dispatch = { id: string; direction: "outbound" | "inbound"; status: string; rental_id?: string | null; scheduled_date?: string | null; driver_name: string };
+type Dispatch = {
+  id: string; direction: "outbound" | "inbound"; status: string;
+  rental_id?: string | null; rental_completed?: boolean; scheduled_date?: string | null; driver_name: string;
+  customer_name?: string; job_site?: string; planning_only?: boolean;
+  requirements?: string[]; date_confirmed?: boolean;
+};
 type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "lines";
 type RentalDirection = "outbound" | "inbound";
 type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
 type RentalsView = "default" | "active" | "history";
+type CompletionTarget = { kind: "rental" | "planning"; id: string; customerName: string; pickupDate: string };
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
@@ -98,7 +104,8 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
   // phase-1 write flow — plain fetch, not cached.
   const [site, setSite] = useState<Site | null>(null);
   useEffect(() => { api<Site>("/site").then(setSite).catch((e) => console.warn(e)); }, []);
-  const [pickupBusy] = useState(false);
+  const [pickupBusy, setPickupBusy] = useState(false);
+  const [completionTarget, setCompletionTarget] = useState<CompletionTarget | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
   const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
@@ -353,6 +360,35 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
     (d) => d.direction === "inbound" && d.rental_id === rentalId && isDispatchLive(d.status)
   );
 
+  const completeRental = async () => {
+    if (!completionTarget) return;
+    const pickupDate = completionTarget.pickupDate ? new Date(completionTarget.pickupDate) : null;
+    if (pickupDate && Number.isNaN(pickupDate.getTime())) {
+      Alert.alert("Invalid pickup date", "Use yyyy-mm-ddThh:mm or leave it blank for an unconfirmed pickup date.");
+      return;
+    }
+    setPickupBusy(true);
+    try {
+      const path = completionTarget.kind === "planning"
+        ? `/dispatches/${completionTarget.id}/complete-rental`
+        : `/rentals/${completionTarget.id}/complete`;
+      await api(path, {
+        method: "POST",
+        body: JSON.stringify({
+          scheduled_date: pickupDate ? pickupDate.toISOString() : null,
+        }),
+      });
+      setCompletionTarget(null);
+      setSelected(null);
+      rentalsRes.onRefresh();
+      dispatchesRes.onRefresh();
+    } catch (e: any) {
+      Alert.alert("Complete failed", e.message);
+    } finally {
+      setPickupBusy(false);
+    }
+  };
+
   // Queues offline — scheduled from the job site once the crew knows a
   // pickup is needed. The optimistic Dispatch doc is enough for the
   // dispatch list/detail to show it right away; the server fills in the
@@ -488,14 +524,28 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
 
   const directionRentals = useMemo(
     () => initialView === "active"
-      ? rentals.filter((rental) => isRentalOpen(rental.status))
+      ? rentals.filter((rental) => isRentalOpen(rental.status) && !dispatches.some(
+          (dispatch) => dispatch.direction === "inbound" && dispatch.rental_id === rental.id && dispatch.rental_completed && isDispatchLive(dispatch.status),
+        ))
       : initialView === "history"
         ? rentals.filter((rental) => isRentalReturned(rental.status))
         : rentals.filter((rental) => direction === "inbound"
           ? HAS_ANY_RETURN_STATUSES.includes(rental.status)
           : !HAS_ANY_RETURN_STATUSES.includes(rental.status)),
-    [direction, initialView, rentals],
+    [direction, dispatches, initialView, rentals],
   );
+
+  const planningActiveRentals = useMemo(() => {
+    if (initialView !== "active") return [];
+    const query = search.trim().toLowerCase();
+    return dispatches.filter((dispatch) => {
+      if (!dispatch.planning_only || dispatch.status !== DISPATCH_STATUS.activeRental) return false;
+      if (statusFilter !== "all" && statusFilter !== RENTAL_STATUS.active) return false;
+      if (!query) return true;
+      return [dispatch.customer_name, dispatch.job_site, ...(dispatch.requirements || [])]
+        .some((value) => value?.toLowerCase().includes(query));
+    });
+  }, [dispatches, initialView, search, statusFilter]);
 
   const filteredRentals = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -552,9 +602,31 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     else { setSortKey(nextKey); setSortDirection("asc"); }
   };
 
+  const planningCards = planningActiveRentals.map((dispatch) => (
+    <Card key={dispatch.id} style={styles.planningRentalCard} testID={`planning-active-rental-${dispatch.id}`}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Row style={{ gap: spacing.sm, flexWrap: "wrap" }}>
+          <StatusBadge label="Active rental" tone="neutral" />
+          <Text style={styles.planningLabel}>Planning item · inventory unchanged</Text>
+        </Row>
+        <Text style={[styles.detailTitle, { marginTop: spacing.sm }]}>{dispatch.customer_name || "Customer pending"}</Text>
+        <Text style={styles.detailText}>{dispatch.job_site || "Job site pending"}</Text>
+        <Text style={styles.detailText}>{(dispatch.requirements || []).join(" · ") || "Equipment list pending"}</Text>
+      </View>
+      {canAdmin ? (
+        <Button
+          title="Complete Rental"
+          onPress={() => setCompletionTarget({ kind: "planning", id: dispatch.id, customerName: dispatch.customer_name || "Planning rental", pickupDate: "" })}
+          fullWidth={false}
+          testID={`complete-planning-rental-${dispatch.id}`}
+        />
+      ) : <Text style={styles.planningLabel}>Awaiting admin completion</Text>}
+    </Card>
+  ));
+
   return (
     <Screen title={initialView === "active" ? "Active Rentals" : initialView === "history" ? "Rental History" : "Rentals"}
-      subtitle={initialView === "active" ? `${directionRentals.length} jobs currently holding equipment` : initialView === "history" ? `${directionRentals.length} completed rentals` : `${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
+      subtitle={initialView === "active" ? `${directionRentals.length + planningActiveRentals.length} delivered jobs awaiting completion` : initialView === "history" ? `${directionRentals.length} completed rentals` : `${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
       rightAction={canEdit ? { icon: "add", onPress: newRental, testID: "new-rental-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
@@ -567,8 +639,9 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </PageToolbar>
           <View style={styles.filterRow}>
             <FilterChips options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} testIDPrefix="rentals-status-filter" />
-            <Text style={styles.resultCount}>{filteredRentals.length} matching rentals</Text>
+            <Text style={styles.resultCount}>{filteredRentals.length + planningActiveRentals.length} matching rentals</Text>
           </View>
+          {planningActiveRentals.length ? <View style={styles.planningRentalList}>{planningCards}</View> : null}
           <View style={styles.tableWrap}>
             <DataTable
               columns={columns}
@@ -587,7 +660,8 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
       ) : (
         <>
           {initialView === "default" ? <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} /> : null}
-          {directionRentals.length === 0 ? (
+          {planningActiveRentals.length ? <View style={{ gap: spacing.sm, marginBottom: spacing.sm }}>{planningCards}</View> : null}
+          {directionRentals.length === 0 && planningActiveRentals.length === 0 ? (
             <Card><Text style={[typo.body, { color: colors.inkMuted }]}>{initialView === "active" ? "No equipment is currently on customer jobs." : initialView === "history" ? "No completed rentals yet." : `No ${direction} rentals.`}</Text></Card>
           ) : directionRentals.map((r) => {
         const totalQty = r.lines.reduce((s, l) => s + l.qty, 0);
@@ -636,13 +710,19 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               </View>
             ))}
             <View style={{ marginTop: spacing.sm }}>
-              <PickupStatus
-                dispatch={pickupFor(r.id)}
-                rentalReturned={isRentalReturned(r.status)}
-                onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
-                onSchedule={() => schedulePickup(r.id)}
-                busy={pickupBusy}
-              />
+              {initialView === "active" ? (
+                canAdmin
+                  ? <Button title="Complete Rental" onPress={() => setCompletionTarget({ kind: "rental", id: r.id, customerName: r.customer_name, pickupDate: "" })} testID={`complete-rental-${r.id}`} />
+                  : <Text style={styles.detailText}>Awaiting admin completion</Text>
+              ) : (
+                <PickupStatus
+                  dispatch={pickupFor(r.id)}
+                  rentalReturned={isRentalReturned(r.status)}
+                  onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
+                  onSchedule={() => schedulePickup(r.id)}
+                  busy={pickupBusy}
+                />
+              )}
             </View>
             <View style={styles.mobileContactCard} testID={`rental-contact-${r.id}`}>
               <Text style={styles.detailLabel}>Customer / Job Contact</Text>
@@ -733,13 +813,19 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               {canEdit ? <Button title="Log Communication" onPress={() => setLogDraft({ rentalId: selected.id, channel: "call", direction: selected.contact_permission ? "outgoing" : "incoming", summary: "", outcome: "" })} variant="outline" testID={`log-communication-${selected.id}`} style={{ marginTop: spacing.sm }} /> : null}
             </DetailSection>
             <DetailSection label="Pickup">
-              <PickupStatus
-                dispatch={pickupFor(selected.id)}
-                rentalReturned={isRentalReturned(selected.status)}
-                onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
-                onSchedule={() => schedulePickup(selected.id)}
-                busy={pickupBusy}
-              />
+              {initialView === "active" ? (
+                canAdmin
+                  ? <Button title="Complete Rental" onPress={() => setCompletionTarget({ kind: "rental", id: selected.id, customerName: selected.customer_name, pickupDate: "" })} testID={`complete-rental-${selected.id}`} />
+                  : <Text style={styles.detailText}>Awaiting admin completion</Text>
+              ) : (
+                <PickupStatus
+                  dispatch={pickupFor(selected.id)}
+                  rentalReturned={isRentalReturned(selected.status)}
+                  onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
+                  onSchedule={() => schedulePickup(selected.id)}
+                  busy={pickupBusy}
+                />
+              )}
             </DetailSection>
             <View style={styles.drawerActions}>
               {canEdit ? <Button title="Edit Rental" onPress={() => editRental(selected)} testID={`edit-rental-${selected.id}`} /> : null}
@@ -752,6 +838,30 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </View>
         ) : null}
       </DetailDrawer>
+
+      <Modal visible={!!completionTarget} animationType="slide" onRequestClose={() => setCompletionTarget(null)}>
+        <Screen
+          title="Complete Active Rental"
+          subtitle={completionTarget?.customerName || ""}
+          back
+          rightAction={{ icon: "close", onPress: () => setCompletionTarget(null), testID: "close-complete-rental" }}
+        >
+          <Card>
+            <Text style={styles.detailTitle}>Move this delivered job to Inbound</Text>
+            <Text style={[styles.detailText, { marginBottom: spacing.md }]}>Add a pickup date to mark it confirmed in green. Leave it blank to show the yellow unconfirmed pickup status.</Text>
+            <Input
+              label="Pickup date/time (optional, yyyy-mm-ddThh:mm)"
+              value={completionTarget?.pickupDate || ""}
+              onChangeText={(pickupDate) => setCompletionTarget((target) => target ? { ...target, pickupDate } : target)}
+              mono
+              autoCapitalize="none"
+              placeholder="2026-08-30T08:00"
+              testID="complete-rental-pickup-date"
+            />
+            <Button title="Complete Rental" onPress={completeRental} loading={pickupBusy} testID="confirm-complete-rental" />
+          </Card>
+        </Screen>
+      </Modal>
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen title={draft?.id ? "Edit Rental" : "New Rental"} back rightAction={{ icon: "close", onPress: () => { setCreating(false); setDraft(null); }, testID: "close-new-rental" }}>
@@ -1090,6 +1200,9 @@ const styles = StyleSheet.create({
   toolbarButton: { height: 40 },
   filterRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingHorizontal: spacing.xl, paddingBottom: spacing.sm },
   resultCount: { ...typo.bodySmall, fontSize: 12 },
+  planningRentalList: { paddingHorizontal: spacing.xl, paddingBottom: spacing.sm, gap: spacing.sm },
+  planningRentalCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, marginBottom: spacing.sm },
+  planningLabel: { ...typo.caption, color: colors.inkMuted, textTransform: "none", letterSpacing: 0 },
   tableWrap: { flex: 1, marginHorizontal: spacing.xl, marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden", backgroundColor: colors.bg },
   tableLink: { fontSize: 12, color: colors.primary, fontWeight: "700" },
   tableMono: { fontSize: 12 },

@@ -146,10 +146,10 @@ export default function BookingsScreen() {
 
   const dispatch = async (booking: Booking) => {
     try {
-      const rental = await api<{ id: string }>(`/bookings/${booking.id}/dispatch`, { method: "POST" });
+      const delivery = await api<{ id: string }>(`/bookings/${booking.id}/dispatch`, { method: "POST" });
       setSelected(null);
       await load();
-      router.push(`/(app)/operations/rentals?open=${rental.id}` as any);
+      router.push(`/(app)/operations/dispatch?open=${delivery.id}` as any);
     } catch (e: any) { Alert.alert("Dispatch failed", e.message); }
   };
 
@@ -221,7 +221,7 @@ export default function BookingsScreen() {
           <SectionLabel>Notes</SectionLabel>
           <Text style={[typo.body, { marginBottom: spacing.lg }]}>{selected.notes || "No notes."}</Text>
           {selected.status === BOOKING_STATUS.confirmed ? (
-            <Button title="Dispatch → Start Rental" onPress={() => dispatch(selected)} testID={`dispatch-booking-${selected.id}`} style={{ marginBottom: spacing.sm }} />
+            <Button title="Open Delivery Ticket" onPress={() => dispatch(selected)} testID={`dispatch-booking-${selected.id}`} style={{ marginBottom: spacing.sm }} />
           ) : null}
           {selected.status === BOOKING_STATUS.dispatched && selected.dispatched_rental_id ? (
             <Button title="View Rental" variant="outline" onPress={() => router.push(`/(app)/operations/rentals?open=${selected.dispatched_rental_id}` as any)} testID={`view-dispatched-rental-${selected.id}`} style={{ marginBottom: spacing.sm }} />

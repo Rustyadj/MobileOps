@@ -179,6 +179,7 @@ async def test_registry_covers_requested_domains_and_marks_mutations_destructive
         "booking_dispatch",
         "dispatches_list",
         "dispatch_set_status",
+        "dispatch_complete_ticket",
         "maintenance_list",
         "maintenance_create",
         "shop_tasks_list",

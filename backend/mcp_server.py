@@ -1189,7 +1189,7 @@ class MobileOpsMCP:
         @mcp.tool(
             name="booking_dispatch",
             description=(
-                "Fast-forward a confirmed booking through dispatch into a rental. "
+                "Open the confirmed booking's outbound delivery ticket for driver processing. "
                 "Requires explicit confirmation."
             ),
             annotations=MUTATING,
@@ -1207,7 +1207,7 @@ class MobileOpsMCP:
                     booking_id, self._domain_user()
                 ),
                 confirmation_token=confirmation_token,
-                confirmation_summary=f"Dispatch booking {booking_id} and create its active rental.",
+                confirmation_summary=f"Open the delivery ticket for booking {booking_id}.",
             )
 
         @mcp.tool(
@@ -1270,7 +1270,8 @@ class MobileOpsMCP:
         @mcp.tool(
             name="dispatch_set_status",
             description=(
-                "Advance a dispatch by one validated workflow step or cancel it. "
+                "Advance a dispatch by one validated non-final workflow step or cancel it. "
+                "Use dispatch_complete_ticket for the final delivery or pickup step. "
                 "Requires explicit confirmation."
             ),
             annotations=MUTATING,
@@ -1296,6 +1297,40 @@ class MobileOpsMCP:
                 operation=operation,
                 confirmation_token=confirmation_token,
                 confirmation_summary=f"Advance dispatch {dispatch_id} to {status}.",
+            )
+
+        @mcp.tool(
+            name="dispatch_complete_ticket",
+            description=(
+                "Complete a delivery or pickup ticket with one confirmation per product. "
+                "Outbound lines require delivered_qty; inbound lines require pickup_confirmed=true. "
+                "Requires explicit confirmation."
+            ),
+            annotations=MUTATING,
+        )
+        async def dispatch_complete_ticket(
+            dispatch_id: str,
+            lines: list[dict[str, Any]],
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {"dispatch_id": dispatch_id, "lines": lines}
+
+            async def operation(_: AgentPrincipal, key: str | None) -> Any:
+                return await self.backend.complete_dispatch_ticket(
+                    dispatch_id,
+                    self.backend.DispatchTicketComplete(lines=lines),
+                    self._domain_user(),
+                    key,
+                )
+
+            return await self.invoke(
+                tool="dispatch_complete_ticket",
+                parameters=params,
+                required_scope="dispatch:write",
+                action="write",
+                operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Complete the verified product ticket for dispatch {dispatch_id}.",
             )
 
         @mcp.tool(

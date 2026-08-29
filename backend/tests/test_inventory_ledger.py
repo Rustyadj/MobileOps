@@ -114,7 +114,7 @@ class TestBookingDispatch:
         r = api_client.post(f"{BASE_URL}/api/bookings/{bk['id']}/dispatch", headers=auth_headers)
         assert r.status_code == 400
 
-    def test_dispatch_moves_reserved_to_on_rental_without_double_commit(self, api_client, auth_headers):
+    def test_dispatch_ticket_moves_reserved_to_on_rental_without_double_commit(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=100)
         bk = create_booking(api_client, auth_headers, eq, 40)
         r = api_client.patch(f"{BASE_URL}/api/bookings/{bk['id']}/status", headers=auth_headers, json={"status": "confirmed"})
@@ -122,14 +122,30 @@ class TestBookingDispatch:
 
         r = api_client.post(f"{BASE_URL}/api/bookings/{bk['id']}/dispatch", headers=auth_headers)
         assert r.status_code == 201, r.text
-        rental = r.json()
-        assert rental["lines"][0]["qty"] == 40
+        dispatch = r.json()
+        assert dispatch["status"] == "scheduled"
+
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["reserved"] == 40 and eq2["on_rental"] == 0
+
+        for status in ("staging", "ready", "loaded", "dispatched", "arrived"):
+            r = api_client.patch(
+                f"{BASE_URL}/api/dispatches/{dispatch['id']}/status", headers=auth_headers, json={"status": status}
+            )
+            assert r.status_code == 200, r.text
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches/{dispatch['id']}/complete-ticket", headers=auth_headers,
+            json={"lines": [{"line_index": 0, "equipment_id": eq["id"], "delivered_qty": 40}]},
+        )
+        assert r.status_code == 200, r.text
+        completed = r.json()
+        assert completed["rental_id"]
 
         eq2 = get_equipment(api_client, auth_headers, eq["id"])
         assert eq2["reserved"] == 0 and eq2["on_rental"] == 40
 
-        # A second dispatch, or any status change, must be rejected — the
-        # reservation is already spent, so nothing should be double-committed.
+        # A second dispatch or booking status change must be rejected after
+        # the verified delivery spends the reservation.
         r = api_client.post(f"{BASE_URL}/api/bookings/{bk['id']}/dispatch", headers=auth_headers)
         assert r.status_code == 400
         r = api_client.patch(f"{BASE_URL}/api/bookings/{bk['id']}/status", headers=auth_headers, json={"status": "cancelled"})

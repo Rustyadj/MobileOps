@@ -271,18 +271,121 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && bookingDispatch) {
       const booking = bookings.find((item) => item.id === bookingDispatch[1]);
       if (!booking) return send(res, 404, { detail: "Booking not found" });
-      const rental = { id: `demo-rental-${randomUUID()}`, booking_id: booking.id, customer_name: booking.customer_name, job_site: booking.job_site, start_date: booking.start_date, due_date: booking.end_date, status: "active", lines: booking.items || [], lat: null, lng: null };
-      rentals.push(rental);
-      booking.status = "dispatched";
-      booking.dispatched_rental_id = rental.id;
+      let delivery = dispatches.find((item) => item.direction === "outbound" && item.booking_id === booking.id && item.status !== "cancelled");
+      if (!delivery) {
+        delivery = {
+          id: `demo-delivery-${randomUUID()}`, direction: "outbound", status: "scheduled",
+          scheduled_date: booking.start_date, date_confirmed: true,
+          customer_name: booking.customer_name, job_site: booking.job_site || "", booking_id: booking.id,
+          rental_id: null, driver_name: "", truck: "", trailer: "", crew: "", notes: booking.notes || "",
+          lines: (booking.items || []).map((line) => ({ equipment_id: line.equipment_id, sku: line.sku, name: line.name, qty: line.qty, delivered_qty: null, pickup_confirmed: false })),
+          planning_only: false, created_by: "Demo Operator", created_at: now(), updated_at: now(),
+        };
+        dispatches.push(delivery);
+      }
       persistState();
-      return send(res, 201, rental);
+      return send(res, 201, delivery);
+    }
+    const rentalPickup = route.match(/^\/api\/rentals\/([^/]+)\/(schedule-pickup|complete)$/);
+    if (req.method === "POST" && rentalPickup) {
+      const rental = rentals.find((item) => item.id === decodeURIComponent(rentalPickup[1]));
+      if (!rental) return send(res, 404, { detail: "Rental not found" });
+      const body = await readBody(req);
+      const adminCompleted = rentalPickup[2] === "complete";
+      let pickup = dispatches.find((item) => item.direction === "inbound" && item.rental_id === rental.id && !["completed", "cancelled"].includes(item.status));
+      if (pickup && !adminCompleted) return send(res, 400, { detail: "A pickup is already scheduled for this rental" });
+      if (!pickup) {
+        pickup = {
+          id: `demo-pickup-${randomUUID()}`, direction: "inbound", status: "scheduled",
+          rental_id: rental.id, rental_completed: adminCompleted,
+          scheduled_date: body.scheduled_date || null, date_confirmed: !!body.scheduled_date,
+          customer_name: rental.customer_name, job_site: rental.job_site || "", driver_name: body.driver_name || "",
+          truck: body.truck || "", trailer: body.trailer || "", crew: body.crew || "", notes: body.notes || "",
+          lines: (rental.lines || []).filter((line) => (line.delivered_qty || line.qty) > (line.returned_qty || 0)).map((line) => ({
+            equipment_id: line.equipment_id, sku: line.sku, name: line.name,
+            qty: (line.delivered_qty || line.qty) - (line.returned_qty || 0),
+          })),
+          planning_only: false, created_by: "Demo Operator", created_at: now(), updated_at: now(),
+        };
+        dispatches.push(pickup);
+      } else {
+        Object.assign(pickup, {
+          rental_completed: true,
+          scheduled_date: body.scheduled_date || null,
+          date_confirmed: !!body.scheduled_date,
+          updated_at: now(),
+        });
+      }
+      persistState();
+      return send(res, 201, pickup);
+    }
+    const planningRentalComplete = route.match(/^\/api\/dispatches\/([^/]+)\/complete-rental$/);
+    if (req.method === "POST" && planningRentalComplete) {
+      const item = dispatches.find((dispatch) => dispatch.id === decodeURIComponent(planningRentalComplete[1]));
+      if (!item) return send(res, 404, { detail: "Dispatch not found" });
+      if (!item.planning_only || item.status !== "active_rental") return send(res, 400, { detail: "Only a delivered planning rental can be completed" });
+      const body = await readBody(req);
+      Object.assign(item, {
+        direction: "inbound", status: "ready_for_pickup",
+        scheduled_date: body.scheduled_date || null, date_confirmed: !!body.scheduled_date,
+        updated_at: now(), completed_at: null,
+      });
+      persistState();
+      return send(res, 200, item);
+    }
+    const dispatchTicketComplete = route.match(/^\/api\/dispatches\/([^/]+)\/complete-ticket$/);
+    if (req.method === "POST" && dispatchTicketComplete) {
+      const item = dispatches.find((dispatch) => dispatch.id === decodeURIComponent(dispatchTicketComplete[1]));
+      if (!item) return send(res, 404, { detail: "Dispatch not found" });
+      const body = await readBody(req);
+      if (!Array.isArray(body.lines) || body.lines.length !== item.lines.length) return send(res, 400, { detail: "Every product on the ticket must be confirmed" });
+      if (item.direction === "outbound") {
+        if (body.lines.some((line) => line.delivered_qty == null)) return send(res, 400, { detail: "Enter every delivered quantity" });
+        item.lines = item.lines.map((line, index) => ({ ...line, delivered_qty: Number(body.lines[index].delivered_qty) }));
+        const rental = {
+          id: `demo-rental-${randomUUID()}`, booking_id: item.booking_id || null,
+          customer_name: item.customer_name, customer_phone: "", customer_email: "", primary_contact: "",
+          preferred_contact_method: "call", contact_permission: false, communication_log: [],
+          job_site: item.job_site || "", start_date: item.scheduled_date || now(), due_date: null,
+          status: "active", lines: item.lines.filter((line) => line.delivered_qty > 0).map((line) => ({
+            equipment_id: line.equipment_id, sku: line.sku, name: line.name, qty: line.delivered_qty,
+            delivered_qty: line.delivered_qty, returned_qty: 0, damaged_qty: 0, daily_rate: 0,
+          })), lat: null, lng: null, notes: "", delivered_by: "Demo Operator", received_by: "",
+        };
+        rentals.push(rental);
+        item.rental_id = rental.id;
+        const booking = bookings.find((entry) => entry.id === item.booking_id);
+        if (booking) {
+          booking.status = "dispatched";
+          booking.dispatched_rental_id = rental.id;
+        }
+      } else {
+        if (body.lines.some((line) => !line.pickup_confirmed)) return send(res, 400, { detail: "Check every picked-up product" });
+        item.lines = item.lines.map((line) => ({ ...line, pickup_confirmed: true }));
+        const rental = rentals.find((entry) => entry.id === item.rental_id);
+        if (rental) {
+          rental.lines = rental.lines.map((line) => ({ ...line, returned_qty: line.delivered_qty || line.qty }));
+          rental.status = "returned";
+        }
+        item.lines.forEach((line) => {
+          const equipmentItem = equipment.find((entry) => entry.id === line.equipment_id);
+          if (!equipmentItem) return;
+          equipmentItem.on_rental = Math.max(0, Number(equipmentItem.on_rental || 0) - Number(line.qty || 0));
+          equipmentItem.pending_inspection = Number(equipmentItem.pending_inspection || 0) + Number(line.qty || 0);
+        });
+      }
+      item.status = "completed";
+      item.completed_at = now();
+      item.updated_at = now();
+      persistState();
+      return send(res, 200, item);
     }
     const dispatchStatus = route.match(/^\/api\/dispatches\/([^/]+)\/status$/);
     if (req.method === "PATCH" && dispatchStatus) {
       const item = dispatches.find((dispatch) => dispatch.id === decodeURIComponent(dispatchStatus[1]));
       if (!item) return send(res, 404, { detail: "Dispatch not found" });
       const body = await readBody(req);
+      if (!item.planning_only && body.status === "completed") return send(res, 400, { detail: "Complete the driver ticket for every product" });
       if (item.planning_only && item.direction === "outbound" && body.status === "active_rental") {
         item.direction = "inbound";
         item.status = "active_rental";
@@ -302,7 +405,28 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "PATCH" && dispatchAssign) {
       const item = dispatches.find((dispatch) => dispatch.id === decodeURIComponent(dispatchAssign[1]));
       if (!item) return send(res, 404, { detail: "Dispatch not found" });
-      Object.assign(item, await readBody(req), { updated_at: now() });
+      const body = await readBody(req);
+      Object.assign(item, body, {
+        ...(Object.prototype.hasOwnProperty.call(body, "scheduled_date") ? { date_confirmed: !!body.scheduled_date } : {}),
+        updated_at: now(),
+      });
+      persistState();
+      return send(res, 200, item);
+    }
+    const equipmentInspect = route.match(/^\/api\/equipment\/([^/]+)\/inspect$/);
+    if (req.method === "POST" && equipmentInspect) {
+      const item = equipment.find((entry) => entry.id === decodeURIComponent(equipmentInspect[1]));
+      if (!item) return send(res, 404, { detail: "Equipment not found" });
+      const body = await readBody(req);
+      const qty = Number(body.qty || 0);
+      if (qty <= 0 || qty > Number(item.pending_inspection || 0)) return send(res, 400, { detail: "qty exceeds units pending inspection" });
+      item.pending_inspection -= qty;
+      if (body.outcome === "available") {
+        item.available += qty;
+        item.location = body.yard_location || "Yard";
+      } else {
+        item.in_maintenance = Number(item.in_maintenance || 0) + qty;
+      }
       persistState();
       return send(res, 200, item);
     }

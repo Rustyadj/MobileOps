@@ -59,6 +59,25 @@ def create_outbound_dispatch(api_client, auth_headers, eq, qty, **overrides):
 
 
 def advance(api_client, auth_headers, d_id, status):
+    if status == "completed":
+        current = api_client.get(f"{BASE_URL}/api/dispatches/{d_id}", headers=auth_headers)
+        assert current.status_code == 200, current.text
+        dispatch = current.json()
+        lines = [
+            {
+                "line_index": index,
+                "equipment_id": line["equipment_id"],
+                **({"delivered_qty": line["qty"]} if dispatch["direction"] == "outbound" else {"pickup_confirmed": True}),
+            }
+            for index, line in enumerate(dispatch["lines"])
+        ]
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches/{d_id}/complete-ticket",
+            headers=auth_headers,
+            json={"lines": lines},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
     r = api_client.patch(f"{BASE_URL}/api/dispatches/{d_id}/status", headers=auth_headers, json={"status": status})
     assert r.status_code == 200, r.text
     return r.json()
@@ -128,6 +147,31 @@ class TestOutboundLifecycle:
         )
         assert r.status_code == 400
         assert "already cancelled" in r.json()["detail"]
+
+    def test_delivery_ticket_requires_every_quantity_and_reconciles_short_delivery(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=10)
+        d = create_outbound_dispatch(api_client, auth_headers, eq, 4)
+        for status in ("staging", "ready", "loaded", "dispatched", "arrived"):
+            d = advance(api_client, auth_headers, d["id"], status)
+
+        r = api_client.patch(
+            f"{BASE_URL}/api/dispatches/{d['id']}/status", headers=auth_headers, json={"status": "completed"}
+        )
+        assert r.status_code == 400
+        assert "delivered quantity" in r.json()["detail"].lower()
+
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches/{d['id']}/complete-ticket", headers=auth_headers,
+            json={"lines": [{"line_index": 0, "equipment_id": eq["id"], "delivered_qty": 3}]},
+        )
+        assert r.status_code == 200, r.text
+        completed = r.json()
+        rentals = api_client.get(f"{BASE_URL}/api/rentals", headers=auth_headers).json()
+        rental = next(item for item in rentals if item["id"] == completed["rental_id"])
+        assert rental["lines"][0]["qty"] == 3
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["on_rental"] == 3
+        assert eq2["available"] == 7
 
 
 class TestOutboundCancellationRollback:
@@ -228,6 +272,17 @@ class TestInboundLifecycle:
         assert rental2["status"] == "returned"
         assert rental2["lines"][0]["returned_qty"] == 6
 
+        r = api_client.post(
+            f"{BASE_URL}/api/equipment/{eq['id']}/inspect", headers=auth_headers,
+            json={"qty": 6, "outcome": "available", "yard_location": "Test Yard", "note": "Counted and passed"},
+        )
+        assert r.status_code == 200, r.text
+        inspected = r.json()
+        assert inspected["pending_inspection"] == 0
+        assert inspected["available"] == 10
+        assert inspected["location"] == "Test Yard"
+        assert inspected["location_balances"]["Test Yard"] >= 6
+
     def test_desk_return_and_scheduled_pickup_split_correctly(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=10)
         r = api_client.post(
@@ -275,6 +330,87 @@ class TestInboundLifecycle:
             f"{BASE_URL}/api/rentals/{rental['id']}/schedule-pickup", headers=auth_headers, json={}
         )
         assert r.status_code == 400, "cannot schedule a pickup on an already fully-returned rental"
+
+    def test_admin_complete_moves_active_rental_to_inbound_without_returning_inventory(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=8)
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals", headers=auth_headers,
+            json={
+                "customer_name": "Admin Complete Co", "job_site": "Completion Job",
+                "start_date": "2026-08-29T00:00:00Z",
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 5, "daily_rate": 0}],
+            },
+        )
+        assert r.status_code == 201, r.text
+        rental = r.json()
+
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals/{rental['id']}/complete", headers=auth_headers,
+            json={"scheduled_date": None},
+        )
+        assert r.status_code == 201, r.text
+        pickup = r.json()
+        assert pickup["direction"] == "inbound"
+        assert pickup["status"] == "scheduled"
+        assert pickup["rental_completed"] is True
+        assert pickup["date_confirmed"] is False
+        assert pickup["scheduled_date"] is None
+
+        eq2 = get_equipment(api_client, auth_headers, eq["id"])
+        assert eq2["on_rental"] == 5
+        assert eq2["inbound"] == 0 and eq2["pending_inspection"] == 0
+
+    def test_pickup_date_controls_confirmation_state(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=4)
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals", headers=auth_headers,
+            json={
+                "customer_name": "Pickup Confirmation Co", "job_site": "Pickup Job",
+                "start_date": "2026-08-29T00:00:00Z",
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 2, "daily_rate": 0}],
+            },
+        )
+        rental = r.json()
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals/{rental['id']}/complete", headers=auth_headers,
+            json={"scheduled_date": "2026-08-30T13:00:00Z"},
+        )
+        assert r.status_code == 201, r.text
+        pickup = r.json()
+        assert pickup["date_confirmed"] is True
+
+        r = api_client.patch(
+            f"{BASE_URL}/api/dispatches/{pickup['id']}/assign", headers=auth_headers,
+            json={"scheduled_date": None},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["date_confirmed"] is False
+        assert r.json()["scheduled_date"] is None
+
+    def test_pickup_ticket_requires_every_product_checked(self, api_client, auth_headers):
+        eq = create_equipment(api_client, auth_headers, qty=3)
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals", headers=auth_headers,
+            json={
+                "customer_name": "Pickup Gate Co", "job_site": "Pickup Gate Job",
+                "start_date": "2026-08-29T00:00:00Z",
+                "lines": [{"equipment_id": eq["id"], "sku": eq["sku"], "name": eq["name"], "qty": 3, "daily_rate": 0}],
+            },
+        )
+        rental = r.json()
+        r = api_client.post(
+            f"{BASE_URL}/api/rentals/{rental['id']}/complete", headers=auth_headers, json={}
+        )
+        pickup = r.json()
+        for status in ("dispatched", "arrived", "loaded", "returning", "at_yard"):
+            pickup = advance(api_client, auth_headers, pickup["id"], status)
+
+        r = api_client.post(
+            f"{BASE_URL}/api/dispatches/{pickup['id']}/complete-ticket", headers=auth_headers,
+            json={"lines": [{"line_index": 0, "equipment_id": eq["id"], "pickup_confirmed": False}]},
+        )
+        assert r.status_code == 400
+        assert "confirm" in r.json()["detail"].lower()
 
 
 class TestBookingLinkedDispatch:
@@ -327,7 +463,7 @@ class TestBookingLinkedDispatch:
         eq2 = get_equipment(api_client, auth_headers, eq["id"])
         assert eq2["reserved"] == 4
 
-    def test_quick_dispatch_shortcut_fast_forwards_linked_dispatch(self, api_client, auth_headers):
+    def test_booking_dispatch_opens_delivery_without_bypassing_ticket(self, api_client, auth_headers):
         eq = create_equipment(api_client, auth_headers, qty=20)
         r = api_client.post(
             f"{BASE_URL}/api/bookings", headers=auth_headers,
@@ -342,22 +478,23 @@ class TestBookingLinkedDispatch:
 
         r = api_client.post(f"{BASE_URL}/api/bookings/{bk['id']}/dispatch", headers=auth_headers)
         assert r.status_code == 201, r.text
-        rental = r.json()
-        assert rental["lines"][0]["qty"] == 6
+        dispatch = r.json()
+        assert dispatch["status"] == "scheduled"
+        assert dispatch["rental_id"] is None
 
         eq2 = get_equipment(api_client, auth_headers, eq["id"])
-        assert eq2["on_rental"] == 6
-        assert eq2["reserved"] == 0 and eq2["staged"] == 0 and eq2["outbound"] == 0
+        assert eq2["reserved"] == 6
+        assert eq2["on_rental"] == 0 and eq2["staged"] == 0 and eq2["outbound"] == 0
 
         r = api_client.get(f"{BASE_URL}/api/dispatches", headers=auth_headers, params={"booking_id": bk["id"]})
         d = r.json()[0]
-        assert d["status"] == "completed"
-        assert d["rental_id"] == rental["id"]
+        assert d["status"] == "scheduled"
+        assert d["rental_id"] is None
 
         r = api_client.get(f"{BASE_URL}/api/bookings", headers=auth_headers)
         bk2 = next(b for b in r.json() if b["id"] == bk["id"])
-        assert bk2["status"] == "dispatched"
-        assert bk2["dispatched_rental_id"] == rental["id"]
+        assert bk2["status"] == "confirmed"
+        assert bk2["dispatched_rental_id"] is None
 
 
 class TestReviewFixes:

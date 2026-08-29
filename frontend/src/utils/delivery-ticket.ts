@@ -2,6 +2,7 @@ export type DeliveryTicketLine = {
   sku?: string | null;
   name: string;
   qty: number;
+  delivered_qty?: number | null;
 };
 
 export type DeliveryTicketData = {
@@ -47,12 +48,12 @@ const displayStatus = (value: string) => value.replace(/_/g, " ");
 
 export function buildDeliveryTicketHtml(ticket: DeliveryTicketData, site?: DeliveryTicketSite | null) {
   const lineRows = ticket.lines.map((line) => (
-    `<tr><td>${escapeHtml(line.sku || "Not assigned")}</td><td>${escapeHtml(line.name)}</td><td class="qty">${escapeHtml(line.qty)}</td></tr>`
+    `<tr><td>${escapeHtml(line.sku || "Not assigned")}</td><td>${escapeHtml(line.name)}</td><td class="qty">${escapeHtml(line.delivered_qty ?? line.qty)}</td></tr>`
   )).join("");
   const requirementRows = (ticket.requirements || []).map((requirement) => (
     `<tr><td>Planned</td><td>${escapeHtml(requirement)}</td><td class="qty">Confirm</td></tr>`
   )).join("");
-  const totalUnits = ticket.lines.reduce((total, line) => total + line.qty, 0);
+  const totalUnits = ticket.lines.reduce((total, line) => total + (line.delivered_qty ?? line.qty), 0);
   const logoHtml = site?.logo_base64
     ? `<img src="${escapeHtml(site.logo_base64)}" alt="" class="logo"/>`
     : `<div class="tile"></div>`;

@@ -12,7 +12,7 @@ import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { buildDeliveryTicketHtml, DeliveryTicketSite } from "@/src/utils/delivery-ticket";
 import { colors, spacing, type as typo } from "@/src/theme";
 
-type DispatchLine = { equipment_id: string; sku: string; name: string; qty: number };
+type DispatchLine = { equipment_id: string; sku: string; name: string; qty: number; delivered_qty?: number | null };
 type Dispatch = {
   id: string;
   direction: "outbound" | "inbound";
@@ -40,7 +40,7 @@ const shortDate = (dispatch: Dispatch) => {
     : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 };
 
-const unitCount = (dispatch: Dispatch) => dispatch.lines.reduce((total, line) => total + line.qty, 0);
+const unitCount = (dispatch: Dispatch) => dispatch.lines.reduce((total, line) => total + (line.delivered_qty ?? line.qty), 0);
 
 export default function DeliveryTicketsScreen() {
   const { isPhone } = useBreakpoint();
@@ -145,7 +145,7 @@ export default function DeliveryTicketsScreen() {
               </Row>
               {dispatch.lines.length ? (
                 <Text style={styles.items} numberOfLines={2}>
-                  {dispatch.lines.map((line) => `${line.qty}× ${line.sku || line.name}`).join("  ·  ")}
+                  {dispatch.lines.map((line) => `${line.delivered_qty ?? line.qty}× ${line.sku || line.name}`).join("  ·  ")}
                 </Text>
               ) : dispatch.requirements?.length ? (
                 <Text style={styles.items} numberOfLines={2}>{dispatch.requirements.join("  ·  ")}</Text>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
@@ -20,7 +20,10 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { DISPATCH_STATUS, TERMINAL_DISPATCH_STATUSES, isDispatchLive, isRentalReturned } from "@/src/domain/status";
 
 type Direction = "outbound" | "inbound";
-type DLine = { equipment_id: string; sku: string; name: string; qty: number };
+type DLine = {
+  equipment_id: string; sku: string; name: string; qty: number;
+  delivered_qty?: number | null; pickup_confirmed?: boolean;
+};
 type Eq = { id: string; sku: string; name: string; available: number };
 type RentalLite = { id: string; customer_name: string; job_site: string; status: string };
 type Dispatch = {
@@ -60,12 +63,12 @@ const planningAction = (d: Dispatch): PlanningAction => {
   if (d.direction === "outbound") return {
     label: "Mark Delivered",
     status: DISPATCH_STATUS.activeRental,
-    message: "This moves the planning item directly to Inbound as a gray Active Rental. Continue?",
+    message: "This moves the delivered job into Active Rentals until an admin completes it. Continue?",
   };
   if (d.status === DISPATCH_STATUS.activeRental) return {
-    label: "Mark Ready for Pickup",
+    label: "Complete Rental",
     status: DISPATCH_STATUS.readyForPickup,
-    message: "This marks the inbound item Ready for Pickup. Continue?",
+    message: "This moves the completed rental into Inbound for pickup. Continue?",
   };
   return {
     label: "Mark Picked Up",
@@ -87,6 +90,16 @@ const equipmentSummary = (lines: DLine[], requirements: string[] = []) => {
 const shortDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Unscheduled";
 const dispatchDate = (dispatch: Dispatch) => dispatch.source_date_text || shortDateTime(dispatch.scheduled_date);
+const awaitingAdminCompletion = (dispatch: Dispatch) => dispatch.planning_only && dispatch.status === DISPATCH_STATUS.activeRental;
+const visibleMovement = (dispatch: Dispatch) => isLive(dispatch) && !awaitingAdminCompletion(dispatch);
+const displayStatus = (dispatch: Dispatch) => {
+  const awaitingPickup = dispatch.direction === "inbound" &&
+    [DISPATCH_STATUS.scheduled, DISPATCH_STATUS.readyForPickup].includes(dispatch.status as any);
+  if (!awaitingPickup) return { label: dispatch.status };
+  return dispatch.date_confirmed && dispatch.scheduled_date
+    ? { label: "Confirmed", tone: "success" as const }
+    : { label: "Pickup date unconfirmed", tone: "warning" as const };
+};
 
 type Tab = "all" | "outbound" | "inbound" | "completed";
 const TABS: { key: Tab; label: string }[] = [
@@ -100,7 +113,8 @@ type DispatchScreenProps = { initialDirection?: Direction };
 
 export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const { isShellWide, width } = useBreakpoint();
-  const { canEdit } = usePermissions();
+  const { canEdit, canAdmin } = usePermissions();
+  const router = useRouter();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
   const dispatchesRes = useCachedResource<Dispatch>("dispatches", () => api<Dispatch[]>("/dispatches"));
   const equipmentRes = useCachedResource<Eq>("equipment", () => api<Eq[]>("/equipment"));
@@ -116,6 +130,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [assignDraft, setAssignDraft] = useState<{ driver_name: string; truck: string; trailer: string; crew: string; scheduled_date: string } | null>(null);
+  const [ticketLines, setTicketLines] = useState<Array<{ deliveredQty: string; pickupConfirmed: boolean }>>([]);
 
   const [creating, setCreating] = useState(false);
   const [newDirection, setNewDirection] = useState<Direction>(initialDirection || "outbound");
@@ -153,6 +168,13 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
     });
   }, [selected]);
 
+  useEffect(() => {
+    setTicketLines((selected?.lines || []).map((line) => ({
+      deliveredQty: line.delivered_qty == null ? "" : String(line.delivered_qty),
+      pickupConfirmed: !!line.pickup_confirmed,
+    })));
+  }, [selected?.id]);
+
   // Queues offline — this is the button a driver/crew taps standing at the
   // truck or job site. The optimistic patch only updates the dispatch's own
   // status/timestamp fields; the equipment bucket movement that status
@@ -166,6 +188,11 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
       try {
         const updated = await api<Dispatch>(`/dispatches/${d.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
         dispatchesRes.onRefresh();
+        if (updated.status === DISPATCH_STATUS.activeRental) {
+          setSelected(null);
+          router.push("/(app)/operations/active" as any);
+          return;
+        }
         if (!initialDirection) {
           if (TERMINAL_DISPATCH_STATUSES.includes(updated.status)) setTab("completed");
           else if (d.direction === "outbound" && updated.direction === "inbound") setTab("inbound");
@@ -199,6 +226,45 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
       title: "Cancel dispatch", message: "This releases any equipment this dispatch reserved or moved. Continue?",
       confirmLabel: "Cancel dispatch", destructive: true, onConfirm: () => advance(d, "cancelled"),
     });
+  };
+
+  const ticketReady = selected && !selected.planning_only && nextStep(selected)?.next === DISPATCH_STATUS.completed &&
+    (selected.direction === "outbound"
+      ? ticketLines.length === selected.lines.length && ticketLines.every((line, index) => {
+          const qty = Number.parseInt(line.deliveredQty, 10);
+          return Number.isInteger(qty) && qty >= 0 && qty <= selected.lines[index].qty;
+        }) && ticketLines.some((line) => Number.parseInt(line.deliveredQty, 10) > 0)
+      : ticketLines.length === selected.lines.length && ticketLines.every((line) => line.pickupConfirmed));
+
+  const completeTicket = (dispatch: Dispatch) => {
+    if (!ticketReady) return;
+    const lines = dispatch.lines.map((line, lineIndex) => ({
+      line_index: lineIndex,
+      equipment_id: line.equipment_id,
+      ...(dispatch.direction === "outbound"
+        ? { delivered_qty: Number.parseInt(ticketLines[lineIndex].deliveredQty, 10) }
+        : { pickup_confirmed: ticketLines[lineIndex].pickupConfirmed }),
+    }));
+    const now = new Date().toISOString();
+    mutate<Dispatch>({
+      kind: "command",
+      entityType: "dispatches",
+      entityId: dispatch.id,
+      path: `/dispatches/${dispatch.id}/complete-ticket`,
+      method: "POST",
+      body: { lines },
+      optimisticPatch: {
+        status: DISPATCH_STATUS.completed,
+        completed_at: now,
+        lines: dispatch.lines.map((line, index) => ({
+          ...line,
+          ...(dispatch.direction === "outbound"
+            ? { delivered_qty: Number.parseInt(ticketLines[index].deliveredQty, 10) }
+            : { pickup_confirmed: true }),
+        })),
+      },
+    });
+    setSelected(null);
   };
 
   const confirmPlanAction = (d: Dispatch, action: PlanningAction) => {
@@ -286,19 +352,19 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const pickupEligibleRentals = useMemo(() => rentals.filter((r) => !isRentalReturned(r.status)), [rentals]);
 
   const counts = useMemo(() => ({
-    all: dispatches.filter(isLive).length,
-    outbound: dispatches.filter((d) => d.direction === "outbound" && isLive(d)).length,
-    inbound: dispatches.filter((d) => d.direction === "inbound" && isLive(d)).length,
+    all: dispatches.filter(visibleMovement).length,
+    outbound: dispatches.filter((d) => d.direction === "outbound" && visibleMovement(d)).length,
+    inbound: dispatches.filter((d) => d.direction === "inbound" && visibleMovement(d)).length,
     completed: dispatches.filter((d) => !isLive(d)).length,
   }), [dispatches]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     let rows = dispatches.filter((d) => {
-      if (tab === "outbound") return d.direction === "outbound" && isLive(d);
-      if (tab === "inbound") return d.direction === "inbound" && isLive(d);
+      if (tab === "outbound") return d.direction === "outbound" && visibleMovement(d);
+      if (tab === "inbound") return d.direction === "inbound" && visibleMovement(d);
       if (tab === "completed") return !isLive(d);
-      return isLive(d);
+      return visibleMovement(d);
     });
     if (query) {
       rows = rows.filter((d) =>
@@ -321,14 +387,14 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
       ) },
     ];
     if (width < 1280) {
-      return [...identity, { key: "status", label: "Status", width: 100, render: (d) => <StatusBadge label={d.status} /> }];
+      return [...identity, { key: "status", label: "Status", width: 160, render: (d) => <StatusBadge {...displayStatus(d)} /> }];
     }
     return [
       ...identity,
       { key: "equipment", label: "Equipment", flex: 1, render: (d) => <Text numberOfLines={1}>{equipmentSummary(d.lines, d.requirements)}</Text> },
       { key: "driver_name", label: "Driver", width: 110, render: (d) => d.driver_name || "—" },
       { key: "truck", label: "Truck", width: 90, render: (d) => d.truck || "—" },
-      { key: "status", label: "Status", width: 110, render: (d) => <StatusBadge label={d.status} /> },
+      { key: "status", label: "Status", width: 160, render: (d) => <StatusBadge {...displayStatus(d)} /> },
     ];
   }, [width]);
 
@@ -373,7 +439,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
                     <H3 style={{ marginTop: 4 }}>{d.customer_name}</H3>
                     <Text style={[typo.bodySmall, { marginTop: 2 }]}>{d.job_site || "—"}</Text>
                   </View>
-                  <StatusBadge label={d.status} />
+                  <StatusBadge {...displayStatus(d)} />
                 </Row>
                 <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>{equipmentSummary(d.lines, d.requirements)}</Text>
                 {d.driver_name ? <Text style={[typo.caption, { marginTop: 4 }]}>{d.planning_only ? "Owner" : "Driver"}: {d.driver_name}{d.truck ? ` · ${d.truck}` : ""}</Text> : null}
@@ -394,7 +460,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
         {selected ? (
           <View>
             <View style={styles.detailStatusRow}>
-              <StatusBadge label={selected.status} />
+              <StatusBadge {...displayStatus(selected)} />
               <DirectionTag direction={selected.direction} />
             </View>
             <DetailSection label="Job site">
@@ -419,12 +485,43 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
             ) : (
               <>
                 <DetailSection label={`Equipment (${selected.lines.length})`}>
-                  {selected.lines.map((l) => (
-                    <Row key={l.equipment_id} style={{ justifyContent: "space-between", paddingVertical: 4 }}>
+                  {selected.lines.map((l, lineIndex) => (
+                    <Row key={`${l.equipment_id}-${lineIndex}`} style={styles.ticketLine}>
                       <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.detailTitle} numberOfLines={1}>{l.name}</Text><Mono style={styles.detailSku}>{l.sku}</Mono></View>
-                      <Mono style={styles.detailAmount}>{l.qty}</Mono>
+                      <Mono style={styles.detailAmount}>{l.qty} planned</Mono>
+                      {nextStep(selected)?.next === DISPATCH_STATUS.completed && selected.direction === "outbound" ? (
+                        <View style={styles.quantityBox}>
+                          <Input
+                            label="Delivered qty"
+                            value={ticketLines[lineIndex]?.deliveredQty || ""}
+                            onChangeText={(value) => setTicketLines((lines) => lines.map((line, index) => index === lineIndex ? { ...line, deliveredQty: value.replace(/[^0-9]/g, "") } : line))}
+                            keyboardType="number-pad"
+                            mono
+                            testID={`delivery-qty-${lineIndex}`}
+                          />
+                        </View>
+                      ) : null}
+                      {nextStep(selected)?.next === DISPATCH_STATUS.completed && selected.direction === "inbound" ? (
+                        <TouchableOpacity
+                          onPress={() => setTicketLines((lines) => lines.map((line, index) => index === lineIndex ? { ...line, pickupConfirmed: !line.pickupConfirmed } : line))}
+                          style={styles.pickupCheck}
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: !!ticketLines[lineIndex]?.pickupConfirmed }}
+                          testID={`pickup-check-${lineIndex}`}
+                        >
+                          <Ionicons name={ticketLines[lineIndex]?.pickupConfirmed ? "checkbox" : "square-outline"} size={25} color={ticketLines[lineIndex]?.pickupConfirmed ? colors.success : colors.inkMuted} />
+                          <Text style={styles.pickupCheckText}>Picked up</Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </Row>
                   ))}
+                  {nextStep(selected)?.next === DISPATCH_STATUS.completed ? (
+                    <Text style={styles.ticketHelp}>
+                      {selected.direction === "outbound"
+                        ? "Enter the actual delivered quantity for every product. The ticket cannot complete with a blank line."
+                        : "Check every product loaded for return before completing the pickup ticket."}
+                    </Text>
+                  ) : null}
                 </DetailSection>
                 <DetailSection label="Assignment">
                   <Input
@@ -449,10 +546,15 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
             {selected.rental_id ? <DetailSection label="Linked rental"><Mono style={styles.detailText}>{selected.rental_id.slice(0, 12)}</Mono></DetailSection> : null}
             <View style={styles.drawerActions}>
               {canEdit && isLive(selected) && nextStep(selected) ? (
-                <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} testID="dispatch-advance-btn" />
+                nextStep(selected)!.next === DISPATCH_STATUS.completed
+                  ? <Button title={selected.direction === "outbound" ? "Complete Delivery Ticket" : "Complete Pickup Ticket"} onPress={() => completeTicket(selected)} disabled={!ticketReady} testID="dispatch-complete-ticket-btn" />
+                  : <Button title={nextStep(selected)!.label} onPress={() => advance(selected, nextStep(selected)!.next)} testID="dispatch-advance-btn" />
               ) : null}
-              {canEdit && isLive(selected) && selected.planning_only ? (
+              {canEdit && isLive(selected) && selected.planning_only && selected.status !== DISPATCH_STATUS.activeRental ? (
                 <Button title={planningAction(selected).label} onPress={() => confirmPlanAction(selected, planningAction(selected))} loading={busy} testID="planning-item-complete-btn" />
+              ) : null}
+              {canAdmin && isLive(selected) && selected.planning_only && selected.status === DISPATCH_STATUS.activeRental ? (
+                <Button title="Complete Rental" onPress={() => router.push("/(app)/operations/active" as any)} testID="planning-rental-complete-btn" />
               ) : null}
               {canEdit && isLive(selected) && selected.planning_only ? (
                 <Button title="Cancel Plan" onPress={() => cancelPlan(selected)} variant="danger" testID="planning-item-cancel-btn" />
@@ -619,7 +721,12 @@ const styles = StyleSheet.create({
   detailTitle: { ...typo.body, fontWeight: "700" },
   detailText: { ...typo.bodySmall, marginTop: 2 },
   detailSku: { fontSize: 10.5, color: colors.inkMuted },
-  detailAmount: { width: 50, textAlign: "right", fontSize: 12 },
+  detailAmount: { width: 72, textAlign: "right", fontSize: 12 },
+  ticketLine: { alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  quantityBox: { width: 122 },
+  pickupCheck: { width: 108, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 5 },
+  pickupCheckText: { fontSize: 11, fontWeight: "700", color: colors.inkSecondary },
+  ticketHelp: { ...typo.bodySmall, color: colors.inkMuted, marginTop: spacing.sm },
   planNotice: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.md, padding: spacing.sm, borderRadius: radii.md, backgroundColor: colors.primarySoft },
   planNoticeText: { ...typo.bodySmall, flex: 1, color: colors.info, fontWeight: "700" },
   requirementRow: { alignItems: "flex-start", gap: spacing.sm, paddingVertical: 5 },

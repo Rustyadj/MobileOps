@@ -18,7 +18,7 @@ import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type Equipment = {
   id: string; sku: string; qr_code?: string | null; name: string; category: string;
-  pending_inspection: number; available: number; in_maintenance: number;
+  location: string; pending_inspection: number; available: number; in_maintenance: number;
 };
 
 export default function InspectionsScreen() {
@@ -33,11 +33,12 @@ export default function InspectionsScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = equipment.find((e) => e.id === selectedId) || null;
   const [qty, setQty] = useState("");
+  const [yardLocation, setYardLocation] = useState("Yard");
   const [note, setNote] = useState("");
 
   const totalPending = useMemo(() => equipment.reduce((sum, e) => sum + e.pending_inspection, 0), [equipment]);
 
-  const openInspect = (item: Equipment) => { setSelectedId(item.id); setQty(String(item.pending_inspection)); setNote(""); };
+  const openInspect = (item: Equipment) => { setSelectedId(item.id); setQty(String(item.pending_inspection)); setYardLocation(item.location || "Yard"); setNote(""); };
 
   const submit = (outcome: "available" | "damaged") => {
     if (!selected) return;
@@ -52,11 +53,12 @@ export default function InspectionsScreen() {
       entityId: selected.id,
       path: `/equipment/${selected.id}/inspect`,
       method: "POST",
-      body: { qty: parsed, outcome, note },
+      body: { qty: parsed, outcome, yard_location: yardLocation.trim() || "Yard", note },
       optimisticPatch: {
         pending_inspection: selected.pending_inspection - parsed,
         available: outcome === "available" ? selected.available + parsed : selected.available,
         in_maintenance: outcome === "damaged" ? selected.in_maintenance + parsed : selected.in_maintenance,
+        location: outcome === "available" ? yardLocation.trim() || "Yard" : selected.location,
       },
     });
     setSelectedId(null);
@@ -92,10 +94,12 @@ export default function InspectionsScreen() {
         {selected ? (
           <View>
             <SectionLabel>Inspect units</SectionLabel>
-            <Input label={`Quantity (max ${selected.pending_inspection})`} value={qty} onChangeText={(v) => setQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="inspect-qty" />
+            <Text style={[typo.bodySmall, { marginBottom: spacing.md }]}>Count the returned units, inspect their condition, and record which yard receives them.</Text>
+            <Input label={`Counted quantity (max ${selected.pending_inspection})`} value={qty} onChangeText={(v) => setQty(v.replace(/[^0-9]/g, ""))} keyboardType="number-pad" mono testID="inspect-qty" />
+            <Input label="Yard location" value={yardLocation} onChangeText={setYardLocation} testID="inspect-yard-location" />
             <Input label="Note (optional)" value={note} onChangeText={setNote} testID="inspect-note" />
             <Row style={{ gap: spacing.sm, marginTop: spacing.md }}>
-              <View style={{ flex: 1 }}><Button title="Pass → Available" onPress={() => submit("available")} testID="inspect-pass" /></View>
+              <View style={{ flex: 1 }}><Button title="Complete → Available at Yard" onPress={() => submit("available")} testID="inspect-pass" /></View>
               <View style={{ flex: 1 }}><Button title="Damaged → Repair" onPress={() => submit("damaged")} variant="danger" testID="inspect-damaged" /></View>
             </Row>
           </View>
