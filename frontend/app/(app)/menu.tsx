@@ -11,7 +11,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
-  { label: "Tools", sub: "Bracing calculator, block calculator", route: "/(app)/tools", icon: "construct-outline", testID: "more-tools" },
+  { label: "Utilities", sub: "Delivery tickets, bracing, and calculators", route: "/(app)/tools", icon: "construct-outline", testID: "more-tools" },
   { label: "Vendors", sub: "ICF block supplier directory", route: "/(app)/vendors", icon: "business-outline", testID: "more-vendors" },
   { label: "Site Admin", sub: "Brand, logo, company contact", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];

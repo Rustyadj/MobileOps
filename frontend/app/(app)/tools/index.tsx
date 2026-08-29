@@ -9,6 +9,7 @@ import { Card } from "@/src/components/ui";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS = [
+  { label: "Create Ticket", sub: "Print or share a complete ticket for any delivery", route: "/(app)/tools/tickets", icon: "receipt-outline" as const, testID: "tools-create-ticket" },
   { label: "Bracing Engine", sub: "Strongbacks + braces by wall run", route: "/(app)/tools/bracing", icon: "construct-outline" as const, testID: "tools-bracing" },
   { label: "Calculator", sub: "ICF concrete, blocks, rebar, ft-in math", route: "/(app)/tools/calculator", icon: "calculator-outline" as const, testID: "tools-calculator" },
 ];
@@ -16,7 +17,7 @@ const ITEMS = [
 export default function ToolsIndex() {
   const router = useRouter();
   return (
-    <Screen title="Tools" subtitle="Bracing · Calculator" testID="tools-index-screen">
+    <Screen title="Utilities" subtitle="Delivery tickets · Bracing · Calculator" testID="tools-index-screen">
       {ITEMS.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

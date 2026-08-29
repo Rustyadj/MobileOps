@@ -63,6 +63,7 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "tools",
     label: "Utilities",
     items: [
+      { key: "create-ticket", label: "Create Ticket", route: "/(app)/tools/tickets", icon: "receipt-outline", testID: "nav-create-ticket" },
       { key: "calculator", label: "Calculator", route: "/(app)/tools/calculator", icon: "calculator-outline", testID: "nav-calculator" },
     ],
   },
