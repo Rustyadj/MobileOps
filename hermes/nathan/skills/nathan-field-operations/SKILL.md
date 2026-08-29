@@ -44,6 +44,8 @@ Choose the smallest useful set of read-only MobileOps calls:
 4. `dispatches_list` for unassigned, late, or incomplete deliveries and pickups.
 5. `maintenance_list` and `shop_tasks_list` for assets that are not field-ready.
 6. `equipment_get` when condition or identity of a specific asset matters.
+7. `rental_contact_actions` when checking delivery confirmations, delivery
+   updates, pickup confirmations, or overdue-return follow-ups.
 
 Do not query every dataset by habit. Scope calls to the job, date, location, or
 equipment involved. State the “as of” time when presenting changing status.
@@ -115,6 +117,20 @@ When asked for a morning or daily brief, produce:
 - **Next 48 hours:** risks worth resolving now.
 
 Keep routine green items compressed. Focus attention on exceptions and actions.
+
+## Customer Communication
+
+1. Read `rental_contact_actions` and resolve the exact rental, status trigger,
+   contact, preferred channel, and permission before recommending outreach.
+2. Never initiate outgoing contact when `contact_permission` is false. Flag the
+   rental for a human permission decision instead.
+3. Use the rental's delivery, return, and gate/access notes when drafting the
+   outreach; do not infer missing access details.
+4. After a human completes or approves an outreach action, attach the call,
+   text, or email to that rental with `rental_log_communication`, including the
+   action's `trigger_key` so it leaves the pending queue.
+5. Communication-log writes use the same two-call confirmation flow as every
+   other MobileOps mutation.
 
 ## Mutation Safety
 

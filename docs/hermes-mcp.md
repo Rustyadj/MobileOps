@@ -126,7 +126,7 @@ tokens, and replayed tokens are rejected and audited.
 | Area | Read tools | Mutating tools (confirmation required) | Scope(s) |
 |---|---|---|---|
 | Inventory/equipment | `inventory_search`, `inventory_capacity`, `inventory_transfers_list`, `equipment_get` | `inventory_transfer`, `inventory_receive_transfer`, `equipment_checkout`, `equipment_checkin`, `equipment_inspect_return` | `inventory:read/write`, `equipment:read/write` |
-| Rentals/returns | `rentals_list` | `rental_create`, `rental_return`, `rental_schedule_pickup` | `rentals:read/write` |
+| Rentals/returns | `rentals_list`, `rental_contact_actions` | `rental_create`, `rental_return`, `rental_schedule_pickup`, `rental_log_communication` | `rentals:read/write` |
 | Bookings | `bookings_list` | `booking_create`, `booking_set_status`, `booking_dispatch` | `bookings:read/write` |
 | Dispatch | `dispatches_list` | `dispatch_create`, `dispatch_assign`, `dispatch_set_status` | `dispatch:read/write` |
 | Maintenance | `maintenance_list` | `maintenance_create`, `maintenance_update` | `maintenance:read/write` |

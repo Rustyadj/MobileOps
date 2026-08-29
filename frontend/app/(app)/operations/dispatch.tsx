@@ -96,7 +96,9 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "completed", label: "Archive" },
 ];
 
-export default function DispatchScreen() {
+type DispatchScreenProps = { initialDirection?: Direction };
+
+export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const { isShellWide, width } = useBreakpoint();
   const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
@@ -110,13 +112,13 @@ export default function DispatchScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = dispatches.find((d) => d.id === selectedId) || null;
   const setSelected = (d: Dispatch | null) => setSelectedId(d?.id ?? null);
-  const [tab, setTab] = useState<Tab>("all");
+  const [tab, setTab] = useState<Tab>(initialDirection || "all");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [assignDraft, setAssignDraft] = useState<{ driver_name: string; truck: string; trailer: string; crew: string; scheduled_date: string } | null>(null);
 
   const [creating, setCreating] = useState(false);
-  const [newDirection, setNewDirection] = useState<Direction>("outbound");
+  const [newDirection, setNewDirection] = useState<Direction>(initialDirection || "outbound");
   const [outboundDraft, setOutboundDraft] = useState({ customer_name: "", job_site: "", scheduled_date: "" });
   const [outboundLines, setOutboundLines] = useState<DLine[]>([]);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
@@ -131,7 +133,7 @@ export default function DispatchScreen() {
   }, [params.open, dispatches.length]);
 
   const openNew = () => {
-    setNewDirection("outbound");
+    setNewDirection(initialDirection || "outbound");
     setOutboundDraft({ customer_name: "", job_site: "", scheduled_date: "" });
     setOutboundLines([]);
     setPickupRentalId("");
@@ -149,7 +151,7 @@ export default function DispatchScreen() {
       driver_name: selected.driver_name, truck: selected.truck, trailer: selected.trailer, crew: selected.crew,
       scheduled_date: selected.scheduled_date ? new Date(selected.scheduled_date).toISOString().slice(0, 16) : "",
     });
-  }, [selected?.id]);
+  }, [selected]);
 
   // Queues offline — this is the button a driver/crew taps standing at the
   // truck or job site. The optimistic patch only updates the dispatch's own
@@ -164,8 +166,10 @@ export default function DispatchScreen() {
       try {
         const updated = await api<Dispatch>(`/dispatches/${d.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
         dispatchesRes.onRefresh();
-        if (TERMINAL_DISPATCH_STATUSES.includes(updated.status)) setTab("completed");
-        else if (d.direction === "outbound" && updated.direction === "inbound") setTab("inbound");
+        if (!initialDirection) {
+          if (TERMINAL_DISPATCH_STATUSES.includes(updated.status)) setTab("completed");
+          else if (d.direction === "outbound" && updated.direction === "inbound") setTab("inbound");
+        }
       } catch (e: any) {
         Alert.alert("Update failed", e.message);
       } finally {
@@ -329,15 +333,16 @@ export default function DispatchScreen() {
   }, [width]);
 
   return (
-    <Screen title="Dispatch" subtitle={`${counts.outbound} outbound · ${counts.inbound} inbound scheduled`} back
+    <Screen title={initialDirection === "outbound" ? "Outbound" : initialDirection === "inbound" ? "Inbound" : "Dispatch"}
+      subtitle={initialDirection === "outbound" ? `${counts.outbound} scheduled, loading, or delivering` : initialDirection === "inbound" ? `${counts.inbound} pickups scheduled or returning` : `${counts.outbound} outbound · ${counts.inbound} inbound scheduled`} back
       rightAction={canEdit ? { icon: "add", onPress: openNew, testID: "new-dispatch-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="dispatch-screen" scroll={!isShellWide}>
 
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
-          <View style={styles.tabRow}>
+          {!initialDirection ? <View style={styles.tabRow}>
             <DispatchTabs tab={tab} counts={counts} onChange={setTab} />
-          </View>
+          </View> : null}
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job, driver, equipment…" testID="dispatch-search" style={{ flex: 1, maxWidth: 420 }} />
             {canEdit ? <Button title="New Dispatch" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" /> : null}
@@ -520,7 +525,7 @@ export default function DispatchScreen() {
           ) : (
             <>
               <SectionLabel>Rental to pick up from</SectionLabel>
-              <Text style={[typo.bodySmall, { marginBottom: spacing.sm }]}>Schedules a pickup for whatever's still outstanding on that rental.</Text>
+              <Text style={[typo.bodySmall, { marginBottom: spacing.sm }]}>Schedules a pickup for whatever is still outstanding on that rental.</Text>
               <View style={{ borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="pickup-rental-list">
                 {pickupEligibleRentals.map((r) => (
                   <TouchableOpacity key={r.id} onPress={() => setPickupRentalId(r.id)} style={[styles.eqRow, pickupRentalId === r.id && styles.eqRowSelected]} testID={`pickup-rental-${r.id}`}>
@@ -624,3 +629,5 @@ const styles = StyleSheet.create({
   qtyBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", alignItems: "center", justifyContent: "center", padding: 24 },
   qtyDialog: { backgroundColor: colors.bg, borderRadius: 8, padding: 20, width: "100%", maxWidth: 360 },
 });
+
+export default DispatchScreen;

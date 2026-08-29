@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone, date
@@ -492,10 +493,23 @@ class InventoryCount(BaseModel):
     counted_at: datetime = Field(default_factory=now_utc)
     reconciled_by: str = ""
     reconciled_at: Optional[datetime] = None
+    condition: str = ""
+    yard_location: str = ""
+    notes: str = ""
+    authoritative: bool = False
 
 
 class InventoryCountCreate(BaseModel):
     counted_qty: int
+
+
+class YardCountCreate(BaseModel):
+    equipment_id: Optional[str] = None
+    equipment_type: str
+    quantity: int = Field(ge=0)
+    condition: str = "good"
+    yard_location: str = "Yard"
+    notes: str = ""
 
 
 class ReconcileBody(BaseModel):
@@ -670,11 +684,36 @@ def resolve_delivered_qty(line: RentalLine) -> int:
     return line.delivered_qty if line.delivered_qty > 0 else line.qty
 
 
+class CommunicationLogEntry(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    channel: str  # call, text, email, in_person, other
+    direction: str = "outgoing"  # outgoing, incoming
+    summary: str
+    outcome: str = ""
+    trigger_key: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class CommunicationLogCreate(BaseModel):
+    channel: str
+    direction: str = "outgoing"
+    summary: str
+    outcome: str = ""
+    trigger_key: str = ""
+
+
 class Rental(BaseModel):
     id: str = Field(default_factory=gen_id)
     customer_name: str
     customer_phone: str = ""
     customer_email: str = ""
+    primary_contact: str = ""
+    preferred_contact_method: str = "call"
+    delivery_notes: str = ""
+    return_notes: str = ""
+    gate_access_instructions: str = ""
+    contact_permission: bool = False
     job_site: str = ""
     start_date: datetime
     due_date: Optional[datetime] = None  # legacy — kept optional for backward-compat with old records
@@ -693,6 +732,7 @@ class Rental(BaseModel):
     received_by: str = ""
     lat: Optional[float] = None
     lng: Optional[float] = None
+    communication_log: List[CommunicationLogEntry] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -700,8 +740,15 @@ class RentalCreate(BaseModel):
     customer_name: str
     customer_phone: str = ""
     customer_email: str = ""
+    primary_contact: str = ""
+    preferred_contact_method: str = "call"
+    delivery_notes: str = ""
+    return_notes: str = ""
+    gate_access_instructions: str = ""
+    contact_permission: bool = False
     job_site: str = ""
     start_date: datetime
+    due_date: Optional[datetime] = None
     deposit: float = 0.0
     notes: str = ""
     lines: List[RentalLine]
@@ -1742,6 +1789,163 @@ async def list_inventory_counts(_: UserPublic = Depends(get_current_user)):
     return [InventoryCount(**d) for d in docs]
 
 
+def _yard_count_category(equipment_type: str) -> str:
+    value = equipment_type.lower().replace("-", " ")
+    if "scaffold" in value:
+        return "crankup_scaffold"
+    if "shoring" in value or "shore post" in value:
+        return "shoring_post"
+    if "turnbuckle" in value or "turn buckle" in value:
+        return "turnbuckle"
+    if "walkboard" in value or "walk board" in value or "bracket" in value:
+        return "walkboard_bracket"
+    if "handrail" in value or "hand rail" in value:
+        return "hand_rail"
+    if "extension" in value:
+        return "tb_extension"
+    return "strongback"
+
+
+@api.post("/yard-counts", response_model=InventoryCount, status_code=201)
+async def create_authoritative_yard_count(
+    body: YardCountCreate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    """Set the physical count for one equipment type at one yard location.
+
+    Only the available-at-yard quantity is reconciled. Units reserved, staged,
+    moving, on rent, awaiting inspection, or in repair keep their existing
+    buckets. A newly observed type is added as owned stock; a shortfall moves
+    to ``missing`` rather than disappearing from ownership.
+    """
+    async def _run():
+        equipment_type = body.equipment_type.strip()
+        yard_location = body.yard_location.strip() or "Yard"
+        if not equipment_type:
+            raise HTTPException(400, "Equipment type is required")
+        if body.condition not in ("good", "fair", "poor", "broken"):
+            raise HTTPException(400, "Condition must be good, fair, poor, or broken")
+
+        eq = None
+        if body.equipment_id:
+            eq = await db.equipment.find_one({"id": body.equipment_id}, {"_id": 0})
+            if not eq:
+                raise HTTPException(404, "Equipment not found")
+        else:
+            eq = await db.equipment.find_one(
+                {"name": {"$regex": f"^{re.escape(equipment_type)}$", "$options": "i"}},
+                {"_id": 0},
+            )
+
+        async def _do(session):
+            if not eq:
+                slug = re.sub(r"[^A-Z0-9]+", "-", equipment_type.upper()).strip("-")[:18] or "BRACING"
+                created = Equipment(
+                    sku=f"YARD-{slug}-{gen_id()[:6].upper()}",
+                    name=equipment_type,
+                    category=_yard_count_category(equipment_type),
+                    condition=body.condition,
+                    location=yard_location,
+                    location_balances={yard_location: body.quantity} if body.quantity else {},
+                    quantity=body.quantity,
+                    available=body.quantity,
+                    tracking_type="bulk",
+                    notes=body.notes,
+                )
+                await db.equipment.insert_one(created.model_dump(), session=session)
+                if body.quantity:
+                    entry = LedgerEntry(
+                        equipment_id=created.id, qty=body.quantity,
+                        from_bucket="owned", to_bucket="available",
+                        reason="yard_count", location=yard_location,
+                        note=body.notes or "Initial authoritative yard count",
+                        created_by=user.name,
+                    )
+                    await db.ledger_entries.insert_one(entry.model_dump(), session=session)
+                count = InventoryCount(
+                    equipment_id=created.id, equipment_name=created.name,
+                    counted_qty=body.quantity, expected_qty=0, variance=body.quantity,
+                    status="reconciled", reason="Authoritative yard count",
+                    counted_by=user.name, reconciled_by=user.name, reconciled_at=now_utc(),
+                    condition=body.condition, yard_location=yard_location,
+                    notes=body.notes, authoritative=True,
+                )
+                await db.inventory_counts.insert_one(count.model_dump(), session=session)
+                return count
+
+            available = int(eq.get("available", 0))
+            balances = {key: int(value) for key, value in (eq.get("location_balances") or {}).items() if int(value) > 0}
+            tracked = sum(balances.values())
+            if tracked < available:
+                fallback = eq.get("location") or "Yard"
+                balances[fallback] = balances.get(fallback, 0) + (available - tracked)
+            elif tracked > available:
+                # Older rental/booking paths predate per-location balances and
+                # can leave their last yard split larger than the current
+                # available bucket. Normalize the stale split before applying
+                # this count; the available bucket remains the ledger truth.
+                excess = tracked - available
+                preferred = eq.get("location") or yard_location
+                keys = ([preferred] if preferred in balances else []) + [key for key in sorted(balances) if key != preferred]
+                for key in keys:
+                    reduction = min(excess, balances[key])
+                    balances[key] -= reduction
+                    excess -= reduction
+                    if excess == 0:
+                        break
+                balances = {key: value for key, value in balances.items() if value > 0}
+            previous_at_location = balances.get(yard_location, 0)
+            balances[yard_location] = body.quantity
+            balances = {key: value for key, value in balances.items() if value > 0}
+            target_available = available - previous_at_location + body.quantity
+            variance = target_available - available
+
+            if variance < 0:
+                await apply_ledger_entry(
+                    eq["id"], -variance, "available", "missing", "yard_count",
+                    location=yard_location, note=body.notes or "Physical count shortfall",
+                    created_by=user.name, session=session,
+                )
+            elif variance > 0:
+                recovered = min(variance, int(eq.get("missing", 0)))
+                if recovered:
+                    await apply_ledger_entry(
+                        eq["id"], recovered, "missing", "available", "yard_count_found",
+                        location=yard_location, note=body.notes or "Previously missing stock found",
+                        created_by=user.name, session=session,
+                    )
+                if variance > recovered:
+                    await apply_ledger_entry(
+                        eq["id"], variance - recovered, "owned", "available", "yard_count",
+                        location=yard_location, note=body.notes or "Physical count surplus",
+                        created_by=user.name, session=session,
+                    )
+
+            equipment_update: dict[str, Any] = {
+                "condition": body.condition,
+                "location": yard_location,
+                "location_balances": balances,
+            }
+            if body.notes:
+                equipment_update["notes"] = body.notes
+            await db.equipment.update_one({"id": eq["id"]}, {"$set": equipment_update}, session=session)
+            count = InventoryCount(
+                equipment_id=eq["id"], equipment_name=eq.get("name", equipment_type),
+                counted_qty=body.quantity, expected_qty=previous_at_location,
+                variance=body.quantity - previous_at_location,
+                status="reconciled", reason="Authoritative yard count",
+                counted_by=user.name, reconciled_by=user.name, reconciled_at=now_utc(),
+                condition=body.condition, yard_location=yard_location,
+                notes=body.notes, authoritative=True,
+            )
+            await db.inventory_counts.insert_one(count.model_dump(), session=session)
+            return count
+
+        return await run_in_transaction(_do)
+
+    return await idempotent(idempotency_key, "create_authoritative_yard_count", _run)
+
+
 @api.post("/inventory-counts/{count_id}/reconcile", response_model=InventoryCount)
 async def reconcile_inventory_count(
     count_id: str, body: ReconcileBody, user: UserPublic = Depends(require_role(Role.admin)),
@@ -2210,6 +2414,105 @@ async def list_rentals(user: UserPublic = Depends(get_current_user)):
     return [Rental(**redact_money_for_crew(d, user.role.value)) for d in docs]
 
 
+@api.get("/rental-contact-actions")
+async def list_rental_contact_actions(_: UserPublic = Depends(get_current_user)):
+    """Return status-driven customer follow-ups that have not been logged yet.
+
+    Nathan can poll this read-only queue. The queue does not send anything;
+    contact permission remains explicit and every completed call/text/email is
+    written back to the rental's communication log with its trigger key.
+    """
+    rentals = await db.rentals.find({}, {"_id": 0}).to_list(2000)
+    dispatches = await db.dispatches.find(
+        {"planning_only": {"$ne": True}, "rental_id": {"$type": "string"}}, {"_id": 0}
+    ).to_list(4000)
+    by_rental: dict[str, list[dict]] = {}
+    for dispatch in dispatches:
+        by_rental.setdefault(dispatch["rental_id"], []).append(dispatch)
+
+    actions: list[dict[str, Any]] = []
+    now = now_utc()
+    for doc in rentals:
+        logged = {entry.get("trigger_key") for entry in doc.get("communication_log", []) if entry.get("trigger_key")}
+        common = {
+            "rental_id": doc["id"],
+            "company_homeowner_name": doc.get("customer_name", ""),
+            "primary_contact": doc.get("primary_contact", ""),
+            "phone": doc.get("customer_phone", ""),
+            "email": doc.get("customer_email", ""),
+            "preferred_contact_method": doc.get("preferred_contact_method", "call"),
+            "contact_permission": bool(doc.get("contact_permission", False)),
+            "job_site": doc.get("job_site", ""),
+        }
+        linked = by_rental.get(doc["id"], [])
+        for dispatch in linked:
+            if dispatch.get("direction") == "outbound" and dispatch.get("status") == DispatchStatus.SCHEDULED:
+                trigger_key = f"outbound_scheduled:{dispatch['id']}"
+                if trigger_key not in logged:
+                    actions.append({**common, "event": "outbound_scheduled", "trigger_key": trigger_key, "dispatch_id": dispatch["id"], "suggested_action": "Confirm delivery details"})
+            if dispatch.get("direction") == "outbound" and dispatch.get("status") == DispatchStatus.COMPLETED:
+                trigger_key = f"delivery_complete:{dispatch['id']}"
+                if trigger_key not in logged:
+                    actions.append({**common, "event": "delivery_complete", "trigger_key": trigger_key, "dispatch_id": dispatch["id"], "suggested_action": "Send delivery receipt and update"})
+            if dispatch.get("direction") == "inbound" and dispatch.get("status") == DispatchStatus.SCHEDULED:
+                trigger_key = f"inbound_scheduled:{dispatch['id']}"
+                if trigger_key not in logged:
+                    actions.append({**common, "event": "inbound_scheduled", "trigger_key": trigger_key, "dispatch_id": dispatch["id"], "suggested_action": "Confirm pickup details"})
+
+        due = doc.get("due_date")
+        if isinstance(due, str):
+            try:
+                due = datetime.fromisoformat(due.replace("Z", "+00:00"))
+            except ValueError:
+                due = None
+        if isinstance(due, datetime):
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            trigger_key = f"return_overdue:{doc['id']}:{due.date().isoformat()}"
+            if doc.get("status") in RentalStatus.OPEN and due < now and trigger_key not in logged:
+                actions.append({**common, "event": "return_overdue", "trigger_key": trigger_key, "suggested_action": "Follow up about the overdue return"})
+    return {"items": actions, "count": len(actions)}
+
+
+@api.get("/rentals/{rental_id}/communications", response_model=List[CommunicationLogEntry])
+async def list_rental_communications(rental_id: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0, "communication_log": 1})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+    entries = [CommunicationLogEntry(**entry) for entry in doc.get("communication_log", [])]
+    return sorted(entries, key=lambda entry: entry.created_at, reverse=True)
+
+
+@api.post("/rentals/{rental_id}/communications", response_model=CommunicationLogEntry, status_code=201)
+async def create_rental_communication(
+    rental_id: str, body: CommunicationLogCreate,
+    user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        if body.channel not in ("call", "text", "email", "in_person", "other"):
+            raise HTTPException(400, "Unsupported communication channel")
+        if body.direction not in ("outgoing", "incoming"):
+            raise HTTPException(400, "Direction must be outgoing or incoming")
+        if not body.summary.strip():
+            raise HTTPException(400, "Communication summary is required")
+        rental = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+        if not rental:
+            raise HTTPException(404, "Rental not found")
+        if body.direction == "outgoing" and not rental.get("contact_permission", False):
+            raise HTTPException(409, "Outgoing contact is blocked until Contact Permission is enabled")
+        entry = CommunicationLogEntry(
+            **{**body.model_dump(), "summary": body.summary.strip()}, created_by=user.name
+        )
+        await db.rentals.update_one(
+            {"id": rental_id},
+            {"$push": {"communication_log": {"$each": [entry.model_dump()], "$position": 0}}},
+        )
+        return entry
+
+    return await idempotent(idempotency_key, "create_rental_communication", _run)
+
+
 @api.post("/rentals", response_model=Rental, status_code=201)
 async def create_rental(
     body: RentalCreate, user: UserPublic = Depends(require_role(Role.foreman)),
@@ -2382,10 +2685,11 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
         any_ret = any(l["returned_qty"] > 0 for l in upd["lines"])
         upd["status"] = RentalStatus.RETURNED if all_ret else (RentalStatus.PARTIALLY_RETURNED if any_ret else RentalStatus.ACTIVE)
 
-    # Preserve id, created_at, and legacy due_date.
+    # Preserve id, created_at, the communication log, and a legacy due date
+    # when an older edit client does not send one.
     upd["id"] = rental_id
     upd["created_at"] = doc.get("created_at", now_utc())
-    if "due_date" in doc and doc["due_date"] is not None:
+    if upd.get("due_date") is None and doc.get("due_date") is not None:
         upd["due_date"] = doc["due_date"]
     # RentalCreate.booking_id defaults to None on every edit payload from the
     # existing UI (it doesn't send this field) — a bare model_dump() would
@@ -2394,6 +2698,15 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     # passed a booking_id.
     if not upd.get("booking_id") and doc.get("booking_id"):
         upd["booking_id"] = doc["booking_id"]
+    # Older clients know only customer_name/phone/email/job_site. Do not erase
+    # the richer contact card merely because such a client edited equipment or
+    # notes on the rental.
+    for field in (
+        "primary_contact", "preferred_contact_method", "delivery_notes",
+        "return_notes", "gate_access_instructions", "contact_permission",
+    ):
+        if field not in body.model_fields_set and field in doc:
+            upd[field] = doc[field]
 
     await db.rentals.update_one({"id": rental_id}, {"$set": upd})
     new_doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})

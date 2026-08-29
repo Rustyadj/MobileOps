@@ -3,7 +3,7 @@
 // not buried inside Maintenance. Tasks link back to the equipment/rental/
 // booking that generated them and, for repair tasks, completing the task
 // moves the underlying units back to available in the inventory ledger.
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
@@ -49,6 +49,7 @@ const TYPES = [
   { key: "repair", label: "Repair" },
   { key: "staging", label: "Staging" },
   { key: "inspection", label: "Inspection" },
+  { key: "note", label: "Note" },
 ];
 const PRIORITIES = ["low", "normal", "high"];
 
@@ -64,7 +65,9 @@ const blank: Partial<ShopTask> = {
   related_rental_id: null, related_booking_id: null, related_equipment_id: null,
 };
 
-export default function ShopTasksScreen() {
+type ShopTasksScreenProps = { initialTaskType?: string; screenTitle?: string };
+
+export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }: ShopTasksScreenProps = {}) {
   const { isShellWide } = useBreakpoint();
   const { canEdit } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
@@ -77,7 +80,7 @@ export default function ShopTasksScreen() {
   const rentals = rentalsRes.data;
   const bookings = bookingsRes.data;
   const [status, setStatus] = useState("all");
-  const [taskType, setTaskType] = useState("all");
+  const [taskType, setTaskType] = useState(initialTaskType || "all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = tasks.find((t) => t.id === selectedId) || null;
@@ -86,6 +89,7 @@ export default function ShopTasksScreen() {
   const [deleting, setDeleting] = useState<ShopTask | null>(null);
   const [eqSearch, setEqSearch] = useState("");
   const [checklistDraft, setChecklistDraft] = useState("");
+  const newTask = () => setEditing({ ...blank, task_type: initialTaskType || "general" });
 
   const refreshing = tasksRes.refreshing || equipmentRes.refreshing || rentalsRes.refreshing || bookingsRes.refreshing;
   const onRefresh = () => { tasksRes.onRefresh(); equipmentRes.onRefresh(); rentalsRes.onRefresh(); bookingsRes.onRefresh(); };
@@ -95,7 +99,7 @@ export default function ShopTasksScreen() {
     setSelectedId(params.open);
   }, [params.open, tasks.length]);
   useEffect(() => {
-    if (params.new) setEditing({ ...blank });
+    if (params.new) newTask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.new]);
 
@@ -103,12 +107,12 @@ export default function ShopTasksScreen() {
   const rentalById = useMemo(() => Object.fromEntries(rentals.map((r) => [r.id, r])), [rentals]);
   const bookingById = useMemo(() => Object.fromEntries(bookings.map((b) => [b.id, b])), [bookings]);
 
-  const relatedLabel = (t: ShopTask) => {
+  const relatedLabel = useCallback((t: ShopTask) => {
     if (t.related_equipment_id && eqById[t.related_equipment_id]) return eqById[t.related_equipment_id].name;
     if (t.related_rental_id && rentalById[t.related_rental_id]) return `Rental — ${rentalById[t.related_rental_id].customer_name}`;
     if (t.related_booking_id && bookingById[t.related_booking_id]) return `Booking — ${bookingById[t.related_booking_id].customer_name}`;
     return "—";
-  };
+  }, [bookingById, eqById, rentalById]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -190,21 +194,21 @@ export default function ShopTasksScreen() {
     { key: "related", label: "Related", flex: 1, render: (t) => relatedLabel(t) },
     { key: "due_date", label: "Due", width: 84, render: (t) => shortDate(t.due_date) },
     { key: "status", label: "Status", width: 100, render: (t) => <StatusBadge label={pretty(t.status)} tone={statusTone(t.status)} /> },
-  ], [eqById, rentalById, bookingById]);
+  ], [relatedLabel]);
 
   return (
-    <Screen title="Shop Tasks" subtitle={`${tasks.filter((t) => t.status !== "done").length} open`} back
-      rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-task-btn" } : undefined}
+    <Screen title={screenTitle} subtitle={`${filtered.filter((t) => t.status !== "done").length} open`} back
+      rightAction={canEdit ? { icon: "add", onPress: newTask, testID: "add-task-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="shop-tasks-screen" scroll={!isShellWide}>
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search tasks, assignee…" testID="task-search" style={{ flex: 1, maxWidth: 360 }} />
-            {canEdit ? <Button title="New Task" onPress={() => setEditing({ ...blank })} fullWidth={false} style={styles.toolbarButton} testID="add-task-btn-toolbar" /> : null}
+            {canEdit ? <Button title={initialTaskType === "note" ? "New Note" : "New Task"} onPress={newTask} fullWidth={false} style={styles.toolbarButton} testID="add-task-btn-toolbar" /> : null}
           </PageToolbar>
           <View style={styles.filterStack}>
             <FilterChips options={STATUSES} value={status} onChange={setStatus} testIDPrefix="task-status" />
-            <FilterChips options={TYPES} value={taskType} onChange={setTaskType} testIDPrefix="task-type" />
+            {!initialTaskType ? <FilterChips options={TYPES} value={taskType} onChange={setTaskType} testIDPrefix="task-type" /> : null}
           </View>
           <View style={styles.tableWrap}>
             <DataTable columns={columns} rows={filtered} keyExtractor={(t) => t.id} rowTestID={(t) => `task-row-${t.id}`}
@@ -379,3 +383,5 @@ const styles = StyleSheet.create({
   eqRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
   eqRowActive: { backgroundColor: colors.primarySoft },
 });
+
+export default ShopTasksScreen;

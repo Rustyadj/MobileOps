@@ -614,6 +614,22 @@ class MobileOpsMCP:
             )
 
         @mcp.tool(
+            name="rental_contact_actions",
+            description="List unlogged status-driven customer follow-ups, including contact permission and preferred channel.",
+            annotations=READ_ONLY,
+        )
+        async def rental_contact_actions() -> dict[str, Any]:
+            return await self.invoke(
+                tool="rental_contact_actions",
+                parameters={},
+                required_scope="rentals:read",
+                action="read",
+                operation=lambda _p, _k: self.backend.list_rental_contact_actions(
+                    self._domain_user()
+                ),
+            )
+
+        @mcp.tool(
             name="bookings_list",
             description="List bookings and reservation state.",
             annotations=READ_ONLY,
@@ -930,9 +946,16 @@ class MobileOpsMCP:
             lines: list[dict[str, Any]],
             customer_phone: str = "",
             customer_email: str = "",
+            primary_contact: str = "",
+            preferred_contact_method: str = "call",
+            delivery_notes: str = "",
+            return_notes: str = "",
+            gate_access_instructions: str = "",
+            contact_permission: bool = False,
             job_site: str = "",
             deposit: float = 0.0,
             notes: str = "",
+            due_date: datetime | None = None,
             lat: float | None = None,
             lng: float | None = None,
             confirmation_token: str | None = None,
@@ -943,9 +966,16 @@ class MobileOpsMCP:
                 "lines": lines,
                 "customer_phone": customer_phone,
                 "customer_email": customer_email,
+                "primary_contact": primary_contact,
+                "preferred_contact_method": preferred_contact_method,
+                "delivery_notes": delivery_notes,
+                "return_notes": return_notes,
+                "gate_access_instructions": gate_access_instructions,
+                "contact_permission": contact_permission,
                 "job_site": job_site,
                 "deposit": deposit,
                 "notes": notes,
+                "due_date": due_date,
                 "lat": lat,
                 "lng": lng,
             }
@@ -1036,6 +1066,51 @@ class MobileOpsMCP:
                 operation=operation,
                 confirmation_token=confirmation_token,
                 confirmation_summary=f"Schedule pickup for rental {rental_id}.",
+            )
+
+        @mcp.tool(
+            name="rental_log_communication",
+            description="Attach a call, text, email, in-person update, or other communication to a rental. Requires explicit confirmation.",
+            annotations=MUTATING,
+        )
+        async def rental_log_communication(
+            rental_id: str,
+            channel: str,
+            summary: str,
+            direction: str = "outgoing",
+            outcome: str = "",
+            trigger_key: str = "",
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "rental_id": rental_id,
+                "channel": channel,
+                "summary": summary,
+                "direction": direction,
+                "outcome": outcome,
+                "trigger_key": trigger_key,
+            }
+
+            async def operation(_: AgentPrincipal, key: str | None) -> Any:
+                body = self.backend.CommunicationLogCreate(
+                    channel=channel,
+                    summary=summary,
+                    direction=direction,
+                    outcome=outcome,
+                    trigger_key=trigger_key,
+                )
+                return await self.backend.create_rental_communication(
+                    rental_id, body, self._domain_user(), key
+                )
+
+            return await self.invoke(
+                tool="rental_log_communication",
+                parameters=params,
+                required_scope="rentals:write",
+                action="write",
+                operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Log a {channel} communication on rental {rental_id}.",
             )
 
         @mcp.tool(

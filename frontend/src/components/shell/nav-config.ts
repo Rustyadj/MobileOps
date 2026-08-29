@@ -29,27 +29,24 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     key: "operations",
-    label: "Operations",
+    label: "Rentals",
     items: [
-      // Jobs (the unified Booking+Rental+Dispatch pipeline, at the section's
-      // own root route) is the primary destination here. Dispatch/Rentals/
-      // Bookings/Returns are demoted out of primary nav — their screens
-      // still exist and are still reachable by deep link (from Jobs' detail
-      // drawer and from the Dashboard), they're just not top-level nav items
-      // anymore. Map and Capacity stay as secondary, still-linked views.
-      { key: "jobs", label: "Jobs", route: "/(app)/operations", icon: "layers-outline", testID: "nav-jobs" },
-      { key: "map", label: "Map", route: "/(app)/operations/map", icon: "map-outline", testID: "nav-map" },
-      { key: "capacity", label: "Capacity", route: "/(app)/operations/capacity", icon: "bar-chart-outline", testID: "nav-capacity" },
+      { key: "outbound", label: "Outbound", route: "/(app)/operations/outbound", icon: "arrow-up-outline", testID: "nav-outbound" },
+      { key: "active-rentals", label: "Active", route: "/(app)/operations/active", icon: "location-outline", testID: "nav-active-rentals" },
+      { key: "inbound", label: "Inbound", route: "/(app)/operations/inbound", icon: "arrow-down-outline", testID: "nav-inbound" },
+      { key: "returns", label: "Returns", route: "/(app)/operations/returns", icon: "return-down-back-outline", testID: "nav-returns" },
+      { key: "rental-history", label: "History", route: "/(app)/operations/history", icon: "time-outline", testID: "nav-rental-history" },
     ],
   },
   {
     key: "inventory",
     label: "Inventory",
     items: [
-      { key: "equipment", label: "Equipment", route: "/(app)/inventory/equipment", icon: "cube-outline", testID: "nav-equipment" },
-      { key: "yard", label: "Yard Inventory", route: "/(app)/inventory/yard", icon: "business-outline", testID: "nav-yard" },
-      { key: "transfers", label: "Transfers", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline", testID: "nav-transfers" },
-      { key: "counts", label: "Inventory Counts", route: "/(app)/inventory/counts", icon: "clipboard-outline", testID: "nav-counts" },
+      { key: "bracing-inventory", label: "Bracing", route: "/(app)/inventory/bracing", icon: "construct-outline", testID: "nav-inventory-bracing" },
+      { key: "scaffolding-inventory", label: "Scaffolding", route: "/(app)/inventory/scaffolding", icon: "grid-outline", testID: "nav-inventory-scaffolding" },
+      { key: "tool-inventory", label: "Tools", route: "/(app)/inventory/tools", icon: "hammer-outline", testID: "nav-inventory-tools" },
+      { key: "damaged-inventory", label: "Damaged", route: "/(app)/inventory/damaged", icon: "warning-outline", testID: "nav-inventory-damaged" },
+      { key: "yard-count", label: "Yard Count", route: "/(app)/inventory/counts", icon: "clipboard-outline", testID: "nav-yard-count" },
     ],
   },
   {
@@ -57,16 +54,15 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Shop",
     items: [
       { key: "tasks", label: "Tasks", route: "/(app)/shop/tasks", icon: "checkbox-outline", testID: "nav-shop-tasks" },
-      { key: "staging", label: "Staging / Loadout", route: "/(app)/shop/staging", icon: "cube-outline", testID: "nav-staging" },
-      { key: "inspections", label: "Inspections", route: "/(app)/shop/inspections", icon: "search-outline", testID: "nav-inspections" },
-      { key: "maintenance", label: "Maintenance / Repairs", route: "/(app)/shop/maintenance", icon: "build-outline", testID: "nav-maintenance" },
+      { key: "staging", label: "Prep", route: "/(app)/shop/staging", icon: "cube-outline", testID: "nav-staging" },
+      { key: "maintenance", label: "Repairs", route: "/(app)/shop/maintenance", icon: "build-outline", testID: "nav-maintenance" },
+      { key: "shop-notes", label: "Notes", route: "/(app)/shop/notes", icon: "document-text-outline", testID: "nav-shop-notes" },
     ],
   },
   {
     key: "tools",
-    label: "Tools",
+    label: "Utilities",
     items: [
-      { key: "bracing", label: "Bracing", route: "/(app)/tools/bracing", icon: "construct-outline", testID: "nav-bracing" },
       { key: "calculator", label: "Calculator", route: "/(app)/tools/calculator", icon: "calculator-outline", testID: "nav-calculator" },
     ],
   },
@@ -89,12 +85,12 @@ export const NAV_SECTIONS: NavSection[] = [
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((s) => s.items);
 
 // Mobile bottom nav: 5 destinations max. Shop work is first-class, so it
-// gets its own tab instead of being buried under Menu. Operations/Inventory/
+// gets its own tab instead of being buried under Menu. Rentals/Inventory/
 // Shop land on their section overview; Menu exposes everything else (Tools,
 // Vendors, Admin, account).
 export const MOBILE_TABS: { key: string; label: string; route: string; icon: IconName; testID: string }[] = [
   { key: "home", label: "Home", route: "/(app)", icon: "grid-outline", testID: "tab-home" },
-  { key: "operations", label: "Operations", route: "/(app)/operations", icon: "speedometer-outline", testID: "tab-operations" },
+  { key: "rentals", label: "Rentals", route: "/(app)/operations/active", icon: "swap-horizontal-outline", testID: "tab-rentals" },
   { key: "inventory", label: "Inventory", route: "/(app)/inventory", icon: "cube-outline", testID: "tab-inventory" },
   { key: "shop", label: "Shop", route: "/(app)/shop", icon: "construct-outline", testID: "tab-shop" },
   { key: "menu", label: "Menu", route: "/(app)/menu", icon: "menu-outline", testID: "tab-menu" },

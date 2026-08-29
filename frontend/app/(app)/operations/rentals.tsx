@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { View, Text, StyleSheet, Modal, TouchableOpacity, Alert, Platform, Switch } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -20,7 +20,7 @@ import { usePermissions } from "@/src/hooks/use-permissions";
 import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
-import { RENTAL_STATUS, isDispatchLive, isRentalReturned } from "@/src/domain/status";
+import { RENTAL_STATUS, isDispatchLive, isRentalOpen, isRentalReturned } from "@/src/domain/status";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
 type Line = {
@@ -36,15 +36,23 @@ type Line = {
 };
 type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
+  primary_contact: string; preferred_contact_method: string;
+  delivery_notes: string; return_notes: string; gate_access_instructions: string;
+  contact_permission: boolean; communication_log: CommunicationEntry[];
   job_site: string; start_date: string; due_date?: string | null; deposit: number; notes: string;
   lines: Line[]; status: string; delivered_by: string; received_by: string;
   lat?: number | null; lng?: number | null;
+};
+type CommunicationEntry = {
+  id: string; channel: string; direction: string; summary: string; outcome: string;
+  trigger_key?: string; created_by: string; created_at: string;
 };
 type Site = { brand_name: string; tagline: string; logo_base64?: string; company_address: string; company_phone: string; company_email: string };
 type Dispatch = { id: string; direction: "outbound" | "inbound"; status: string; rental_id?: string | null; scheduled_date?: string | null; driver_name: string };
 type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "lines";
 type RentalDirection = "outbound" | "inbound";
 type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
+type RentalsView = "default" | "active" | "history";
 
 const STATUS_OPTIONS = [
   { key: "all", label: "All statuses" },
@@ -73,7 +81,9 @@ const lineLifecycle = (line: Line) => {
 const rentalUnits = (rental: Rental) => rental.lines.reduce((total, line) => total + lineLifecycle(line).onSite, 0);
 const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
 
-export default function RentalsScreen() {
+type RentalsScreenProps = { initialView?: RentalsView };
+
+export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = {}) {
   const { isShellWide, width } = useBreakpoint();
   const { canEdit, canAdmin } = usePermissions();
   const router = useRouter();
@@ -88,7 +98,7 @@ export default function RentalsScreen() {
   // phase-1 write flow — plain fetch, not cached.
   const [site, setSite] = useState<Site | null>(null);
   useEffect(() => { api<Site>("/site").then(setSite).catch((e) => console.warn(e)); }, []);
-  const [pickupBusy, setPickupBusy] = useState(false);
+  const [pickupBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
   const [pickerFor, setPickerFor] = useState<null | { mode: "draft" } | { mode: "existing"; id: string; initial?: { lat: number; lng: number } | null }>(null);
@@ -97,6 +107,7 @@ export default function RentalsScreen() {
   const [addressBusy, setAddressBusy] = useState(false);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
   const [returnPrompt, setReturnPrompt] = useState<ReturnPrompt | null>(null);
+  const [logDraft, setLogDraft] = useState<{ rentalId: string; channel: string; direction: string; summary: string; outcome: string } | null>(null);
   const [selectedRaw, setSelectedRaw] = useState<Rental | null>(null);
   const selected = selectedRaw ? rentals.find((r) => r.id === selectedRaw.id) || selectedRaw : null;
   const setSelected = setSelectedRaw;
@@ -108,8 +119,8 @@ export default function RentalsScreen() {
 
   useEffect(() => {
     if (!params.open || rentals.length === 0) return;
-    setSelected(rentals.find((rental) => rental.id === params.open) || null);
-  }, [params.open, rentals.length]);
+    setSelectedRaw(rentals.find((rental) => rental.id === params.open) || null);
+  }, [params.open, rentals]);
 
   const refreshing = rentalsRes.refreshing || equipmentRes.refreshing || dispatchesRes.refreshing;
   const onRefresh = () => { rentalsRes.onRefresh(); equipmentRes.onRefresh(); dispatchesRes.onRefresh(); };
@@ -171,20 +182,21 @@ export default function RentalsScreen() {
     setPickerFor(null);
   };
 
-  const newRental = () => {
+  const newRental = useCallback(() => {
     const now = new Date();
     setDraft({
       customer_name: "", customer_phone: "", customer_email: "", job_site: "",
-      start_date: now.toISOString(),
+      primary_contact: "", preferred_contact_method: "call", delivery_notes: "", return_notes: "",
+      gate_access_instructions: "", contact_permission: false,
+      start_date: now.toISOString(), due_date: "",
       deposit: 0, notes: "", lines: [],
     });
     setCreating(true);
-  };
+  }, []);
 
   useEffect(() => {
     if (params.new) newRental();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.new]);
+  }, [newRental, params.new]);
 
   const editRental = (r: Rental) => {
     setDraft({
@@ -192,8 +204,15 @@ export default function RentalsScreen() {
       customer_name: r.customer_name,
       customer_phone: r.customer_phone,
       customer_email: r.customer_email,
+      primary_contact: r.primary_contact || "",
+      preferred_contact_method: r.preferred_contact_method || "call",
+      delivery_notes: r.delivery_notes || "",
+      return_notes: r.return_notes || "",
+      gate_access_instructions: r.gate_access_instructions || "",
+      contact_permission: !!r.contact_permission,
       job_site: r.job_site,
       start_date: r.start_date,
+      due_date: r.due_date || "",
       deposit: r.deposit,
       notes: r.notes,
       lines: r.lines.map((l) => ({ ...l })),
@@ -255,8 +274,15 @@ export default function RentalsScreen() {
       customer_name: draft.customer_name,
       customer_phone: draft.customer_phone || "",
       customer_email: draft.customer_email || "",
+      primary_contact: draft.primary_contact || "",
+      preferred_contact_method: draft.preferred_contact_method || "call",
+      delivery_notes: draft.delivery_notes || "",
+      return_notes: draft.return_notes || "",
+      gate_access_instructions: draft.gate_access_instructions || "",
+      contact_permission: !!draft.contact_permission,
       job_site: draft.job_site || "",
       start_date: draft.start_date,
+      due_date: draft.due_date ? new Date(draft.due_date).toISOString() : null,
       deposit: Number(draft.deposit) || 0,
       notes: draft.notes || "",
       lines: draft.lines.map((l: Line) => ({
@@ -283,7 +309,11 @@ export default function RentalsScreen() {
         optimisticDoc: (tempId) => ({
           id: tempId,
           customer_name: body.customer_name, customer_phone: body.customer_phone, customer_email: body.customer_email,
-          job_site: body.job_site, start_date: body.start_date, due_date: null, deposit: body.deposit, notes: body.notes,
+          primary_contact: body.primary_contact, preferred_contact_method: body.preferred_contact_method,
+          delivery_notes: body.delivery_notes, return_notes: body.return_notes,
+          gate_access_instructions: body.gate_access_instructions, contact_permission: body.contact_permission,
+          communication_log: [], job_site: body.job_site, start_date: body.start_date, due_date: body.due_date,
+          deposit: body.deposit, notes: body.notes,
           lines: body.lines, status: RENTAL_STATUS.active, delivered_by: "", received_by: "",
           lat: body.lat, lng: body.lng,
         }),
@@ -295,6 +325,28 @@ export default function RentalsScreen() {
   const del = async (id: string) => {
     try { await api(`/rentals/${id}`, { method: "DELETE" }); rentalsRes.onRefresh(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
+  };
+
+  const saveCommunication = async () => {
+    if (!logDraft?.summary.trim()) {
+      Alert.alert("Summary required", "Add a short note about the call, text, or email.");
+      return;
+    }
+    try {
+      await api(`/rentals/${logDraft.rentalId}/communications`, {
+        method: "POST",
+        body: JSON.stringify({
+          channel: logDraft.channel,
+          direction: logDraft.direction,
+          summary: logDraft.summary.trim(),
+          outcome: logDraft.outcome.trim(),
+        }),
+      });
+      rentalsRes.onRefresh();
+      setLogDraft(null);
+    } catch (e: any) {
+      Alert.alert("Log failed", e.message);
+    }
   };
 
   const pickupFor = (rentalId: string) => dispatches.find(
@@ -435,10 +487,14 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
   }), [rentals]);
 
   const directionRentals = useMemo(
-    () => rentals.filter((rental) => direction === "inbound"
-      ? HAS_ANY_RETURN_STATUSES.includes(rental.status)
-      : !HAS_ANY_RETURN_STATUSES.includes(rental.status)),
-    [direction, rentals],
+    () => initialView === "active"
+      ? rentals.filter((rental) => isRentalOpen(rental.status))
+      : initialView === "history"
+        ? rentals.filter((rental) => isRentalReturned(rental.status))
+        : rentals.filter((rental) => direction === "inbound"
+          ? HAS_ANY_RETURN_STATUSES.includes(rental.status)
+          : !HAS_ANY_RETURN_STATUSES.includes(rental.status)),
+    [direction, initialView, rentals],
   );
 
   const filteredRentals = useMemo(() => {
@@ -497,13 +553,14 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
   };
 
   return (
-    <Screen title="Rentals" subtitle={`${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
+    <Screen title={initialView === "active" ? "Active Rentals" : initialView === "history" ? "Rental History" : "Rentals"}
+      subtitle={initialView === "active" ? `${directionRentals.length} jobs currently holding equipment` : initialView === "history" ? `${directionRentals.length} completed rentals` : `${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
       rightAction={canEdit ? { icon: "add", onPress: newRental, testID: "new-rental-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
-          <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} desktop />
+          {initialView === "default" ? <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} desktop /> : null}
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search rental, customer, site, equipment…" testID="rentals-search" style={{ flex: 1, maxWidth: 420 }} />
             {canEdit ? <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" /> : null}
@@ -529,9 +586,9 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
         </View>
       ) : (
         <>
-          <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} />
+          {initialView === "default" ? <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} /> : null}
           {directionRentals.length === 0 ? (
-            <Card><Text style={[typo.body, { color: colors.inkMuted }]}>No {direction} rentals.</Text></Card>
+            <Card><Text style={[typo.body, { color: colors.inkMuted }]}>{initialView === "active" ? "No equipment is currently on customer jobs." : initialView === "history" ? "No completed rentals yet." : `No ${direction} rentals.`}</Text></Card>
           ) : directionRentals.map((r) => {
         const totalQty = r.lines.reduce((s, l) => s + l.qty, 0);
         const returnedQty = r.lines.reduce((s, l) => s + l.returned_qty, 0);
@@ -587,6 +644,16 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 busy={pickupBusy}
               />
             </View>
+            <View style={styles.mobileContactCard} testID={`rental-contact-${r.id}`}>
+              <Text style={styles.detailLabel}>Customer / Job Contact</Text>
+              <Text style={styles.detailTitle}>{r.primary_contact || r.customer_name}</Text>
+              <Text style={styles.detailText}>{r.customer_phone || "No phone"}{r.customer_email ? ` · ${r.customer_email}` : ""}</Text>
+              <Text style={styles.detailText}>{r.preferred_contact_method || "call"} preferred · {r.contact_permission ? "Contact allowed" : "Permission not granted"}</Text>
+              {r.gate_access_instructions ? <Text style={styles.detailText}>Access: {r.gate_access_instructions}</Text> : null}
+              <Text style={[styles.detailLabel, { marginTop: spacing.sm }]}>Communication Log ({r.communication_log?.length || 0})</Text>
+              {(r.communication_log || []).slice(0, 2).map((entry) => <CommunicationRow key={entry.id} entry={entry} />)}
+              {canEdit ? <Button title="Log Communication" onPress={() => setLogDraft({ rentalId: r.id, channel: "call", direction: r.contact_permission ? "outgoing" : "incoming", summary: "", outcome: "" })} variant="outline" testID={`log-communication-${r.id}`} style={{ marginTop: spacing.sm }} /> : null}
+            </View>
             {canEdit ? (
               <Row style={{ marginTop: spacing.sm, gap: spacing.sm }}>
                 <View style={{ flex: 1 }}>
@@ -627,14 +694,16 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               <StatusBadge label={selected.status} />
               <Text style={styles.detailMuted}>{rentalUnits(selected)} units currently deployed</Text>
             </View>
-            <DetailSection label="Customer">
+            <DetailSection label="Customer / Job Contact">
               <Text style={styles.detailTitle}>{selected.customer_name}</Text>
-              <Text style={styles.detailText}>{selected.customer_phone || "No phone"}</Text>
-              <Text style={styles.detailText}>{selected.customer_email || "No email"}</Text>
-            </DetailSection>
-            <DetailSection label="Job site">
+              <Text style={styles.detailText}>Primary contact: {selected.primary_contact || "Not set"}</Text>
+              <Text style={styles.detailText}>{selected.customer_phone || "No phone"} · {selected.customer_email || "No email"}</Text>
+              <Text style={styles.detailText}>Preferred: {selected.preferred_contact_method || "call"} · {selected.contact_permission ? "Contact permission granted" : "Contact permission not granted"}</Text>
               <Text style={styles.detailTitle}>{selected.job_site || "No job site"}</Text>
               <Text style={styles.detailText}>{selected.lat != null && selected.lng != null ? `${selected.lat.toFixed(5)}, ${selected.lng.toFixed(5)}` : "Location not mapped"}</Text>
+              {selected.gate_access_instructions ? <Text style={styles.detailText}>Gate / access: {selected.gate_access_instructions}</Text> : null}
+              {selected.delivery_notes ? <Text style={styles.detailText}>Delivery: {selected.delivery_notes}</Text> : null}
+              {selected.return_notes ? <Text style={styles.detailText}>Return: {selected.return_notes}</Text> : null}
             </DetailSection>
             <View style={styles.detailPair}>
               <DetailMetric label="Start" value={shortDate(selected.start_date)} />
@@ -659,6 +728,10 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               ))}
             </DetailSection>
             {selected.notes ? <DetailSection label="Notes"><Text style={styles.detailText}>{selected.notes}</Text></DetailSection> : null}
+            <DetailSection label={`Communication Log (${selected.communication_log?.length || 0})`}>
+              {(selected.communication_log || []).length ? (selected.communication_log || []).map((entry) => <CommunicationRow key={entry.id} entry={entry} />) : <Text style={styles.detailText}>No calls, texts, or emails logged yet.</Text>}
+              {canEdit ? <Button title="Log Communication" onPress={() => setLogDraft({ rentalId: selected.id, channel: "call", direction: selected.contact_permission ? "outgoing" : "incoming", summary: "", outcome: "" })} variant="outline" testID={`log-communication-${selected.id}`} style={{ marginTop: spacing.sm }} /> : null}
+            </DetailSection>
             <DetailSection label="Pickup">
               <PickupStatus
                 dispatch={pickupFor(selected.id)}
@@ -682,12 +755,27 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen title={draft?.id ? "Edit Rental" : "New Rental"} back rightAction={{ icon: "close", onPress: () => { setCreating(false); setDraft(null); }, testID: "close-new-rental" }}>
-          <Input label="Customer Name" value={draft?.customer_name || ""} onChangeText={(t) => setDraft({ ...draft, customer_name: t })} testID="cust-name" />
+          <SectionLabel>Customer / Job Contact</SectionLabel>
+          <Input label="Company / Homeowner Name" value={draft?.customer_name || ""} onChangeText={(t) => setDraft({ ...draft, customer_name: t })} testID="cust-name" />
+          <Input label="Primary Contact" value={draft?.primary_contact || ""} onChangeText={(t) => setDraft({ ...draft, primary_contact: t })} testID="primary-contact" />
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input label="Phone" value={draft?.customer_phone || ""} onChangeText={(t) => setDraft({ ...draft, customer_phone: t })} keyboardType="phone-pad" mono testID="cust-phone" /></View>
             <View style={{ flex: 1 }}><Input label="Email" value={draft?.customer_email || ""} onChangeText={(t) => setDraft({ ...draft, customer_email: t })} keyboardType="email-address" autoCapitalize="none" testID="cust-email" /></View>
           </Row>
-          <Input label="Job Site" value={draft?.job_site || ""} onChangeText={(t) => setDraft({ ...draft, job_site: t })} testID="cust-site" />
+          <Input label="Jobsite Address" value={draft?.job_site || ""} onChangeText={(t) => setDraft({ ...draft, job_site: t })} testID="cust-site" />
+          <SectionLabel>Preferred Contact Method</SectionLabel>
+          <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+            {(["call", "text", "email"] as const).map((method) => <TouchableOpacity key={method} onPress={() => setDraft({ ...draft, preferred_contact_method: method })} style={[styles.contactMethod, draft?.preferred_contact_method === method && styles.contactMethodActive]} testID={`contact-method-${method}`}><Text style={[styles.contactMethodText, draft?.preferred_contact_method === method && styles.contactMethodTextActive]}>{method[0].toUpperCase() + method.slice(1)}</Text></TouchableOpacity>)}
+          </Row>
+          <View style={styles.permissionRow}>
+            <View style={{ flex: 1 }}><Text style={styles.detailTitle}>Contact Permission</Text><Text style={styles.detailText}>Allow delivery, pickup, receipt, and overdue follow-ups.</Text></View>
+            <Switch value={!!draft?.contact_permission} onValueChange={(contact_permission) => setDraft({ ...draft, contact_permission })} testID="contact-permission" />
+          </View>
+          <Input label="Delivery Notes" value={draft?.delivery_notes || ""} onChangeText={(t) => setDraft({ ...draft, delivery_notes: t })} multiline testID="delivery-notes" />
+          <Input label="Return Notes" value={draft?.return_notes || ""} onChangeText={(t) => setDraft({ ...draft, return_notes: t })} multiline testID="return-notes" />
+          <Input label="Gate / Access Instructions" value={draft?.gate_access_instructions || ""} onChangeText={(t) => setDraft({ ...draft, gate_access_instructions: t })} multiline testID="gate-access-instructions" />
+
+          <SectionLabel>Rental Schedule</SectionLabel>
           <Input
             label="Start date (yyyy-mm-dd)"
             value={draft?.start_date?.slice(0, 10) || ""}
@@ -699,6 +787,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             autoCapitalize="none"
             testID="start-date"
           />
+          <Input label="Due date (yyyy-mm-dd)" value={draft?.due_date?.slice(0, 10) || ""} onChangeText={(due_date) => setDraft({ ...draft, due_date })} mono autoCapitalize="none" testID="due-date" />
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(t) => setDraft({ ...draft, notes: t })} testID="notes" />
 
           <SectionLabel>Job site location</SectionLabel>
@@ -791,6 +880,22 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           </View>
 
           <Button title={draft?.id ? "Save Changes" : "Save Rental"} onPress={save} testID="save-rental-btn" />
+        </Screen>
+      </Modal>
+
+      <Modal visible={!!logDraft} animationType="slide" onRequestClose={() => setLogDraft(null)}>
+        <Screen title="Log Communication" subtitle={logDraft ? rentals.find((r) => r.id === logDraft.rentalId)?.customer_name : undefined} back rightAction={{ icon: "close", onPress: () => setLogDraft(null), testID: "close-communication-log" }} testID="communication-log-screen">
+          <SectionLabel>Channel</SectionLabel>
+          <Row style={{ gap: spacing.sm, flexWrap: "wrap", marginBottom: spacing.md }}>
+            {(["call", "text", "email", "in_person", "other"] as const).map((channel) => <TouchableOpacity key={channel} onPress={() => setLogDraft((draft) => draft ? { ...draft, channel } : draft)} style={[styles.contactMethod, logDraft?.channel === channel && styles.contactMethodActive]} testID={`communication-channel-${channel}`}><Text style={[styles.contactMethodText, logDraft?.channel === channel && styles.contactMethodTextActive]}>{channel.replace("_", " ")}</Text></TouchableOpacity>)}
+          </Row>
+          <SectionLabel>Direction</SectionLabel>
+          <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+            {(["outgoing", "incoming"] as const).map((directionValue) => <TouchableOpacity key={directionValue} onPress={() => setLogDraft((draft) => draft ? { ...draft, direction: directionValue } : draft)} style={[styles.contactMethod, logDraft?.direction === directionValue && styles.contactMethodActive]} testID={`communication-direction-${directionValue}`}><Text style={[styles.contactMethodText, logDraft?.direction === directionValue && styles.contactMethodTextActive]}>{directionValue}</Text></TouchableOpacity>)}
+          </Row>
+          <Input label="Summary" value={logDraft?.summary || ""} onChangeText={(summary) => setLogDraft((draft) => draft ? { ...draft, summary } : draft)} multiline placeholder="What was discussed or sent?" testID="communication-summary" />
+          <Input label="Outcome / Next Step" value={logDraft?.outcome || ""} onChangeText={(outcome) => setLogDraft((draft) => draft ? { ...draft, outcome } : draft)} multiline placeholder="Confirmed, left voicemail, follow up Friday…" testID="communication-outcome" />
+          <Button title="Save to Rental Log" onPress={saveCommunication} testID="save-communication" />
         </Screen>
       </Modal>
 
@@ -909,6 +1014,17 @@ const DetailMetric: React.FC<{ label: string; value: string }> = ({ label, value
   <View style={styles.detailMetric}><Text style={styles.detailLabel}>{label}</Text><Mono style={styles.detailMetricValue}>{value}</Mono></View>
 );
 
+const CommunicationRow: React.FC<{ entry: CommunicationEntry }> = ({ entry }) => (
+  <View style={styles.communicationRow}>
+    <View style={{ flex: 1, minWidth: 0 }}>
+      <Text style={styles.detailTitle}>{entry.channel.replace("_", " ")} · {entry.direction}</Text>
+      <Text style={styles.detailText}>{entry.summary}</Text>
+      {entry.outcome ? <Text style={styles.detailText}>Outcome: {entry.outcome}</Text> : null}
+    </View>
+    <Text style={styles.communicationDate}>{shortDate(entry.created_at)}</Text>
+  </View>
+);
+
 const PickupStatus: React.FC<{
   dispatch?: Dispatch;
   rentalReturned: boolean;
@@ -1009,4 +1125,14 @@ const styles = StyleSheet.create({
   detailAmount: { width: 74, textAlign: "right", fontSize: 12 },
   drawerActions: { paddingTop: spacing.lg, gap: spacing.sm },
   drawerActionRow: { flexDirection: "row", gap: spacing.sm },
+  mobileContactCard: { marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border },
+  communicationRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  communicationDate: { ...typo.caption, textTransform: "none", letterSpacing: 0, color: colors.inkMuted },
+  contactMethod: { minHeight: 36, paddingHorizontal: 14, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  contactMethodActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  contactMethodText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary, textTransform: "capitalize" },
+  contactMethodTextActive: { color: colors.primary },
+  permissionRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, marginBottom: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.bgMuted },
 });
+
+export default RentalsScreen;

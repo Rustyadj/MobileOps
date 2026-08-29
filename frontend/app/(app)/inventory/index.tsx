@@ -12,8 +12,10 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 export default function InventoryIndex() {
   const router = useRouter();
-  const [equipCount, setEquipCount] = useState<number | null>(null);
-  const [locationCount, setLocationCount] = useState<number | null>(null);
+  const [bracingCount, setBracingCount] = useState<number | null>(null);
+  const [scaffoldingCount, setScaffoldingCount] = useState<number | null>(null);
+  const [toolCount, setToolCount] = useState<number | null>(null);
+  const [damagedCount, setDamagedCount] = useState<number | null>(null);
   const [pendingCounts, setPendingCounts] = useState<number | null>(null);
   const [loadError, setLoadError] = useState(false);
 
@@ -23,8 +25,12 @@ export default function InventoryIndex() {
         api<any[]>("/equipment"),
         api<{ status: string }[]>("/inventory-counts"),
       ]);
-      setEquipCount(equipment.length);
-      setLocationCount(new Set(equipment.map((e) => e.location).filter(Boolean)).size);
+      const scaffoldCategories = new Set(["crankup_scaffold", "shoring_post"]);
+      const bracingCategories = new Set(["strongback", "turnbuckle", "walkboard_bracket", "hand_rail", "tb_extension"]);
+      setBracingCount(equipment.filter((item) => bracingCategories.has(item.category)).reduce((sum, item) => sum + (item.available || 0), 0));
+      setScaffoldingCount(equipment.filter((item) => scaffoldCategories.has(item.category)).reduce((sum, item) => sum + (item.available || 0), 0));
+      setToolCount(equipment.filter((item) => item.category === "tool").length);
+      setDamagedCount(equipment.filter((item) => (item.in_maintenance || 0) > 0 || ["poor", "broken", "damaged"].includes(item.condition)).length);
       setPendingCounts(counts.filter((count) => count.status === "pending").length);
       setLoadError(false);
     } catch {
@@ -34,14 +40,15 @@ export default function InventoryIndex() {
   useEffect(() => { load(); }, [load]);
 
   const items = [
-    { label: "Equipment", sub: `${equipCount ?? "—"} assets tracked`, route: "/(app)/inventory/equipment", icon: "cube-outline" as const, testID: "inventory-equipment" },
-    { label: "Yard Inventory", sub: `${locationCount ?? "—"} yard locations`, route: "/(app)/inventory/yard", icon: "business-outline" as const, testID: "inventory-yard" },
-    { label: "Transfers", sub: "Move stock between yards", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline" as const, testID: "inventory-transfers" },
-    { label: "Inventory Counts", sub: `${pendingCounts ?? "—"} physical counts pending`, route: "/(app)/inventory/counts", icon: "clipboard-outline" as const, testID: "inventory-counts" },
+    { label: "Bracing", sub: `${bracingCount ?? "—"} units physically available`, route: "/(app)/inventory/bracing", icon: "construct-outline" as const, testID: "inventory-bracing" },
+    { label: "Scaffolding", sub: `${scaffoldingCount ?? "—"} units physically available`, route: "/(app)/inventory/scaffolding", icon: "grid-outline" as const, testID: "inventory-scaffolding" },
+    { label: "Tools", sub: `${toolCount ?? "—"} tools tracked`, route: "/(app)/inventory/tools", icon: "hammer-outline" as const, testID: "inventory-tools" },
+    { label: "Damaged", sub: `${damagedCount ?? "—"} types need attention`, route: "/(app)/inventory/damaged", icon: "warning-outline" as const, testID: "inventory-damaged" },
+    { label: "Yard Count", sub: `${pendingCounts ?? "—"} variances awaiting review`, route: "/(app)/inventory/counts", icon: "clipboard-outline" as const, testID: "inventory-yard-count" },
   ];
 
   return (
-    <Screen title="Inventory" subtitle="Equipment · Yard · Transfers · Counts" onRefresh={load} testID="inventory-index-screen">
+    <Screen title="Inventory" subtitle="Bracing · Scaffolding · Tools · Damaged · Yard Count" onRefresh={load} testID="inventory-index-screen">
       {loadError ? <ErrorState message="Couldn't load inventory counts." onRetry={load} testID="inventory-index-error" /> : null}
       {items.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>

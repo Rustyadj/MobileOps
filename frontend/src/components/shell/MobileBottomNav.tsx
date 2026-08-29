@@ -1,4 +1,4 @@
-// Reorganized 5-item bottom nav for phones: Home / Operations / Inventory /
+// Reorganized 5-item bottom nav for phones: Home / Rentals / Inventory /
 // Shop / Menu. Secondary destinations (Tools, Vendors, Site Admin, account)
 // live behind Menu instead of crowding the bar.
 import React from "react";
@@ -11,7 +11,7 @@ import { MOBILE_TABS, activeSectionForPath } from "./nav-config";
 
 const TAB_TO_SECTION: Record<string, string> = {
   home: "overview",
-  operations: "operations",
+  rentals: "operations",
   inventory: "inventory",
   shop: "shop",
   menu: "menu",

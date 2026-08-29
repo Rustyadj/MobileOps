@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
 import { Button, Card, Input, Mono, SectionLabel, Row } from "@/src/components/ui";
@@ -14,9 +14,10 @@ import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 import { usePermissions } from "@/src/hooks/use-permissions";
 import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
+import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
-type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; available: number };
+type Equipment = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; available: number; condition?: string; location?: string; notes?: string };
 type InventoryCount = {
   id: string;
   equipment_id: string;
@@ -30,6 +31,10 @@ type InventoryCount = {
   counted_at: string;
   reconciled_by?: string | null;
   reconciled_at?: string | null;
+  condition?: string;
+  yard_location?: string;
+  notes?: string;
+  authoritative?: boolean;
 };
 
 const messageFor = (error: unknown) => error instanceof Error ? error.message : "Unexpected error";
@@ -52,6 +57,9 @@ export default function InventoryCountsScreen() {
   const selectedCount = counts.find((c) => c.id === selectedCountId) || null;
   const [reason, setReason] = useState("");
   const [reconciling, setReconciling] = useState(false);
+  const [addingBracing, setAddingBracing] = useState(false);
+  const [yardDraft, setYardDraft] = useState({ equipment_id: "", equipment_type: "", quantity: "", condition: "good", yard_location: "Yard", notes: "" });
+  const [yardSaving, setYardSaving] = useState(false);
 
   const refreshing = equipmentRes.refreshing || countsRes.refreshing;
   const onRefresh = () => { equipmentRes.onRefresh(); countsRes.onRefresh(); };
@@ -68,6 +76,39 @@ export default function InventoryCountsScreen() {
     return equipment.filter((item) => `${item.qr_code || ""} ${item.name}`.toLowerCase().includes(query)).slice(0, 8);
   }, [equipment, equipmentSearch]);
   const pendingCounts = useMemo(() => counts.filter((count) => count.status === "pending"), [counts]);
+  const yardEquipment = useMemo(() => equipment.filter((item) => item.available > 0).sort((a, b) => a.name.localeCompare(b.name)), [equipment]);
+  const bracingMatches = useMemo(() => {
+    const query = yardDraft.equipment_type.trim().toLowerCase();
+    if (!query) return equipment.slice(0, 8);
+    return equipment.filter((item) => `${item.name} ${item.category || ""}`.toLowerCase().includes(query)).slice(0, 8);
+  }, [equipment, yardDraft.equipment_type]);
+
+  const saveYardCount = async () => {
+    const quantity = Number.parseInt(yardDraft.quantity, 10);
+    if (!yardDraft.equipment_type.trim()) {
+      Alert.alert("Type required", "Enter the bracing or scaffolding type you counted.");
+      return;
+    }
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      Alert.alert("Invalid quantity", "Enter a whole number of zero or more.");
+      return;
+    }
+    setYardSaving(true);
+    try {
+      await api<InventoryCount>("/yard-counts", {
+        method: "POST",
+        body: JSON.stringify({ ...yardDraft, equipment_id: yardDraft.equipment_id || null, quantity }),
+      });
+      setAddingBracing(false);
+      setYardDraft({ equipment_id: "", equipment_type: "", quantity: "", condition: "good", yard_location: "Yard", notes: "" });
+      equipmentRes.onRefresh();
+      countsRes.onRefresh();
+    } catch (error: unknown) {
+      Alert.alert("Yard count failed", messageFor(error));
+    } finally {
+      setYardSaving(false);
+    }
+  };
 
   // Recording a physical count is the field-work half of this screen (an
   // actual walk of the yard) — queues offline. Reconciling is a desk
@@ -147,11 +188,21 @@ export default function InventoryCountsScreen() {
   ];
 
   return (
-    <Screen title="Inventory Counts" subtitle="Physical counts · variance review" back scroll={!isShellWide} onRefresh={onRefresh} refreshing={refreshing} testID="inventory-counts-screen">
+    <Screen title="Yard Count" subtitle={`${yardEquipment.reduce((sum, item) => sum + item.available, 0)} units physically available in the yard`} back scroll={!isShellWide} onRefresh={onRefresh} refreshing={refreshing} testID="inventory-counts-screen">
       <View style={[styles.workspace, !isShellWide && styles.mobileWorkspace]}>
         {canEdit ? (
         <Card style={[styles.countPanel, !isShellWide && styles.countPanelMobile]} testID="physical-count-form">
-          <SectionLabel>RECORD PHYSICAL COUNT</SectionLabel>
+          <SectionLabel>AUTHORITATIVE PHYSICAL COUNT</SectionLabel>
+          <RequiresOnline>
+            <TouchableOpacity onPress={() => setAddingBracing(true)} style={styles.addBracingButton} testID="add-bracing-yard-count" accessibilityRole="button">
+              <Text style={styles.addBracingPlus}>+</Text><Text style={styles.addBracingText}>Add Bracing</Text>
+            </TouchableOpacity>
+          </RequiresOnline>
+          <Text style={styles.authoritativeHelp}>Sets what is physically at a yard location. Equipment on customer jobs or moving through dispatch stays untouched.</Text>
+          <View style={styles.yardSnapshot} testID="yard-count-snapshot">
+            {yardEquipment.slice(0, 10).map((item) => <View key={item.id} style={styles.snapshotRow}><View style={{ flex: 1 }}><Text style={styles.equipmentName}>{item.name}</Text><Text style={styles.tableMuted}>{item.location || "Yard"} · {item.condition || "good"}</Text></View><Mono style={styles.snapshotQty}>{item.available}</Mono></View>)}
+          </View>
+          <SectionLabel>VARIANCE CHECK</SectionLabel>
           <Text style={styles.panelTitle}>Select equipment</Text>
           <SearchInput value={equipmentSearch} onChangeText={setEquipmentSearch} placeholder="Search QR code or equipment…" testID="count-equipment-search" style={{ marginTop: spacing.sm }} />
           <View style={styles.equipmentResults}>
@@ -210,6 +261,24 @@ export default function InventoryCountsScreen() {
           </View>
         ) : null}
       </DetailDrawer>
+
+      <Modal visible={addingBracing} animationType="slide" onRequestClose={() => setAddingBracing(false)}>
+        <Screen title="Add Bracing" subtitle="Authoritative yard count" back rightAction={{ icon: "close", onPress: () => setAddingBracing(false), testID: "close-add-bracing" }} testID="add-bracing-screen">
+          <Input label="Type" value={yardDraft.equipment_type} onChangeText={(equipment_type) => setYardDraft((draft) => ({ ...draft, equipment_id: "", equipment_type }))} placeholder="10 ft steel stiffback, turnbuckle…" testID="yard-count-type" />
+          <Text style={styles.tableMuted}>Select an existing type, or leave it as a new name to add a newly counted type.</Text>
+          <View style={styles.equipmentResults}>
+            {bracingMatches.map((item) => <TouchableOpacity key={item.id} onPress={() => setYardDraft((draft) => ({ ...draft, equipment_id: item.id, equipment_type: item.name, condition: item.condition || draft.condition, yard_location: item.location || draft.yard_location }))} style={[styles.equipmentRow, yardDraft.equipment_id === item.id && styles.equipmentRowActive]} testID={`yard-count-existing-${item.sku}`}><View style={{ flex: 1 }}><Text style={styles.equipmentName}>{item.name}</Text><Text style={styles.tableMuted}>{item.location || "Yard"}</Text></View><Mono>{item.available}</Mono></TouchableOpacity>)}
+          </View>
+          <Input label="Quantity" value={yardDraft.quantity} onChangeText={(quantity) => setYardDraft((draft) => ({ ...draft, quantity: quantity.replace(/[^0-9]/g, "") }))} keyboardType="number-pad" mono testID="yard-count-quantity" />
+          <SectionLabel>Condition</SectionLabel>
+          <Row style={{ gap: spacing.sm, flexWrap: "wrap", marginBottom: spacing.md }}>
+            {(["good", "fair", "poor", "broken"] as const).map((conditionValue) => <TouchableOpacity key={conditionValue} onPress={() => setYardDraft((draft) => ({ ...draft, condition: conditionValue }))} style={[styles.conditionChip, yardDraft.condition === conditionValue && styles.conditionChipActive]} testID={`yard-count-condition-${conditionValue}`}><Text style={[styles.conditionText, yardDraft.condition === conditionValue && styles.conditionTextActive]}>{conditionValue}</Text></TouchableOpacity>)}
+          </Row>
+          <Input label="Yard Location" value={yardDraft.yard_location} onChangeText={(yard_location) => setYardDraft((draft) => ({ ...draft, yard_location }))} placeholder="Main Yard, North Rack…" testID="yard-count-location" />
+          <Input label="Notes" value={yardDraft.notes} onChangeText={(notes) => setYardDraft((draft) => ({ ...draft, notes }))} multiline placeholder="Stack, bundle, count method, exceptions…" testID="yard-count-notes" />
+          <Button title="Save Authoritative Count" onPress={saveYardCount} loading={yardSaving} testID="save-yard-count" />
+        </Screen>
+      </Modal>
     </Screen>
   );
 }
@@ -224,6 +293,13 @@ const styles = StyleSheet.create({
   countPanel: { width: 390, alignSelf: "stretch" },
   countPanelMobile: { width: "100%" },
   panelTitle: { ...typo.h3 },
+  addBracingButton: { minHeight: 62, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, marginBottom: spacing.sm, borderRadius: radii.md, backgroundColor: colors.primary },
+  addBracingPlus: { color: colors.inverse, fontSize: 30, lineHeight: 32, fontWeight: "500" },
+  addBracingText: { color: colors.inverse, fontSize: 18, fontWeight: "800" },
+  authoritativeHelp: { ...typo.bodySmall, marginBottom: spacing.md },
+  yardSnapshot: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden", marginBottom: spacing.lg },
+  snapshotRow: { minHeight: 46, flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  snapshotQty: { fontSize: 18, fontWeight: "800", color: colors.primary },
   equipmentResults: { marginTop: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" },
   equipmentRow: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
   equipmentRowActive: { backgroundColor: colors.primarySoft },
@@ -253,4 +329,8 @@ const styles = StyleSheet.create({
   drawerMeta: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
   reasonInput: { minHeight: 92, paddingTop: 12, textAlignVertical: "top" },
   reconciledSummary: { marginTop: spacing.lg, padding: spacing.md, backgroundColor: colors.successSoft, borderRadius: radii.md },
+  conditionChip: { minHeight: 36, paddingHorizontal: spacing.md, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  conditionChipActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  conditionText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary, textTransform: "capitalize" },
+  conditionTextActive: { color: colors.primary },
 });

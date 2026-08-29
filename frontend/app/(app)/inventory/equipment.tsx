@@ -76,7 +76,19 @@ const blank: Partial<Equipment> = {
 };
 const pretty = (value: string) => value.replace(/_/g, " ");
 
-export default function EquipmentScreen() {
+type InventoryView = "all" | "bracing" | "scaffolding" | "tools" | "damaged";
+const SCAFFOLDING_CATEGORIES = new Set(["crankup_scaffold", "shoring_post"]);
+const matchesInventoryView = (item: Equipment, view: InventoryView) => {
+  if (view === "all") return true;
+  if (view === "tools") return item.category === "tool";
+  if (view === "scaffolding") return SCAFFOLDING_CATEGORIES.has(item.category);
+  if (view === "damaged") return item.in_maintenance > 0 || ["poor", "broken", "damaged"].includes(item.condition);
+  return matchesEquipmentTab(item, "bracing") && !SCAFFOLDING_CATEGORIES.has(item.category);
+};
+
+type EquipmentScreenProps = { initialView?: InventoryView };
+
+export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = {}) {
   const { isShellWide } = useBreakpoint();
   const { canEdit, canAdmin } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
@@ -86,7 +98,7 @@ export default function EquipmentScreen() {
   const items = equipmentRes.data;
   const maintenance = maintenanceRes.data;
   const rentals = rentalsRes.data;
-  const [tab, setTab] = useState<EquipmentTab>("all");
+  const [tab, setTab] = useState<EquipmentTab>(initialView === "tools" ? "tool" : initialView === "bracing" || initialView === "scaffolding" ? "bracing" : "all");
   const [family, setFamily] = useState("all");
   const [condition, setCondition] = useState("all");
   const [availability, setAvailability] = useState("all");
@@ -111,7 +123,6 @@ export default function EquipmentScreen() {
   }, [params.open, items]);
   useEffect(() => {
     if (params.new) setEditing({ ...blank });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.new]);
   useEffect(() => {
     if (!selected) { setBreakdown(null); return; }
@@ -127,12 +138,13 @@ export default function EquipmentScreen() {
   const mobileItems = useMemo(() => {
     const query = search.trim().toLowerCase();
     return items.filter((item) => {
+      if (!matchesInventoryView(item, initialView)) return false;
       if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (!query) return true;
       return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
         .some((value) => value?.toLowerCase().includes(query));
     }).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-  }, [family, items, search, tab]);
+  }, [family, initialView, items, search, tab]);
   const conditionOptions = useMemo(() => [
     { key: "all", label: "All conditions" },
     ...Array.from(new Set(items.map((item) => item.condition).filter(Boolean))).sort().map((value) => ({ key: value, label: pretty(value) })),
@@ -140,6 +152,7 @@ export default function EquipmentScreen() {
   const desktopItems = useMemo(() => {
     const query = search.trim().toLowerCase();
     const rows = items.filter((item) => {
+      if (!matchesInventoryView(item, initialView)) return false;
       if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (condition !== "all" && item.condition !== condition) return false;
       if (availability === "available" && item.available <= 0) return false;
@@ -156,7 +169,7 @@ export default function EquipmentScreen() {
         : String(av || "").localeCompare(String(bv || ""), undefined, { numeric: true, sensitivity: "base" });
       return sortDirection === "asc" ? compared : -compared;
     });
-  }, [availability, condition, family, items, search, sortDirection, sortKey, tab]);
+  }, [availability, condition, family, initialView, items, search, sortDirection, sortKey, tab]);
 
   const changeTab = (nextTab: string) => {
     setTab(nextTab as EquipmentTab);
@@ -303,7 +316,7 @@ export default function EquipmentScreen() {
   const selectedRentals = selected ? rentals.filter((rental) => rental.lines.some((line) => line.equipment_id === selected.id)) : [];
 
   return (
-    <Screen title="Equipment" subtitle={`${items.length} assets · ${items.reduce((sum, item) => sum + item.available, 0)} available`} back
+    <Screen title={initialView === "all" ? "Equipment" : initialView[0].toUpperCase() + initialView.slice(1)} subtitle={`${desktopItems.length} types · ${desktopItems.reduce((sum, item) => sum + item.available, 0)} physically available`} back
       rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={false}>
       {isShellWide ? (
@@ -322,8 +335,8 @@ export default function EquipmentScreen() {
             </View>
           </PageToolbar>
           <View style={styles.filterStack}>
-            <FilterChips options={EQUIPMENT_TABS} value={tab} onChange={changeTab} testIDPrefix="equipment-tab" />
-            {tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
+            {initialView === "all" ? <FilterChips options={EQUIPMENT_TABS} value={tab} onChange={changeTab} testIDPrefix="equipment-tab" /> : null}
+            {initialView === "all" && tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
             <FilterChips options={conditionOptions} value={condition} onChange={setCondition} testIDPrefix="condition" />
             <FilterChips options={[{ key: "all", label: "Any availability" }, { key: "available", label: "Available" }, { key: "unavailable", label: "Unavailable" }]} value={availability} onChange={setAvailability} testIDPrefix="availability" />
           </View>
@@ -341,14 +354,14 @@ export default function EquipmentScreen() {
           refreshing={refreshing}
           onRefresh={onRefresh}
           ListHeaderComponent={<View style={styles.mobileListHeader}>
-            <View style={styles.mobileTabs}>
+            {initialView === "all" ? <View style={styles.mobileTabs}>
               {EQUIPMENT_TABS.map((option) => (
                 <TouchableOpacity key={option.key} onPress={() => changeTab(option.key)} style={[styles.mobileTab, tab === option.key && styles.mobileTabActive]} testID={`equipment-tab-${option.key}`} accessibilityRole="tab" accessibilityState={{ selected: tab === option.key }}>
                   <Text style={[styles.mobileTabText, tab === option.key && styles.mobileTabTextActive]}>{option.label}</Text>
                 </TouchableOpacity>
               ))}
-            </View>
-            {tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
+            </View> : null}
+            {initialView === "all" && tab !== "all" ? <FilterChips options={familyOptionsFor(tab)} value={family} onChange={setFamily} testIDPrefix={`${tab}-family`} /> : null}
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search equipment…" testID="equipment-search" style={styles.mobileSearch} />
             <Row style={{ gap: spacing.sm }}>
               {canEdit ? <RequiresOnline><View style={{ flex: 1 }}><Button title="Import CSV" onPress={importCSV} variant="outline" testID="import-csv-btn" /></View></RequiresOnline> : null}
@@ -466,3 +479,5 @@ const styles = StyleSheet.create({
   breakdownQty: { fontSize: 14, fontWeight: "700", color: colors.ink, minWidth: 32, textAlign: "right" },
   breakdownDash: { fontSize: 13, color: colors.inkMuted },
 });
+
+export default EquipmentScreen;

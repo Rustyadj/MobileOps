@@ -39,8 +39,19 @@ const initialBookings = [
   },
 ];
 let bookings = Array.isArray(savedState?.bookings) ? savedState.bookings : initialBookings;
-let rentals = Array.isArray(savedState?.rentals) ? savedState.rentals : [];
+const initialRentals = [{
+  id: "demo-rental-lakeside", customer_name: "Lakeside Homeowner", primary_contact: "Morgan Lee",
+  customer_phone: "(940) 555-0148", customer_email: "morgan@example.com", preferred_contact_method: "text",
+  contact_permission: true, job_site: "412 Lakeview Dr, Denton, TX", gate_access_instructions: "Use east gate; call on arrival",
+  delivery_notes: "Keep driveway clear", return_notes: "Pickup after 2 PM", start_date: "2026-08-22T12:00:00Z",
+  due_date: "2026-09-05T12:00:00Z", deposit: 0, notes: "", status: "active", lat: null, lng: null,
+  delivered_by: "Demo Driver", received_by: "", created_at: now(),
+  communication_log: [{ id: "demo-comm-1", channel: "text", direction: "outgoing", summary: "Delivery window confirmed for 9–11 AM.", outcome: "Customer confirmed", created_by: "Nathan", created_at: now() }],
+  lines: [{ equipment_id: "demo-sb20", sku: "SB-2001", qr_code: "SB-2001", name: "20 ft Stiffback", qty: 60, daily_rate: 12, delivered_qty: 60, returned_qty: 0, damaged_qty: 0 }],
+}];
+let rentals = Array.isArray(savedState?.rentals) && savedState.rentals.length ? savedState.rentals : initialRentals;
 let dashboardItems = Array.isArray(savedState?.dashboardItems) ? savedState.dashboardItems : [];
+let inventoryCounts = [];
 
 const seededDispatches = [
   ...loadSeed("outbound_plan_seed.json").map((row) => ({
@@ -175,7 +186,40 @@ const server = http.createServer(async (req, res) => {
     });
     if (req.method === "GET" && route === "/api/dashboard/shortages") return send(res, 200, { rows: [] });
     if (req.method === "GET" && route === "/api/dashboard/items") return send(res, 200, dashboardItems.filter((item) => item.status === "open"));
-    if (req.method === "GET" && ["/api/inventory-counts", "/api/shop-tasks", "/api/maintenance", "/api/vendors", "/api/transfers", "/api/ledger-entries"].includes(route)) return send(res, 200, []);
+    if (req.method === "GET" && route === "/api/inventory-counts") return send(res, 200, inventoryCounts);
+    if (req.method === "GET" && ["/api/shop-tasks", "/api/maintenance", "/api/vendors", "/api/transfers", "/api/ledger-entries"].includes(route)) return send(res, 200, []);
+
+    if (req.method === "POST" && route === "/api/yard-counts") {
+      const body = await readBody(req);
+      let item = equipment.find((entry) => entry.id === body.equipment_id)
+        || equipment.find((entry) => entry.name.toLowerCase() === String(body.equipment_type || "").toLowerCase());
+      const expected = item?.available || 0;
+      if (!item) {
+        item = { id: `demo-yard-${randomUUID()}`, sku: `YARD-${randomUUID().slice(0, 6)}`, qr_code: null, name: body.equipment_type, category: "strongback", quantity: body.quantity, available: body.quantity, reserved: 0, on_rental: 0, pending_inspection: 0, in_maintenance: 0, location: body.yard_location, condition: body.condition, notes: body.notes, daily_rate: 0 };
+        equipment.push(item);
+      } else {
+        item.quantity += Number(body.quantity) - item.available;
+        item.available = Number(body.quantity);
+        item.location = body.yard_location;
+        item.condition = body.condition;
+        item.notes = body.notes || item.notes;
+      }
+      const count = { id: `demo-count-${randomUUID()}`, equipment_id: item.id, equipment_name: item.name, counted_qty: Number(body.quantity), expected_qty: expected, variance: Number(body.quantity) - expected, status: "reconciled", reason: "Authoritative yard count", counted_by: "Demo Operator", counted_at: now(), reconciled_by: "Demo Operator", reconciled_at: now(), condition: body.condition, yard_location: body.yard_location, notes: body.notes, authoritative: true };
+      inventoryCounts.unshift(count);
+      return send(res, 201, count);
+    }
+
+    const rentalCommunication = route.match(/^\/api\/rentals\/([^/]+)\/communications$/);
+    if (rentalCommunication && req.method === "POST") {
+      const rental = rentals.find((item) => item.id === decodeURIComponent(rentalCommunication[1]));
+      if (!rental) return send(res, 404, { detail: "Rental not found" });
+      const body = await readBody(req);
+      if (body.direction === "outgoing" && !rental.contact_permission) return send(res, 409, { detail: "Outgoing contact is blocked until Contact Permission is enabled" });
+      const entry = { id: `demo-comm-${randomUUID()}`, ...body, created_by: "Demo Operator", created_at: now() };
+      rental.communication_log = [entry, ...(rental.communication_log || [])];
+      persistState();
+      return send(res, 201, entry);
+    }
 
     if (req.method === "POST" && route === "/api/bookings") {
       const body = await readBody(req);
