@@ -12,7 +12,7 @@ import { searchAll, SearchResult } from "@/src/utils/global-search";
 const NEW_ACTIONS: { key: string; label: string; icon: any; route: string; testID: string }[] = [
   { key: "rental", label: "New Rental", icon: "receipt-outline", route: "/(app)/operations/rentals?new=1", testID: "new-action-rental" },
   { key: "booking", label: "New Booking", icon: "calendar-outline", route: "/(app)/operations/bookings?new=1", testID: "new-action-booking" },
-  { key: "dispatch", label: "New Dispatch", icon: "navigate-outline", route: "/(app)/operations/dispatch?new=1", testID: "new-action-dispatch" },
+  { key: "dispatch", label: "New Logistics", icon: "navigate-outline", route: "/(app)/operations/dispatch?new=1", testID: "new-action-dispatch" },
   { key: "equipment", label: "New Equipment", icon: "cube-outline", route: "/(app)/inventory/equipment?new=1", testID: "new-action-equipment" },
   { key: "task", label: "New Shop Task", icon: "checkbox-outline", route: "/(app)/shop/tasks?new=1", testID: "new-action-task" },
 ];

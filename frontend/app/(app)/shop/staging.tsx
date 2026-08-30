@@ -111,7 +111,7 @@ export default function StagingScreen() {
                 <Row style={{ justifyContent: "space-between", alignItems: "center" }}>
                   <StatusBadge label={pretty(dispatchFor(selected.related_booking_id)!.status)} />
                   <Button
-                    title="Open in Dispatch"
+                    title="Open in Logistics"
                     variant="outline"
                     onPress={() => router.push(`/(app)/operations/dispatch?open=${dispatchFor(selected.related_booking_id)!.id}` as any)}
                     fullWidth={false}

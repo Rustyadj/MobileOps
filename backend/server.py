@@ -149,6 +149,8 @@ def redact_money_for_crew(doc: dict, role: str) -> dict:
             doc["deposit"] = 0.0
         if "cost" in doc:
             doc["cost"] = 0.0
+        if "price" in doc:
+            doc["price"] = 0.0
         for line in doc.get("lines") or []:
             if isinstance(line, dict) and "daily_rate" in line:
                 line["daily_rate"] = 0.0
@@ -480,6 +482,66 @@ class SerialUnitUpdate(BaseModel):
     status: Optional[str] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+
+
+# Sellable inventory (Consumables, Block) — simple stock, not the rental-asset
+# lifecycle Equipment/BUCKET_FIELDS models (available/reserved/staged/
+# outbound/on_rental/inbound/checked_out/pending_inspection/in_maintenance/
+# missing/in_transit). These items are never reserved/staged/dispatched
+# through that machinery; they just have a quantity on hand and, optionally,
+# a quantity reserved. `kind` distinguishes the two nav categories without
+# duplicating this near-identical model.
+SELLABLE_KINDS = ["consumable", "block"]
+
+
+class SellableItemCreate(BaseModel):
+    kind: str
+    product: str = Field(min_length=1, max_length=200)
+    manufacturer: str = ""
+    sku: str = ""
+    unit: str = ""
+    core_size: str = ""
+    form_type: str = ""
+    quantity_on_hand: int = 0
+    reorder_point: Optional[int] = None
+    cost: Optional[float] = None
+    price: Optional[float] = None
+    notes: str = ""
+
+
+class SellableItemUpdate(BaseModel):
+    product: Optional[str] = None
+    manufacturer: Optional[str] = None
+    sku: Optional[str] = None
+    unit: Optional[str] = None
+    core_size: Optional[str] = None
+    form_type: Optional[str] = None
+    quantity_on_hand: Optional[int] = None
+    quantity_reserved: Optional[int] = None
+    reorder_point: Optional[int] = None
+    cost: Optional[float] = None
+    price: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class SellableItem(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    kind: str
+    product: str
+    manufacturer: str = ""
+    sku: str = ""
+    unit: str = ""
+    core_size: str = ""
+    form_type: str = ""
+    quantity_on_hand: int = 0
+    quantity_reserved: int = 0
+    reorder_point: Optional[int] = None
+    cost: Optional[float] = None
+    price: Optional[float] = None
+    notes: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
 
 
 class InventoryCount(BaseModel):
@@ -942,6 +1004,47 @@ class DashboardItemCreate(BaseModel):
 
 
 class DashboardItemStatusUpdate(BaseModel):
+    status: str
+
+
+# Shortages: a single "what does the operation currently need more of" list.
+# Rows come from two sources merged at read time — "auto" (computed from the
+# existing 14-day equipment capacity forecast, see compute_equipment_
+# shortage_forecast()) and "manual" (this collection, employee-entered, no
+# inventory link required). Only manual rows are stored here; auto rows are
+# never persisted, matching the rest of this file's read-time-derived-value
+# convention. Status stays a plain str (not Enum) for the same BSON/pydantic-
+# serialization reason documented near RentalStatus/DispatchStatus above.
+SHORTAGE_STATUSES = ["open", "ordered", "resolved"]
+
+
+class ShortageCreate(BaseModel):
+    item_name: str = Field(min_length=1, max_length=200)
+    qty_needed: int = Field(gt=0)
+    notes: str = Field(default="", max_length=2000)
+    priority: Optional[str] = None
+    equipment_id: Optional[str] = None
+    context_type: Optional[str] = None
+    context_id: Optional[str] = None
+
+
+class Shortage(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    item_name: str
+    qty_needed: int
+    equipment_id: Optional[str] = None
+    status: str = "open"
+    notes: str = ""
+    priority: Optional[str] = None
+    context_type: Optional[str] = None
+    context_id: Optional[str] = None
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+    resolved_by: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+
+
+class ShortageStatusUpdate(BaseModel):
     status: str
 
 
@@ -2653,6 +2756,58 @@ async def delete_serial_unit(serial_id: str, _: UserPublic = Depends(require_rol
     return {"ok": True}
 
 
+# ----------------------------- Sellable inventory --------------------------
+# Consumables + Block — simple stock, no rental lifecycle. See SellableItem.
+@api.get("/sellable-items", response_model=List[SellableItem])
+async def list_sellable_items(kind: Optional[str] = None, user: UserPublic = Depends(get_current_user)):
+    query: dict[str, Any] = {}
+    if kind:
+        query["kind"] = kind
+    docs = await db.sellable_items.find(query, {"_id": 0}).sort("product", 1).to_list(2000)
+    return [SellableItem(**redact_money_for_crew(d, user.role.value)) for d in docs]
+
+
+@api.post("/sellable-items", response_model=SellableItem, status_code=201)
+async def create_sellable_item(
+    body: SellableItemCreate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        if body.kind not in SELLABLE_KINDS:
+            raise HTTPException(400, f"kind must be one of {SELLABLE_KINDS}")
+        item = SellableItem(**body.model_dump(), created_by=user.name)
+        await db.sellable_items.insert_one(item.model_dump())
+        return item
+
+    return await idempotent(idempotency_key, "create_sellable_item", _run)
+
+
+@api.patch("/sellable-items/{item_id}", response_model=SellableItem)
+async def update_sellable_item(
+    item_id: str, body: SellableItemUpdate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.sellable_items.find_one({"id": item_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Item not found")
+        upd = {k: v for k, v in body.model_dump().items() if v is not None}
+        upd["updated_at"] = now_utc()
+        await db.sellable_items.update_one({"id": item_id}, {"$set": upd})
+        new_doc = await db.sellable_items.find_one({"id": item_id}, {"_id": 0})
+        return SellableItem(**redact_money_for_crew(new_doc, user.role.value))
+
+    return await idempotent(idempotency_key, "update_sellable_item", _run)
+
+
+@api.delete("/sellable-items/{item_id}")
+async def delete_sellable_item(item_id: str, _: UserPublic = Depends(require_role(Role.admin))):
+    res = await db.sellable_items.delete_one({"id": item_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Item not found")
+    return {"ok": True}
+
+
 # ----------------------------- Rentals ------------------------------------
 @api.get("/rentals", response_model=List[Rental])
 async def list_rentals(user: UserPublic = Depends(get_current_user)):
@@ -3190,11 +3345,12 @@ async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_u
     return {"date": d.date().isoformat(), "rows": out}
 
 
-@api.get("/dashboard/shortages")
-async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_current_user)):
+async def compute_equipment_shortage_forecast(days: int) -> List[dict]:
     """Scan the next `days` days for dates where committed demand (active
     rentals + tentative/confirmed bookings) exceeds owned quantity for any
-    SKU, and name the jobs driving that demand."""
+    SKU, and name the jobs driving that demand. Pure computation, no auth —
+    callers (the `/dashboard/shortages` endpoint and the merged `/shortages`
+    endpoint) each apply their own `Depends(get_current_user)`."""
     equipment = await db.equipment.find({}, {"_id": 0}).to_list(2000)
     eq_by_id = {e["id"]: e for e in equipment}
     rentals = await db.rentals.find({"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}).to_list(1000)
@@ -3232,7 +3388,94 @@ async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_curren
                     "shortage": short, "demand": used, "owned": eq["quantity"],
                     "jobs": sorted(set(jobs.get(eq_id, []))),
                 })
-    return {"rows": shortages}
+    return shortages
+
+
+@api.get("/dashboard/shortages")
+async def dashboard_shortages(days: int = 14, _: UserPublic = Depends(get_current_user)):
+    return {"rows": await compute_equipment_shortage_forecast(days)}
+
+
+async def collapsed_auto_shortages() -> List[dict]:
+    """One row per equipment SKU (worst/soonest shortfall) for the merged
+    Shortages card/page — the per-date/per-job detail from
+    compute_equipment_shortage_forecast() stays internal to NeedsAttention's
+    "shortage" kind and the Attention drawer, which need that granularity;
+    the merged Shortages view is deliberately a summary, not a calendar."""
+    rows = await compute_equipment_shortage_forecast(14)
+    worst: dict[str, dict] = {}
+    for row in sorted(rows, key=lambda r: r["date"]):
+        current = worst.get(row["equipment_id"])
+        if not current or row["shortage"] > current["shortage"]:
+            worst[row["equipment_id"]] = row
+    return [
+        {
+            "id": f"auto-{row['equipment_id']}", "source": "auto",
+            "item_name": row["name"], "equipment_id": row["equipment_id"],
+            "qty_needed": row["demand"], "quantity_available": row["owned"], "quantity_short": row["shortage"],
+            "status": "open",
+        }
+        for row in sorted(worst.values(), key=lambda r: -r["shortage"])
+    ]
+
+
+@api.get("/shortages")
+async def list_shortages(_: UserPublic = Depends(get_current_user)):
+    """The single merged Shortages list: auto-forecasted equipment shortfalls
+    (source="auto", read-only, derived from the existing capacity forecast)
+    followed by manually-entered needs (source="manual", db.shortages). No
+    dates or forecast-window details are surfaced here — that's internal to
+    how the auto rows are computed, not something a user needs to see."""
+    auto_rows = await collapsed_auto_shortages()
+    manual_docs = await db.shortages.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    manual_rows = []
+    for doc in manual_docs:
+        row = dict(doc)
+        row["source"] = "manual"
+        if row.get("equipment_id"):
+            eq = await db.equipment.find_one({"id": row["equipment_id"]}, {"_id": 0, "available": 1, "quantity": 1})
+            if eq:
+                row["quantity_available"] = eq.get("available", 0)
+                row["quantity_short"] = max(0, row["qty_needed"] - eq.get("available", 0))
+        manual_rows.append(row)
+    return {"rows": auto_rows + manual_rows}
+
+
+@api.post("/shortages", response_model=Shortage, status_code=201)
+async def create_shortage(
+    body: ShortageCreate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        shortage = Shortage(**body.model_dump(), created_by=user.name)
+        await db.shortages.insert_one(shortage.model_dump())
+        await whiteboard_hub.broadcast({"type": "shortage.created", "shortage": jsonable_encoder(shortage)})
+        return shortage
+
+    return await idempotent(idempotency_key, "create_shortage", _run)
+
+
+@api.patch("/shortages/{shortage_id}/status", response_model=Shortage)
+async def update_shortage_status(
+    shortage_id: str, body: ShortageStatusUpdate, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.shortages.find_one({"id": shortage_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Shortage not found")
+        if body.status not in SHORTAGE_STATUSES:
+            raise HTTPException(400, f"status must be one of {SHORTAGE_STATUSES}")
+        update: dict[str, Any] = {"status": body.status}
+        if body.status == "resolved":
+            update["resolved_by"] = user.name
+            update["resolved_at"] = now_utc()
+        await db.shortages.update_one({"id": shortage_id}, {"$set": update})
+        updated = Shortage(**{**doc, **update})
+        await whiteboard_hub.broadcast({"type": "shortage.updated", "shortage": jsonable_encoder(updated)})
+        return updated
+
+    return await idempotent(idempotency_key, "update_shortage_status", _run)
 
 
 # ----------------------------- Jobs (composition seam, read-only) ----------
@@ -3790,6 +4033,9 @@ async def update_dashboard_item_status(
 
 
 # ----------------------------- Whiteboard --------------------------------
+# User-facing name is "Dispatch" (MobileOps' internal comms tool, distinct
+# from the Dispatch/dispatches movement model above). Collection, route, and
+# identifier names below stay "whiteboard_*" — only the frontend label changed.
 WHITEBOARD_EDIT_WINDOW = timedelta(minutes=15)
 WHITEBOARD_ATTACHMENT_LIMIT = 8 * 1024 * 1024
 WHITEBOARD_NATHAN = {
@@ -3868,6 +4114,7 @@ async def whiteboard_operations_context(message: dict) -> dict:
     collections = {
         "rental": db.rentals, "dispatch": db.dispatches,
         "booking": db.bookings, "shop_task": db.shop_tasks,
+        "equipment": db.equipment, "shortage": db.shortages,
     }
     if kind in collections and entity_id:
         doc = await collections[kind].find_one({"id": entity_id}, {"_id": 0})
@@ -3876,6 +4123,7 @@ async def whiteboard_operations_context(message: dict) -> dict:
                 "id", "customer_name", "job_site", "status", "direction", "scheduled_date",
                 "start_date", "end_date", "due_date", "title", "description", "assignee",
                 "priority", "notes", "lines", "items",
+                "name", "sku", "quantity", "category", "item_name", "qty_needed", "equipment_id",
             }
             return {"context_type": kind, "entity": {key: value for key, value in doc.items() if key in allowed}}
     return {
@@ -4161,7 +4409,8 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
             returning_today += sum(item.get("qty", 0) for item in b.get("items", []))
 
     shortages_today = await dashboard_shortages(days=1, _=_)
-    shortage_count = len(shortages_today["rows"])
+    open_manual_shortages = await db.shortages.count_documents({"status": {"$ne": "resolved"}})
+    shortage_count = len(shortages_today["rows"]) + open_manual_shortages
 
     # recent activity (last 8 rentals + maintenance + shop tasks)
     recent_r = await db.rentals.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
@@ -4545,6 +4794,10 @@ async def on_startup():
     await db.whiteboard_attachment_blobs.create_index("id", unique=True)
     await db.whiteboard_read_states.create_index([("user_id", 1), ("thread_id", 1)], unique=True)
     await db.whiteboard_audit.create_index([("message_id", 1), ("timestamp", -1)])
+    await db.shortages.create_index("id", unique=True)
+    await db.shortages.create_index([("status", 1), ("created_at", -1)])
+    await db.sellable_items.create_index("id", unique=True)
+    await db.sellable_items.create_index([("kind", 1), ("product", 1)])
     # Phase 0 (Jobs composition seam): indexes the future /jobs endpoint's
     # cross-collection lookups need — join bookings/rentals/dispatches/
     # ledger_entries by booking_id/rental_id, and filter each by its own

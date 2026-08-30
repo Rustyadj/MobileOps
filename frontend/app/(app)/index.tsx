@@ -15,6 +15,7 @@ import { DashboardMap } from "@/src/components/dashboard/DashboardMap";
 import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
 import { Upcoming, NextMovement, ManualNextInput, ManualNextItem } from "@/src/components/dashboard/WhatsNext";
 import { WhiteboardFeed } from "@/src/components/whiteboard/WhiteboardFeed";
+import { ShortagesCard } from "@/src/components/dashboard/ShortagesCard";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -51,7 +52,6 @@ type Rental = {
   status: string; notes?: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
 };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string };
-type ShortageRow = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
 type ShopTask = { id: string; title: string; assignee: string; priority: string; status: string; created_at: string; due_date?: string | null; notes?: string };
 type DispatchDoc = NextMovement;
 type Site = SiteWithShop & { brand_name?: string };
@@ -86,7 +86,6 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [shortageRows, setShortageRows] = useState<ShortageRow[]>([]);
   const [shopTasks, setShopTasks] = useState<ShopTask[]>([]);
   const [dispatches, setDispatches] = useState<DispatchDoc[]>([]);
   const [manualNextItems, setManualNextItems] = useState<ManualNextItem[]>([]);
@@ -100,11 +99,10 @@ export default function Dashboard() {
     let hadError = false;
     const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
       p.catch(() => { hadError = true; return fallback; });
-    const [nextStats, nextRentals, nextBookings, nextShortages, nextShopTasks, nextDispatches, nextManualItems, nextSite] = await Promise.all([
+    const [nextStats, nextRentals, nextBookings, nextShopTasks, nextDispatches, nextManualItems, nextSite] = await Promise.all([
       guard(api<unknown>("/dashboard/stats").then(statsResponse), EMPTY_STATS),
       guard(api<Rental[]>("/rentals"), []),
       guard(api<Booking[]>("/bookings"), []),
-      guard(api<{ rows: ShortageRow[] }>("/dashboard/shortages?days=14"), { rows: [] }),
       guard(api<ShopTask[]>("/shop-tasks"), []),
       guard(api<DispatchDoc[]>("/dispatches"), []),
       guard(api<ManualNextItem[]>("/dashboard/items"), []),
@@ -113,13 +111,12 @@ export default function Dashboard() {
     setStats(nextStats);
     setRentals(nextRentals);
     setBookings(nextBookings);
-    setShortageRows(nextShortages.rows);
     setShopTasks(nextShopTasks);
     setDispatches(nextDispatches);
     setManualNextItems(nextManualItems);
     setSite(nextSite);
     setLastUpdated(new Date());
-    // The dashboard is a Promise.all of eight independent calls with a fallback
+    // The dashboard is a Promise.all of seven independent calls with a fallback
     // each so ONE flaky endpoint doesn't blank the whole screen — but a
     // fallback of "zero"/"empty" looks identical to a genuinely idle fleet
     // unless we also surface that a fetch actually failed.
@@ -142,10 +139,6 @@ export default function Dashboard() {
     const now = new Date();
     return bookings.filter((b) => isBookingActive(b.status) && new Date(b.end_date) >= now).sort((a, b) => +new Date(a.start_date) - +new Date(b.start_date));
   }, [bookings]);
-  const shortages = useMemo(
-    () => [...shortageRows].sort((a, b) => a.date.localeCompare(b.date) || b.shortage - a.shortage),
-    [shortageRows],
-  );
   const openShopTasks = useMemo(() => {
     const order: Record<string, number> = { high: 0, normal: 1, low: 2 };
     return shopTasks
@@ -196,13 +189,6 @@ export default function Dashboard() {
     { key: "start", label: "Start date", flex: 1, render: (b) => <Text style={styles.cell} numberOfLines={1}>{dateLabel(b.start_date)}</Text> },
   ];
 
-  const shortageColumns: OpColumn<ShortageRow>[] = [
-    { key: "equipment", label: "Equipment", flex: 1.4, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.name}</Text> },
-    { key: "jobs", label: "Job", flex: 1.3, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.jobs[0] || "—"}{r.jobs.length > 1 ? ` +${r.jobs.length - 1}` : ""}</Text> },
-    { key: "date", label: "Date", flex: 1, render: (r) => <Text style={styles.cell} numberOfLines={1}>{dateLabel(r.date)}</Text> },
-    { key: "short", label: "Qty short", flex: 0.8, align: "right", render: (r) => <Text style={styles.danger}>{r.shortage}</Text> },
-  ];
-
   const shopTaskColumns: OpColumn<ShopTask>[] = [
     { key: "title", label: "Task", flex: 1.6, render: (t) => <Text style={styles.cell} numberOfLines={1}>{t.title}</Text> },
     { key: "assignee", label: "Assignee", flex: 1, render: (t) => <Text style={styles.cell} numberOfLines={1}>{t.assignee || "Unassigned"}</Text> },
@@ -221,7 +207,7 @@ export default function Dashboard() {
         <KpiTile label="Reserved" value={String(stats.total_reserved)} meta="Booked, not yet delivered" icon="calendar-outline" tone="info" onPress={() => router.push("/(app)/operations/bookings" as any)} testID="stat-reserved" />
         <KpiTile label="Returning today" value={String(stats.returning_today)} meta="Units due back" icon="arrow-undo-outline" tone="warning" onPress={() => router.push("/(app)/operations/returns" as any)} testID="stat-returning-today" />
         <KpiTile label="Open shop tasks" value={String(stats.open_shop_tasks)} meta="To do / in progress / blocked" icon="checkbox-outline" tone="danger" onPress={() => router.push("/(app)/shop/tasks" as any)} testID="stat-shop-tasks" />
-        <KpiTile label="Equipment shortages" value={String(stats.shortage_count)} meta={stats.shortage_count ? "Constrained in next 14 days" : "No upcoming shortages"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-shortages" />
+        <KpiTile label="Shortages" value={String(stats.shortage_count)} meta={stats.shortage_count ? "Needs attention" : "Nothing short"} icon="warning-outline" tone="warning" last onPress={() => router.push("/(app)/shortages" as any)} testID="stat-shortages" />
       </KpiStrip>
 
       <View style={[styles.dashboardTopRow, !isShellWide && styles.stackGrid]}>
@@ -240,6 +226,7 @@ export default function Dashboard() {
           onCompleteManual={completeManualNextItem}
         />
         <WhiteboardFeed compact />
+        <ShortagesCard compact />
       </View>
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
@@ -278,12 +265,6 @@ export default function Dashboard() {
           keyExtractor={(t) => t.id} onRowPress={(t) => router.push(`/(app)/shop/tasks?open=${t.id}` as any)}
           emptyLabel="No open shop tasks." viewAllLabel="View all tasks" onViewAll={() => router.push("/(app)/shop/tasks" as any)}
           testID="dashboard-shop-tasks"
-        />
-        <OperationalTable
-          title="Equipment shortages" icon="warning-outline" columns={shortageColumns} rows={shortages.slice(0, 5)}
-          keyExtractor={(r) => `${r.date}-${r.equipment_id}`} onRowPress={(r) => router.push(`/(app)/inventory/equipment?open=${r.equipment_id}` as any)}
-          emptyLabel="Inventory levels are healthy." viewAllLabel="View all shortages" onViewAll={() => router.push("/(app)/operations/capacity" as any)}
-          testID="dashboard-shortages"
         />
       </View>
 
@@ -330,7 +311,10 @@ export default function Dashboard() {
 const styles = StyleSheet.create({
   desktopPage: { flex: 1, backgroundColor: colors.bgMuted },
   commandCenter: { paddingTop: spacing.md, minWidth: 0 },
-  dashboardTopRow: { flexDirection: "row", gap: 12, alignItems: "stretch", marginBottom: 12 },
+  // Fixed height so none of the three top-row cards (Upcoming/Dispatch/
+  // Shortages) can balloon the row as their record counts grow — each card
+  // fills this via flex:1 and scrolls its own content internally.
+  dashboardTopRow: { flexDirection: "row", gap: 12, alignItems: "stretch", height: 380, marginBottom: 12 },
   mainRow: { flexDirection: "row", gap: 12, height: 360, marginBottom: 12 },
   tableRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
   stackGrid: { height: "auto", flexDirection: "column" },

@@ -245,9 +245,9 @@ const JobDetail: React.FC<{ job: Job; router: ReturnType<typeof useRouter> }> = 
     </View>
     <View style={styles.drawerActions}>
       {job.booking_id ? <ActionLink label="Open Booking" onPress={() => router.push(`/(app)/operations/bookings?open=${job.booking_id}` as any)} /> : null}
-      {job.active_outbound_dispatch_id ? <ActionLink label="Open Outbound Dispatch" onPress={() => router.push(`/(app)/operations/dispatch?open=${job.active_outbound_dispatch_id}` as any)} /> : null}
+      {job.active_outbound_dispatch_id ? <ActionLink label="Open Outbound Logistics" onPress={() => router.push(`/(app)/operations/dispatch?open=${job.active_outbound_dispatch_id}` as any)} /> : null}
       {job.rental_id ? <ActionLink label="Open Rental" onPress={() => router.push(`/(app)/operations/rentals?open=${job.rental_id}` as any)} /> : null}
-      {job.active_inbound_dispatch_id ? <ActionLink label="Open Pickup Dispatch" onPress={() => router.push(`/(app)/operations/dispatch?open=${job.active_inbound_dispatch_id}` as any)} /> : null}
+      {job.active_inbound_dispatch_id ? <ActionLink label="Open Pickup Logistics" onPress={() => router.push(`/(app)/operations/dispatch?open=${job.active_inbound_dispatch_id}` as any)} /> : null}
     </View>
   </View>
 );

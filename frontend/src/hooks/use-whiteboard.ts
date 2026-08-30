@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, apiBaseUrl, getAccessToken } from "@/src/api/client";
+import { api } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
+import { useRealtimeChannel } from "@/src/hooks/use-realtime-channel";
 import type { Mentionable, WhiteboardMessage } from "@/src/types/whiteboard";
 
 const byCreatedAt = (a: WhiteboardMessage, b: WhiteboardMessage) =>
@@ -53,51 +54,20 @@ export function useWhiteboard(limit = 80, markRead = false) {
     return () => { alive.current = false; };
   }, [load]);
 
-  useEffect(() => {
-    let socket: WebSocket | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    let stopped = false;
-    let retryMs = 1000;
-    const connect = () => {
-      const token = getAccessToken();
-      if (!token || stopped) return;
-      const url = apiBaseUrl().replace(/^http/, "ws").replace(/\/api$/, "/api/whiteboard/ws");
-      socket = new WebSocket(url);
-      socket.onopen = () => {
-        retryMs = 1000;
-        socket?.send(JSON.stringify({ type: "authenticate", token }));
-      };
-      socket.onmessage = (raw) => {
-        try {
-          const event = JSON.parse(String(raw.data));
-          if ((event.type === "message.created" || event.type === "message.updated") && event.message) {
-            upsert(event.message);
-            if (!markRead && event.type === "message.created" && event.message.author_id !== user?.id) setUnread((count) => count + 1);
-            if (markRead && event.type === "message.created") {
-              api("/whiteboard/read", { method: "POST", body: JSON.stringify({ thread_id: "dashboard" }) }).catch(() => {});
-            }
-          }
-          if (event.type === "nathan.status") {
-            setMessages((current) => current.map((message) => message.id === event.message_id
-              ? { ...message, invocation_status: event.status }
-              : message));
-          }
-        } catch {}
-      };
-      socket.onclose = () => {
-        if (!stopped) {
-          retry = setTimeout(connect, retryMs);
-          retryMs = Math.min(retryMs * 2, 15000);
-        }
-      };
-    };
-    connect();
-    return () => {
-      stopped = true;
-      if (retry) clearTimeout(retry);
-      socket?.close();
-    };
-  }, [markRead, upsert, user?.id]);
+  useRealtimeChannel(useCallback((event: any) => {
+    if ((event.type === "message.created" || event.type === "message.updated") && event.message) {
+      upsert(event.message);
+      if (!markRead && event.type === "message.created" && event.message.author_id !== user?.id) setUnread((count) => count + 1);
+      if (markRead && event.type === "message.created") {
+        api("/whiteboard/read", { method: "POST", body: JSON.stringify({ thread_id: "dashboard" }) }).catch(() => {});
+      }
+    }
+    if (event.type === "nathan.status") {
+      setMessages((current) => current.map((message) => message.id === event.message_id
+        ? { ...message, invocation_status: event.status }
+        : message));
+    }
+  }, [markRead, upsert, user?.id]));
 
   const send = useCallback(async (body: string, parentId?: string | null) => {
     const created = await api<WhiteboardMessage>("/whiteboard/messages", {
