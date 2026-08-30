@@ -38,8 +38,8 @@ type Rental = {
   id: string; customer_name: string; customer_phone: string; customer_email: string;
   primary_contact: string; preferred_contact_method: string;
   delivery_notes: string; return_notes: string; gate_access_instructions: string;
-  contact_permission: boolean; communication_log: CommunicationEntry[];
-  job_site: string; start_date: string; due_date?: string | null; deposit: number; notes: string;
+  contact_permission: boolean; communication_log: CommunicationEntry[]; customer_type: "company" | "homeowner";
+  job_site: string; job_address: string; start_date: string; due_date?: string | null; deposit: number; notes: string;
   lines: Line[]; status: string; delivered_by: string; received_by: string;
   lat?: number | null; lng?: number | null;
 };
@@ -133,11 +133,12 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
   const onRefresh = () => { rentalsRes.onRefresh(); equipmentRes.onRefresh(); dispatchesRes.onRefresh(); };
 
   const draftGeocode = async () => {
-    if (!draft?.job_site?.trim()) {
-      Alert.alert("No address", "Enter a Job Site address first, then tap Geocode.");
+    if (!draft?.job_address?.trim() && !draft?.job_site?.trim()) {
+      Alert.alert("No address", "Enter a job address first, then tap Geocode.");
       return;
     }
-    const coords = await geocodeString(draft.job_site);
+    const address = draft.job_address || draft.job_site;
+    const coords = await geocodeString(address);
     if (coords) {
       setDraft({ ...draft, lat: coords.lat, lng: coords.lng });
     } else {
@@ -165,7 +166,7 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
       ...d,
       lat: r.lat,
       lng: r.lng,
-      job_site: d?.job_site?.trim() ? d.job_site : r.display_name,
+      job_address: r.display_name,
     }));
     setAddressResults([]);
     setAddressQuery("");
@@ -192,7 +193,7 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
   const newRental = useCallback(() => {
     const now = new Date();
     setDraft({
-      customer_name: "", customer_phone: "", customer_email: "", job_site: "",
+      customer_name: "", customer_phone: "", customer_email: "", customer_type: "company", job_site: "", job_address: "",
       primary_contact: "", preferred_contact_method: "call", delivery_notes: "", return_notes: "",
       gate_access_instructions: "", contact_permission: false,
       start_date: now.toISOString(), due_date: "",
@@ -217,7 +218,9 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
       return_notes: r.return_notes || "",
       gate_access_instructions: r.gate_access_instructions || "",
       contact_permission: !!r.contact_permission,
+      customer_type: r.customer_type || "company",
       job_site: r.job_site,
+      job_address: r.job_address || "",
       start_date: r.start_date,
       due_date: r.due_date || "",
       deposit: r.deposit,
@@ -273,12 +276,18 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
   // desk work and, unlike a fresh create, has no natural client-side id to
   // build an optimistic doc against safely.
   const save = async () => {
-    if (!draft.customer_name || draft.lines.length === 0) {
-      Alert.alert("Required", "Customer name and at least one line item.");
+    const customerName = draft.customer_type === "homeowner" ? draft.job_site?.trim() : draft.customer_name?.trim();
+    if (!customerName || !draft.job_site?.trim() || !draft.job_address?.trim() || draft.lines.length === 0) {
+      Alert.alert("Required", "Company/job-site name, job site, job address, and at least one line item are required.");
+      return;
+    }
+    const coordinates = draft.lat != null && draft.lng != null ? { lat: draft.lat, lng: draft.lng } : await geocodeString(draft.job_address);
+    if (!coordinates) {
+      Alert.alert("Address not found", "Check the job address or pick its location on the map.");
       return;
     }
     const body = {
-      customer_name: draft.customer_name,
+      customer_name: customerName,
       customer_phone: draft.customer_phone || "",
       customer_email: draft.customer_email || "",
       primary_contact: draft.primary_contact || "",
@@ -287,7 +296,9 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
       return_notes: draft.return_notes || "",
       gate_access_instructions: draft.gate_access_instructions || "",
       contact_permission: !!draft.contact_permission,
+      customer_type: draft.customer_type || "company",
       job_site: draft.job_site || "",
+      job_address: draft.job_address || "",
       start_date: draft.start_date,
       due_date: draft.due_date ? new Date(draft.due_date).toISOString() : null,
       deposit: Number(draft.deposit) || 0,
@@ -297,8 +308,8 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
         qty: l.qty, daily_rate: l.daily_rate, delivered_qty: l.delivered_qty || 0,
         returned_qty: l.returned_qty || 0, damaged_qty: l.damaged_qty || 0,
       })),
-      lat: draft.lat ?? null,
-      lng: draft.lng ?? null,
+      lat: coordinates.lat,
+      lng: coordinates.lng,
     };
     if (draft.id) {
       try {
@@ -319,7 +330,7 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
           primary_contact: body.primary_contact, preferred_contact_method: body.preferred_contact_method,
           delivery_notes: body.delivery_notes, return_notes: body.return_notes,
           gate_access_instructions: body.gate_access_instructions, contact_permission: body.contact_permission,
-          communication_log: [], job_site: body.job_site, start_date: body.start_date, due_date: body.due_date,
+          communication_log: [], customer_type: body.customer_type, job_site: body.job_site, job_address: body.job_address, start_date: body.start_date, due_date: body.due_date,
           deposit: body.deposit, notes: body.notes,
           lines: body.lines, status: RENTAL_STATUS.active, delivered_by: "", received_by: "",
           lat: body.lat, lng: body.lng,
@@ -866,13 +877,19 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen title={draft?.id ? "Edit Rental" : "New Rental"} back rightAction={{ icon: "close", onPress: () => { setCreating(false); setDraft(null); }, testID: "close-new-rental" }}>
           <SectionLabel>Customer / Job Contact</SectionLabel>
-          <Input label="Company / Homeowner Name" value={draft?.customer_name || ""} onChangeText={(t) => setDraft({ ...draft, customer_name: t })} testID="cust-name" />
+          <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+            <View style={{ flex: 1 }}><Button title="Company" variant={draft?.customer_type !== "homeowner" ? "primary" : "outline"} onPress={() => setDraft({ ...draft, customer_type: "company" })} testID="rental-customer-company" /></View>
+            <View style={{ flex: 1 }}><Button title="Homeowner" variant={draft?.customer_type === "homeowner" ? "primary" : "outline"} onPress={() => setDraft({ ...draft, customer_type: "homeowner", customer_name: draft?.job_site || "" })} testID="rental-customer-homeowner" /></View>
+          </Row>
+          {draft?.customer_type !== "homeowner" ? <Input label="Company" value={draft?.customer_name || ""} onChangeText={(text) => setDraft({ ...draft, customer_name: text })} testID="cust-name" /> : null}
           <Input label="Primary Contact" value={draft?.primary_contact || ""} onChangeText={(t) => setDraft({ ...draft, primary_contact: t })} testID="primary-contact" />
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input label="Phone" value={draft?.customer_phone || ""} onChangeText={(t) => setDraft({ ...draft, customer_phone: t })} keyboardType="phone-pad" mono testID="cust-phone" /></View>
             <View style={{ flex: 1 }}><Input label="Email" value={draft?.customer_email || ""} onChangeText={(t) => setDraft({ ...draft, customer_email: t })} keyboardType="email-address" autoCapitalize="none" testID="cust-email" /></View>
           </Row>
-          <Input label="Jobsite Address" value={draft?.job_site || ""} onChangeText={(t) => setDraft({ ...draft, job_site: t })} testID="cust-site" />
+          <Input label="Job Site Name" value={draft?.job_site || ""} onChangeText={(job_site) => setDraft({ ...draft, job_site, ...(draft?.customer_type === "homeowner" ? { customer_name: job_site } : {}) })} testID="cust-site" />
+          {draft?.customer_type === "homeowner" ? <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: -spacing.sm, marginBottom: spacing.md }]}>This job-site name is also used as the homeowner's company name in Contacts.</Text> : null}
+          <Input label="Job Address" value={draft?.job_address || ""} onChangeText={(job_address) => { setDraft({ ...draft, job_address }); setAddressQuery(job_address); }} testID="job-address" />
           <SectionLabel>Preferred Contact Method</SectionLabel>
           <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
             {(["call", "text", "email"] as const).map((method) => <TouchableOpacity key={method} onPress={() => setDraft({ ...draft, preferred_contact_method: method })} style={[styles.contactMethod, draft?.preferred_contact_method === method && styles.contactMethodActive]} testID={`contact-method-${method}`}><Text style={[styles.contactMethodText, draft?.preferred_contact_method === method && styles.contactMethodTextActive]}>{method[0].toUpperCase() + method.slice(1)}</Text></TouchableOpacity>)}
@@ -909,7 +926,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               </Row>
             ) : (
               <Text style={[typo.bodySmall, { marginBottom: spacing.sm }]}>
-                No location set. Search an address, use the Job Site field, or pick on map.
+                No location set. Search the job address or pick a pin on the map.
               </Text>
             )}
 
@@ -956,7 +973,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
                 <Button title="Pick on map" onPress={() => setPickerFor({ mode: "draft" })} variant="outline" testID="draft-pick-map" />
               </View>
               <View style={{ flex: 1 }}>
-                <Button title="Geocode job site" onPress={draftGeocode} variant="outline" testID="draft-geocode" />
+                <Button title="Geocode job address" onPress={draftGeocode} variant="outline" testID="draft-geocode" />
               </View>
             </Row>
           </Card>

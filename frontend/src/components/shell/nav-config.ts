@@ -69,10 +69,10 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    key: "vendors",
-    label: "Vendors",
+    key: "contacts",
+    label: "Contacts",
     items: [
-      { key: "vendors", label: "Vendors", route: "/(app)/vendors", icon: "business-outline", testID: "nav-vendors" },
+      { key: "contacts", label: "Contacts", route: "/(app)/contacts", icon: "people-outline", testID: "nav-contacts" },
     ],
   },
   {
@@ -89,7 +89,7 @@ export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((s) => s.items);
 // Mobile bottom nav: 5 destinations max. Shop work is first-class, so it
 // gets its own tab instead of being buried under Menu. Rentals/Inventory/
 // Shop land on their section overview; Menu exposes everything else (Tools,
-// Vendors, Admin, account).
+// Contacts, Admin, account).
 export const MOBILE_TABS: { key: string; label: string; route: string; icon: IconName; testID: string }[] = [
   { key: "home", label: "Home", route: "/(app)", icon: "grid-outline", testID: "tab-home" },
   { key: "rentals", label: "Rentals", route: "/(app)/operations/active", icon: "swap-horizontal-outline", testID: "tab-rentals" },
@@ -104,7 +104,7 @@ export function activeSectionForPath(pathname: string): string {
   if (pathname.startsWith("/inventory")) return "inventory";
   if (pathname.startsWith("/shop")) return "shop";
   if (pathname.startsWith("/tools")) return "tools";
-  if (pathname.startsWith("/vendors")) return "vendors";
+  if (pathname.startsWith("/contacts") || pathname.startsWith("/vendors")) return "contacts";
   if (pathname.startsWith("/site-admin")) return "admin";
   if (pathname.startsWith("/menu")) return "menu";
   return "overview";

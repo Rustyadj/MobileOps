@@ -1,14 +1,14 @@
 import React, { useState } from "react";
-import { View, Alert } from "react-native";
-import { Input, Button, SectionLabel, Row } from "@/src/components/ui";
+import { View, Alert, Text } from "react-native";
+import { Input, Button, Row } from "@/src/components/ui";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { RequiresOnline } from "@/src/components/RequiresOnline";
-import { spacing } from "@/src/theme";
-import { CATEGORY_OPTIONS, Vendor } from "./useVendors";
+import { colors, spacing, type as typo } from "@/src/theme";
+import { Contact } from "./useVendors";
 
-export const VendorForm: React.FC<{
+export const ContactForm: React.FC<{
   visible: boolean;
-  editing: Partial<Vendor> | null;
+  editing: Partial<Contact> | null;
   setEditing: (updater: any) => void;
   onClose: () => void;
   onSave: () => Promise<void>;
@@ -16,15 +16,8 @@ export const VendorForm: React.FC<{
   const [saving, setSaving] = useState(false);
   if (!visible || !editing) return null;
 
-  const toggleCat = (c: string) => {
-    setEditing((v: any) => {
-      const cur: string[] = v?.categories || [];
-      return { ...v, categories: cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c] };
-    });
-  };
-
   const handleSave = async () => {
-    if (!editing.name) { Alert.alert("Required", "Vendor name"); return; }
+    if (!editing.company?.trim()) { Alert.alert("Required", editing.is_homeowner ? "Job site name" : "Company name"); return; }
     setSaving(true);
     try { await onSave(); }
     catch (e: any) { Alert.alert("Save failed", e.message); }
@@ -32,32 +25,27 @@ export const VendorForm: React.FC<{
   };
 
   return (
-    <DetailDrawer visible={visible} title={editing.id ? "Edit Vendor" : "New Vendor"} onClose={onClose} testID="vendor-form-drawer">
-      <Input label="Name" value={editing.name || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, name: t }))} testID="v-name" />
-      <Input label="Contact" value={editing.contact_name || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, contact_name: t }))} testID="v-contact" />
+    <DetailDrawer visible={visible} title={editing.id ? "Edit Contact" : "New Contact"} onClose={onClose} testID="contact-form-drawer">
+      <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+        <View style={{ flex: 1 }}><Button title="Company" variant={!editing.is_homeowner ? "primary" : "outline"} onPress={() => setEditing((value: any) => ({ ...value, is_homeowner: false }))} testID="contact-type-company" /></View>
+        <View style={{ flex: 1 }}><Button title="Homeowner" variant={editing.is_homeowner ? "primary" : "outline"} onPress={() => setEditing((value: any) => ({ ...value, is_homeowner: true, follows_current_job: true }))} testID="contact-type-homeowner" /></View>
+      </Row>
+      <Input label={editing.is_homeowner ? "Job Site Name" : "Company"} value={editing.company || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, company: text }))} testID="contact-company" />
+      {editing.is_homeowner ? <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: -spacing.sm, marginBottom: spacing.md }]}>For homeowners, this chosen job-site name is used as the company name everywhere.</Text> : null}
+      <Input label="Contact" value={editing.contact || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, contact: text }))} testID="contact-person" />
       <Row style={{ gap: spacing.md }}>
-        <View style={{ flex: 1 }}><Input label="Phone" value={editing.phone || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, phone: t }))} keyboardType="phone-pad" mono testID="v-phone" /></View>
-        <View style={{ flex: 1 }}><Input label="Email" value={editing.email || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, email: t }))} keyboardType="email-address" autoCapitalize="none" testID="v-email" /></View>
+        <View style={{ flex: 1 }}><Input label="Phone Number" value={editing.phone || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, phone: text }))} keyboardType="phone-pad" mono testID="contact-phone" /></View>
+        <View style={{ flex: 1 }}><Input label="Email" value={editing.email || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, email: text }))} keyboardType="email-address" autoCapitalize="none" testID="contact-email" /></View>
       </Row>
-      <Input label="Address" value={editing.address || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, address: t }))} testID="v-address" />
-      <SectionLabel>Categories</SectionLabel>
-      <Row style={{ gap: 8, flexWrap: "wrap", marginBottom: spacing.md }}>
-        {CATEGORY_OPTIONS.map((c) => {
-          const active = (editing.categories || []).includes(c);
-          return (
-            <View key={c} style={{ flexShrink: 0 }}>
-              <Button title={c} onPress={() => toggleCat(c)} variant={active ? "primary" : "outline"} fullWidth={false} testID={`v-cat-${c}`} />
-            </View>
-          );
-        })}
-      </Row>
-      <Input label="Freight Terms" value={editing.freight_terms || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, freight_terms: t }))} testID="v-freight" />
-      <Row style={{ gap: spacing.md }}>
-        <View style={{ flex: 1 }}><Input label="Truck Capacity" value={editing.truck_capacity || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, truck_capacity: t }))} mono testID="v-truck" /></View>
-        <View style={{ flex: 1 }}><Input label="Lead (days)" value={String(editing.lead_time_days ?? 0)} onChangeText={(t) => setEditing((v: any) => ({ ...v, lead_time_days: Number(t) || 0 }))} keyboardType="number-pad" mono testID="v-lead" /></View>
-      </Row>
-      <Input label="Notes" value={editing.notes || ""} onChangeText={(t) => setEditing((v: any) => ({ ...v, notes: t }))} testID="v-notes" />
-      <RequiresOnline><Button title="Save" onPress={handleSave} loading={saving} testID="save-vendor-btn" /></RequiresOnline>
+      <Input label="Business Address" value={editing.business_address || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, business_address: text }))} testID="contact-business-address" />
+      {!editing.is_homeowner ? (
+        <View style={{ marginBottom: spacing.md }}>
+          <Button title={editing.follows_current_job ? "Address follows current job ✓" : "Use permanent business address"} variant={editing.follows_current_job ? "primary" : "outline"} onPress={() => setEditing((value: any) => ({ ...value, follows_current_job: !value.follows_current_job }))} testID="contact-follow-job" />
+          <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: spacing.xs }]}>Turn this on for crews that move from one active job to the next.</Text>
+        </View>
+      ) : null}
+      <Input label="Notes" value={editing.notes || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, notes: text }))} testID="contact-notes" />
+      <RequiresOnline><Button title="Save Contact" onPress={handleSave} loading={saving} testID="save-contact-btn" /></RequiresOnline>
     </DetailDrawer>
   );
 };

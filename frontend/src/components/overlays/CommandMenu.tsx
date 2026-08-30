@@ -21,7 +21,7 @@ const TYPE_ICON: Record<SearchResult["type"], any> = {
   equipment: "cube-outline",
   rental: "receipt-outline",
   booking: "calendar-outline",
-  vendor: "business-outline",
+  contact: "people-outline",
   task: "checkbox-outline",
 };
 
@@ -72,7 +72,7 @@ export const CommandMenu: React.FC = () => {
                   autoFocus
                   value={query}
                   onChangeText={setQuery}
-                  placeholder="Search rentals, bookings, equipment, vendors…"
+                  placeholder="Search rentals, bookings, equipment, contacts…"
                   placeholderTextColor={colors.inkMuted}
                   style={styles.searchInput}
                   testID="command-menu-search-input"

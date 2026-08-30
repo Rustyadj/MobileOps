@@ -18,9 +18,10 @@ import { api } from "@/src/api/client";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { BOOKING_STATUS } from "@/src/domain/status";
+import { geocodeString } from "@/src/components/MapCanvas";
 
 type BookingLine = { equipment_id: string; sku: string; qr_code?: string | null; name: string; qty: number; returned_qty: number; daily_rate: number };
-type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string; dispatched_rental_id?: string | null };
+type Booking = { id: string; customer_name: string; customer_type: "company" | "homeowner"; job_site: string; job_address: string; lat?: number | null; lng?: number | null; start_date: string; end_date: string; status: string; items?: BookingLine[]; notes: string; dispatched_rental_id?: string | null };
 type CapacityRow = { equipment_id: string; sku: string; qr_code?: string | null; name: string; category: string; quantity: number; committed: number; available: number };
 type Eq = { id: string; sku: string; qr_code?: string | null; name: string };
 type BookingSortKey = "customer_name" | "job_site" | "start_date" | "end_date" | "status";
@@ -107,7 +108,7 @@ export default function BookingsScreen() {
   const newBooking = () => {
     const now = new Date();
     const end = new Date(now.getTime() + 3 * 86400000);
-    setDraft({ customer_name: "", job_site: "", start_date: now.toISOString(), end_date: end.toISOString(), status: BOOKING_STATUS.tentative, items: [], notes: "" });
+    setDraft({ customer_name: "", customer_type: "company", job_site: "", job_address: "", lat: null, lng: null, start_date: now.toISOString(), end_date: end.toISOString(), status: BOOKING_STATUS.tentative, items: [], notes: "" });
     setEqSearch("");
     setCreating(true);
   };
@@ -133,8 +134,11 @@ export default function BookingsScreen() {
   };
 
   const save = async () => {
-    if (!draft.customer_name) { Alert.alert("Required", "Customer name"); return; }
-    try { await api("/bookings", { method: "POST", body: JSON.stringify(draft) }); setCreating(false); load(); }
+    const customerName = draft.customer_type === "homeowner" ? draft.job_site?.trim() : draft.customer_name?.trim();
+    if (!customerName || !draft.job_site?.trim() || !draft.job_address?.trim()) { Alert.alert("Required", "Company/job-site name, job site, and job address are required."); return; }
+    const coordinates = draft.lat != null && draft.lng != null ? { lat: draft.lat, lng: draft.lng } : await geocodeString(draft.job_address);
+    if (!coordinates) { Alert.alert("Address not found", "Check the job address so MobileOps can place its map pin."); return; }
+    try { await api("/bookings", { method: "POST", body: JSON.stringify({ ...draft, ...coordinates, customer_name: customerName }) }); setCreating(false); load(); }
     catch (e: any) { Alert.alert("Save failed", e.message); }
   };
 
@@ -232,8 +236,13 @@ export default function BookingsScreen() {
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen title="New Booking" back rightAction={{ icon: "close", onPress: () => setCreating(false), testID: "close-new-booking" }}>
-          <Input label="Customer Name" value={draft?.customer_name || ""} onChangeText={(text) => setDraft({ ...draft, customer_name: text })} testID="bk-cust" />
-          <Input label="Job Site" value={draft?.job_site || ""} onChangeText={(text) => setDraft({ ...draft, job_site: text })} testID="bk-site" />
+          <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+            <View style={{ flex: 1 }}><Button title="Company" variant={draft?.customer_type !== "homeowner" ? "primary" : "outline"} onPress={() => setDraft({ ...draft, customer_type: "company" })} testID="booking-customer-company" /></View>
+            <View style={{ flex: 1 }}><Button title="Homeowner" variant={draft?.customer_type === "homeowner" ? "primary" : "outline"} onPress={() => setDraft({ ...draft, customer_type: "homeowner", customer_name: draft?.job_site || "" })} testID="booking-customer-homeowner" /></View>
+          </Row>
+          {draft?.customer_type !== "homeowner" ? <Input label="Company" value={draft?.customer_name || ""} onChangeText={(text) => setDraft({ ...draft, customer_name: text })} testID="bk-cust" /> : null}
+          <Input label="Job Site Name" value={draft?.job_site || ""} onChangeText={(job_site) => setDraft({ ...draft, job_site, ...(draft?.customer_type === "homeowner" ? { customer_name: job_site } : {}) })} testID="bk-site" />
+          <Input label="Job Address" value={draft?.job_address || ""} onChangeText={(job_address) => setDraft({ ...draft, job_address })} testID="bk-address" />
           <Row style={{ gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input label="Start" value={draft?.start_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, start_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-start" /></View>
             <View style={{ flex: 1 }}><Input label="End" value={draft?.end_date?.slice(0, 10) || ""} onChangeText={(text) => setDraft({ ...draft, end_date: new Date(text).toISOString() })} mono autoCapitalize="none" testID="bk-end" /></View>

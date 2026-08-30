@@ -46,9 +46,9 @@ export const TopBar: React.FC = () => {
         <Text style={styles.crumbActive} numberOfLines={1}>{page}</Text>
       </View>
 
-      <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7} accessibilityLabel="Search rentals, equipment, sites, vendors" accessibilityRole="button">
+      <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7} accessibilityLabel="Search rentals, equipment, sites, contacts" accessibilityRole="button">
         <Ionicons name="search" size={15} color={colors.inkMuted} />
-        <Text style={styles.searchText} numberOfLines={1}>Search rentals, equipment, sites, vendors…</Text>
+        <Text style={styles.searchText} numberOfLines={1}>Search rentals, equipment, sites, contacts…</Text>
         <View style={styles.kbd}><Text style={styles.kbdText}>⌘K</Text></View>
       </TouchableOpacity>
 

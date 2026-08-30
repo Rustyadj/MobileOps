@@ -1,5 +1,5 @@
 // Wraps a write action that stays online-only in phase 1 of offline support
-// (site settings, vendor CRUD, CSV import/export, booking flows, ...) —
+// (site settings, contact CRUD, CSV import/export, booking flows, ...) —
 // dims it and explains why, rather than letting the user tap it and get a
 // generic network-error alert. See memory/PRD.md's offline-sync roadmap
 // entry for which flows are online-only vs. queued and why.

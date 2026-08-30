@@ -22,7 +22,7 @@ export const MobileBottomNav: React.FC = () => {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const rawSection = activeSectionForPath(pathname);
-  const activeSection = rawSection === "vendors" || rawSection === "admin" || rawSection === "tools" ? "menu" : rawSection;
+  const activeSection = rawSection === "contacts" || rawSection === "admin" || rawSection === "tools" ? "menu" : rawSection;
 
   return (
     <View style={[styles.wrap, { height: 58 + insets.bottom, paddingBottom: insets.bottom }]} testID="mobile-bottom-nav">

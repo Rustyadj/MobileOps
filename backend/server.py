@@ -620,7 +620,9 @@ class Dispatch(BaseModel):
     status: str = "scheduled"
     scheduled_date: Optional[datetime] = None
     customer_name: str
+    customer_type: str = "company"  # company | homeowner
     job_site: str = ""
+    job_address: str = ""
     lat: Optional[float] = None
     lng: Optional[float] = None
     rental_id: Optional[str] = None
@@ -656,7 +658,9 @@ class DispatchCreate(BaseModel):
     direction: str
     scheduled_date: Optional[datetime] = None
     customer_name: str
+    customer_type: str = "company"
     job_site: str = ""
+    job_address: str = ""
     lat: Optional[float] = None
     lng: Optional[float] = None
     rental_id: Optional[str] = None
@@ -732,7 +736,9 @@ class Rental(BaseModel):
     return_notes: str = ""
     gate_access_instructions: str = ""
     contact_permission: bool = False
+    customer_type: str = "company"  # company | homeowner
     job_site: str = ""
+    job_address: str = ""
     start_date: datetime
     due_date: Optional[datetime] = None  # legacy — kept optional for backward-compat with old records
     deposit: float = 0.0
@@ -764,7 +770,9 @@ class RentalCreate(BaseModel):
     return_notes: str = ""
     gate_access_instructions: str = ""
     contact_permission: bool = False
+    customer_type: str = "company"
     job_site: str = ""
+    job_address: str = ""
     start_date: datetime
     due_date: Optional[datetime] = None
     deposit: float = 0.0
@@ -804,7 +812,11 @@ class SchedulePickupCreate(BaseModel):
 class Booking(BaseModel):
     id: str = Field(default_factory=gen_id)
     customer_name: str
+    customer_type: str = "company"
     job_site: str = ""
+    job_address: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     start_date: datetime
     end_date: datetime
     status: str = BookingStatus.TENTATIVE  # see BookingStatus
@@ -816,7 +828,11 @@ class Booking(BaseModel):
 
 class BookingCreate(BaseModel):
     customer_name: str
+    customer_type: str = "company"
     job_site: str = ""
+    job_address: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     start_date: datetime
     end_date: datetime
     status: str = BookingStatus.TENTATIVE
@@ -970,6 +986,35 @@ class VendorCreate(BaseModel):
     freight_terms: str = ""
     truck_capacity: str = ""
     lead_time_days: int = 0
+    notes: str = ""
+
+
+class Contact(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    company: str
+    contact: str = ""
+    phone: str = ""
+    email: str = ""
+    business_address: str = ""
+    is_homeowner: bool = False
+    follows_current_job: bool = False
+    current_job_site: str = ""
+    current_job_address: str = ""
+    current_job_lat: Optional[float] = None
+    current_job_lng: Optional[float] = None
+    current_rental_id: Optional[str] = None
+    notes: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class ContactCreate(BaseModel):
+    company: str
+    contact: str = ""
+    phone: str = ""
+    email: str = ""
+    business_address: str = ""
+    is_homeowner: bool = False
+    follows_current_job: bool = False
     notes: str = ""
 
 
@@ -2250,7 +2295,8 @@ async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> 
 
     if direction == "outbound" and new_status == DispatchStatus.COMPLETED and not doc.get("rental_id"):
         rental = Rental(
-            customer_name=doc["customer_name"], job_site=doc.get("job_site", ""),
+            customer_name=doc["customer_name"], customer_type=doc.get("customer_type", "company"),
+            job_site=doc.get("job_site", ""), job_address=doc.get("job_address", ""),
             start_date=doc.get("scheduled_date") or now_utc(), notes=doc.get("notes", ""),
             lines=[
                 RentalLine(
@@ -2262,6 +2308,7 @@ async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> 
             booking_id=doc.get("booking_id"),
         )
         await db.rentals.insert_one(rental.model_dump())
+        await sync_contact_from_rental(rental)
         upd["rental_id"] = rental.id
         if doc.get("booking_id"):
             await db.bookings.update_one({"id": doc["booking_id"]}, {"$set": {"status": BookingStatus.DISPATCHED, "dispatched_rental_id": rental.id}})
@@ -2353,6 +2400,8 @@ async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(requi
         date_confirmed=body.scheduled_date is not None,
         created_by=user.name,
     )
+    if dispatch.customer_type == "homeowner" and dispatch.job_site.strip():
+        dispatch.customer_name = dispatch.job_site.strip()
     starting_bucket = dispatch_bucket_for_status(dispatch.direction, dispatch.status)
 
     if dispatch.direction == "outbound" and not dispatch.booking_id:
@@ -2518,7 +2567,11 @@ async def _create_outbound_dispatch_for_booking(doc: dict, user: UserPublic) -> 
         direction="outbound",
         scheduled_date=doc.get("start_date"),
         customer_name=doc["customer_name"],
+        customer_type=doc.get("customer_type", "company"),
         job_site=doc.get("job_site", ""),
+        job_address=doc.get("job_address", ""),
+        lat=doc.get("lat"),
+        lng=doc.get("lng"),
         booking_id=doc["id"],
         lines=[DispatchLine(**item) for item in doc["items"]],
         created_by=user.name,
@@ -2636,6 +2689,8 @@ async def list_rental_contact_actions(_: UserPublic = Depends(get_current_user))
             "preferred_contact_method": doc.get("preferred_contact_method", "call"),
             "contact_permission": bool(doc.get("contact_permission", False)),
             "job_site": doc.get("job_site", ""),
+            "job_address": doc.get("job_address", ""),
+            "customer_type": doc.get("customer_type", "company"),
         }
         linked = by_rental.get(doc["id"], [])
         for dispatch in linked:
@@ -2713,6 +2768,8 @@ async def create_rental(
 ):
     async def _run():
         rental = Rental(**body.model_dump())
+        if rental.customer_type == "homeowner" and rental.job_site.strip():
+            rental.customer_name = rental.job_site.strip()
 
         async def _do(session):
             for line in rental.lines:
@@ -2721,6 +2778,7 @@ async def create_rental(
                     location=rental.job_site, rental_id=rental.id, created_by=user.name, session=session,
                 )
             await db.rentals.insert_one(rental.model_dump(), session=session)
+            await sync_contact_from_rental(rental, session=session)
 
         # All lines allocate or none do — otherwise a shortfall on line 2 of 3
         # would leave line 1's stock already committed with no rental to show
@@ -2815,7 +2873,9 @@ async def _create_pickup_dispatch(
         scheduled_date=body.scheduled_date,
         date_confirmed=body.scheduled_date is not None,
         customer_name=rental.customer_name,
+        customer_type=rental.customer_type,
         job_site=rental.job_site,
+        job_address=rental.job_address,
         lat=rental.lat, lng=rental.lng,
         rental_id=rental_id,
         rental_completed=rental_completed,
@@ -2933,6 +2993,8 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
     old_returned: dict[str, int] = {l["equipment_id"]: l.get("returned_qty", 0) for l in doc.get("lines", [])}
     old_damaged: dict[str, int] = {l["equipment_id"]: l.get("damaged_qty", 0) for l in doc.get("lines", [])}
     upd = body.model_dump()
+    if upd.get("customer_type") == "homeowner" and str(upd.get("job_site", "")).strip():
+        upd["customer_name"] = str(upd["job_site"]).strip()
     for line in upd["lines"]:
         line["returned_qty"] = min(old_returned.get(line["equipment_id"], 0), line["qty"])
         line["damaged_qty"] = min(old_damaged.get(line["equipment_id"], 0), line["qty"])
@@ -2970,6 +3032,7 @@ async def update_rental(rental_id: str, body: RentalCreate, user: UserPublic = D
 
     await db.rentals.update_one({"id": rental_id}, {"$set": upd})
     new_doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    await sync_contact_from_rental(new_doc)
     return Rental(**new_doc)
 
 
@@ -3003,6 +3066,8 @@ async def list_bookings(user: UserPublic = Depends(get_current_user)):
 @api.post("/bookings", response_model=Booking, status_code=201)
 async def create_booking(body: BookingCreate, user: UserPublic = Depends(require_role(Role.foreman))):
     bk = Booking(**body.model_dump())
+    if bk.customer_type == "homeowner" and bk.job_site.strip():
+        bk.customer_name = bk.job_site.strip()
     if bk.status != BookingStatus.CANCELLED:
         needed: dict = {}
         for item in bk.items:
@@ -3428,7 +3493,179 @@ async def delete_shop_task(task_id: str, _: UserPublic = Depends(require_role(Ro
     return {"ok": True}
 
 
-# ----------------------------- Vendors ------------------------------------
+# ----------------------------- Contacts / legacy Vendors ------------------
+def _contact_key(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _phone_key(value: str) -> str:
+    return "".join(character for character in (value or "") if character.isdigit())
+
+
+def _contact_current_rental(contact: dict, rentals: list[dict]) -> Optional[dict]:
+    company = _contact_key(contact.get("company") or contact.get("name", ""))
+    person = _contact_key(contact.get("contact") or contact.get("contact_name", ""))
+    email = _contact_key(contact.get("email", ""))
+    phone = _phone_key(contact.get("phone", ""))
+    for rental in rentals:
+        if email and email == _contact_key(rental.get("customer_email", "")):
+            return rental
+        if phone and phone == _phone_key(rental.get("customer_phone", "")):
+            return rental
+        if company and company in {
+            _contact_key(rental.get("customer_name", "")),
+            _contact_key(rental.get("job_site", "")),
+        }:
+            return rental
+        if person and person == _contact_key(rental.get("primary_contact", "")):
+            return rental
+    return None
+
+
+def _contact_from_doc(doc: dict, rentals: list[dict]) -> Contact:
+    is_homeowner = bool(doc.get("is_homeowner", False))
+    follows_current_job = bool(doc.get("follows_current_job", False)) or is_homeowner
+    rental = _contact_current_rental(doc, rentals) if follows_current_job else None
+    stored_company = doc.get("company") or doc.get("name", "")
+    company = rental.get("job_site", "") if is_homeowner and rental and rental.get("job_site") else stored_company
+    job_address = ""
+    if rental:
+        job_address = rental.get("job_address") or rental.get("job_site", "")
+    return Contact(
+        id=doc["id"],
+        company=company,
+        contact=doc.get("contact") or doc.get("contact_name", ""),
+        phone=doc.get("phone", ""),
+        email=doc.get("email", ""),
+        business_address=doc.get("business_address") or doc.get("address", ""),
+        is_homeowner=is_homeowner,
+        follows_current_job=follows_current_job,
+        current_job_site=rental.get("job_site", "") if rental else "",
+        current_job_address=job_address,
+        current_job_lat=rental.get("lat") if rental else None,
+        current_job_lng=rental.get("lng") if rental else None,
+        current_rental_id=rental.get("id") if rental else None,
+        notes=doc.get("notes", ""),
+        created_at=doc.get("created_at", now_utc()),
+    )
+
+
+async def sync_contact_from_rental(rental: Rental | dict, *, session=None) -> None:
+    """Keep the directory linked to the newest customer job without
+    replacing a company's permanent business address."""
+    doc = rental.model_dump() if isinstance(rental, Rental) else rental
+    is_homeowner = doc.get("customer_type") == "homeowner"
+    company = doc.get("job_site", "") if is_homeowner else doc.get("customer_name", "")
+    if not company:
+        return
+    selectors = [{"company": company}, {"name": company}]
+    if doc.get("customer_email"):
+        selectors.append({"email": doc["customer_email"]})
+    if doc.get("customer_phone"):
+        selectors.append({"phone": doc["customer_phone"]})
+    existing = await db.vendors.find_one({"$or": selectors}, {"_id": 0}, session=session)
+    update = {
+        "company": company,
+        "name": company,
+        "is_homeowner": is_homeowner,
+        "follows_current_job": True,
+    }
+    if doc.get("primary_contact"):
+        update.update({"contact": doc["primary_contact"], "contact_name": doc["primary_contact"]})
+    if doc.get("customer_phone"):
+        update["phone"] = doc["customer_phone"]
+    if doc.get("customer_email"):
+        update["email"] = doc["customer_email"]
+    if is_homeowner and doc.get("job_address"):
+        update.update({"business_address": doc["job_address"], "address": doc["job_address"]})
+    if existing:
+        await db.vendors.update_one({"id": existing["id"]}, {"$set": update}, session=session)
+    else:
+        contact = {
+            "id": gen_id(),
+            **update,
+            "contact": update.get("contact", ""),
+            "contact_name": update.get("contact_name", ""),
+            "phone": update.get("phone", ""),
+            "email": update.get("email", ""),
+            "business_address": update.get("business_address", ""),
+            "address": update.get("address", ""),
+            "notes": "",
+            "categories": [],
+            "freight_terms": "",
+            "truck_capacity": "",
+            "lead_time_days": 0,
+            "created_at": now_utc(),
+        }
+        await db.vendors.insert_one(contact, session=session)
+
+
+async def sync_contacts_from_existing_rentals() -> int:
+    rentals = await db.rentals.find({}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+    for rental in rentals:
+        await sync_contact_from_rental(rental)
+    return len(rentals)
+
+
+@api.get("/contacts", response_model=List[Contact])
+async def list_contacts(_: UserPublic = Depends(get_current_user)):
+    docs = await db.vendors.find({}, {"_id": 0}).to_list(2000)
+    rentals = await db.rentals.find(
+        {"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}
+    ).sort("start_date", -1).to_list(2000)
+    return sorted((_contact_from_doc(doc, rentals) for doc in docs), key=lambda contact: contact.company.lower())
+
+
+@api.post("/contacts", response_model=Contact, status_code=201)
+async def create_contact(body: ContactCreate, _: UserPublic = Depends(require_role(Role.foreman))):
+    if not body.company.strip():
+        raise HTTPException(400, "Company or job-site name is required")
+    contact = Contact(**body.model_dump())
+    stored = {
+        **contact.model_dump(exclude={"current_job_site", "current_job_address", "current_job_lat", "current_job_lng", "current_rental_id"}),
+        "name": contact.company,
+        "contact_name": contact.contact,
+        "address": contact.business_address,
+        "categories": [],
+        "freight_terms": "",
+        "truck_capacity": "",
+        "lead_time_days": 0,
+    }
+    await db.vendors.insert_one(stored)
+    return contact
+
+
+@api.put("/contacts/{contact_id}", response_model=Contact)
+async def update_contact(contact_id: str, body: ContactCreate, _: UserPublic = Depends(require_role(Role.foreman))):
+    if not body.company.strip():
+        raise HTTPException(400, "Company or job-site name is required")
+    update = {
+        **body.model_dump(),
+        "name": body.company,
+        "contact_name": body.contact,
+        "address": body.business_address,
+    }
+    result = await db.vendors.update_one({"id": contact_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(404, "Contact not found")
+    doc = await db.vendors.find_one({"id": contact_id}, {"_id": 0})
+    rentals = await db.rentals.find(
+        {"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}
+    ).sort("start_date", -1).to_list(2000)
+    return _contact_from_doc(doc, rentals)
+
+
+@api.delete("/contacts/{contact_id}")
+async def delete_contact(contact_id: str, _: UserPublic = Depends(require_role(Role.admin))):
+    result = await db.vendors.delete_one({"id": contact_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Contact not found")
+    return {"ok": True}
+
+
+# Legacy endpoints remain available for older mobile clients during the
+# Vendors -> Contacts rename. They use the same records and are not a second
+# source of truth.
 @api.get("/vendors", response_model=List[Vendor])
 async def list_vendors(_: UserPublic = Depends(get_current_user)):
     docs = await db.vendors.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
@@ -3908,7 +4145,7 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
     active_rentals = await db.rentals.count_documents({"status": {"$in": list(RentalStatus.OPEN)}})
     open_maintenance = await db.maintenance.count_documents({"status": {"$in": ["open", "in_progress"]}})
     open_shop_tasks = await db.shop_tasks.count_documents({"status": {"$ne": "done"}})
-    vendors_count = await db.vendors.count_documents({})
+    contacts_count = await db.vendors.count_documents({})
 
     today = now_utc().date()
     returning_today = 0
@@ -3953,7 +4190,8 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
         "open_maintenance": open_maintenance,
         "open_shop_tasks": open_shop_tasks,
         "shortage_count": shortage_count,
-        "vendors_count": vendors_count,
+        "contacts_count": contacts_count,
+        "vendors_count": contacts_count,  # legacy dashboard clients
         "activity": activity[:8],
     }
 
@@ -4317,6 +4555,9 @@ async def on_startup():
     await db.dispatches.create_index("booking_id")
     await db.dispatches.create_index("rental_id")
     await db.dispatches.create_index([("direction", 1), ("status", 1)])
+    await db.vendors.create_index("company")
+    await db.vendors.create_index("email")
+    await db.vendors.create_index("phone")
     await db.ledger_entries.create_index("booking_id")
     await db.ledger_entries.create_index("rental_id")
     await db.mcp_agents.create_index("id", unique=True)
@@ -4328,6 +4569,7 @@ async def on_startup():
     await db.mcp_confirmations.create_index("expires_at", expireAfterSeconds=0)
     await seed()
     await backfill_rental_booking_ids()
+    await sync_contacts_from_existing_rentals()
     await seed_hermes_agent(db)
     await mobileops_mcp.start()
     logger.info("Concrete Form API ready")

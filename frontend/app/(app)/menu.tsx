@@ -1,5 +1,5 @@
 // Mobile "Menu" tab — secondary destinations not on the primary bottom nav
-// (Tools, Vendors, Administration) plus account info and sign out.
+// (Tools, Contacts, Administration) plus account info and sign out.
 // Home/Operations/Inventory/Shop each have their own bottom-nav tab, so
 // they aren't repeated here.
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
@@ -12,7 +12,7 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
   { label: "Utilities", sub: "Delivery tickets, bracing, and calculators", route: "/(app)/tools", icon: "construct-outline", testID: "more-tools" },
-  { label: "Vendors", sub: "ICF block supplier directory", route: "/(app)/vendors", icon: "business-outline", testID: "more-vendors" },
+  { label: "Contacts", sub: "Companies, homeowners, and current job locations", route: "/(app)/contacts", icon: "people-outline", testID: "more-contacts" },
   { label: "Site Admin", sub: "Brand, logo, company contact", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];
 

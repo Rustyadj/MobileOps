@@ -8,7 +8,7 @@ const { randomUUID } = require("node:crypto");
 const PORT = Number(process.env.MOBILEOPS_DEMO_API_PORT || 8001);
 const backendRoot = path.resolve(__dirname, "..", "..", "backend");
 const demoDataRoot = path.resolve(__dirname, "..", ".demo-data");
-const statePath = path.join(demoDataRoot, "state.json");
+const statePath = process.env.MOBILEOPS_DEMO_STATE_PATH || path.join(demoDataRoot, "state.json");
 const loadSeed = (name) => JSON.parse(fs.readFileSync(path.join(backendRoot, name), "utf8"));
 const now = () => new Date().toISOString();
 const savedState = (() => {
@@ -26,13 +26,13 @@ const equipment = [
 
 const initialBookings = [
   {
-    id: "demo-booking-community-hs", customer_name: "Community HS", job_site: "Nevada · Unit J1",
+    id: "demo-booking-community-hs", customer_name: "Community HS", customer_type: "company", job_site: "Nevada · Unit J1", job_address: "Nevada, TX",
     start_date: "2026-09-18T12:00:00Z", end_date: "2026-10-18T12:00:00Z", status: "confirmed",
     items: [{ equipment_id: "demo-sb20", sku: "SB-2001", qr_code: "SB-2001", name: "20 ft Stiffback", qty: 56, returned_qty: 0, daily_rate: 12 }],
     notes: "Waiting on permit. Planning demo record.", dispatched_rental_id: null,
   },
   {
-    id: "demo-booking-ferris", customer_name: "Ferris", job_site: "Ferris",
+    id: "demo-booking-ferris", customer_name: "Ferris", customer_type: "company", job_site: "Ferris", job_address: "Ferris, TX",
     start_date: "2026-09-28T12:00:00Z", end_date: "2026-10-28T12:00:00Z", status: "tentative",
     items: [{ equipment_id: "demo-sb16", sku: "SB-1601", qr_code: "SB-1601", name: "16 ft Stiffback", qty: 131, returned_qty: 0, daily_rate: 10 }],
     notes: "Date and final load remain tentative.", dispatched_rental_id: null,
@@ -40,16 +40,21 @@ const initialBookings = [
 ];
 let bookings = Array.isArray(savedState?.bookings) ? savedState.bookings : initialBookings;
 const initialRentals = [{
-  id: "demo-rental-lakeside", customer_name: "Lakeside Homeowner", primary_contact: "Morgan Lee",
+  id: "demo-rental-lakeside", customer_name: "Lakeside Residence", customer_type: "homeowner", primary_contact: "Morgan Lee",
   customer_phone: "(940) 555-0148", customer_email: "morgan@example.com", preferred_contact_method: "text",
-  contact_permission: true, job_site: "412 Lakeview Dr, Denton, TX", gate_access_instructions: "Use east gate; call on arrival",
+  contact_permission: true, job_site: "Lakeside Residence", job_address: "412 Lakeview Dr, Denton, TX", gate_access_instructions: "Use east gate; call on arrival",
   delivery_notes: "Keep driveway clear", return_notes: "Pickup after 2 PM", start_date: "2026-08-22T12:00:00Z",
   due_date: "2026-09-05T12:00:00Z", deposit: 0, notes: "", status: "active", lat: null, lng: null,
   delivered_by: "Demo Driver", received_by: "", created_at: now(),
   communication_log: [{ id: "demo-comm-1", channel: "text", direction: "outgoing", summary: "Delivery window confirmed for 9–11 AM.", outcome: "Customer confirmed", created_by: "Nathan", created_at: now() }],
   lines: [{ equipment_id: "demo-sb20", sku: "SB-2001", qr_code: "SB-2001", name: "20 ft Stiffback", qty: 60, daily_rate: 12, delivered_qty: 60, returned_qty: 0, damaged_qty: 0 }],
 }];
-let rentals = Array.isArray(savedState?.rentals) && savedState.rentals.length ? savedState.rentals : initialRentals;
+let rentals = (Array.isArray(savedState?.rentals) && savedState.rentals.length ? savedState.rentals : initialRentals).map((rental) => ({ customer_type: "company", job_address: "", ...rental }));
+const initialContacts = [
+  { id: "demo-contact-lakeside", company: "Lakeside Residence", contact: "Morgan Lee", phone: "(940) 555-0148", email: "morgan@example.com", business_address: "412 Lakeview Dr, Denton, TX", is_homeowner: true, follows_current_job: true, notes: "" },
+  { id: "demo-contact-acme", company: "Acme ICF Supply", contact: "John D.", phone: "555-0100", email: "sales@acme-icf.com", business_address: "100 Industrial Way", is_homeowner: false, follows_current_job: false, notes: "" },
+];
+let contacts = Array.isArray(savedState?.contacts) && savedState.contacts.length ? savedState.contacts : initialContacts;
 let dashboardItems = Array.isArray(savedState?.dashboardItems) ? savedState.dashboardItems : [];
 let inventoryCounts = [];
 
@@ -69,7 +74,26 @@ const dispatches = seededDispatches.map((item) => normalizeDeliveredPlan(savedDi
 
 function persistState() {
   fs.mkdirSync(demoDataRoot, { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify({ bookings, rentals, dispatches, dashboardItems }, null, 2));
+  fs.writeFileSync(statePath, JSON.stringify({ bookings, rentals, contacts, dispatches, dashboardItems }, null, 2));
+}
+
+function contactWithCurrentJob(contact) {
+  const key = (value) => String(value || "").trim().toLowerCase();
+  const rental = (contact.follows_current_job || contact.is_homeowner) ? [...rentals].reverse().find((item) => item.status !== "returned" && (
+    key(item.customer_email) === key(contact.email)
+    || key(item.customer_phone) === key(contact.phone)
+    || key(item.customer_name) === key(contact.company)
+    || key(item.job_site) === key(contact.company)
+  )) : null;
+  return {
+    ...contact,
+    company: contact.is_homeowner && rental?.job_site ? rental.job_site : contact.company,
+    current_job_site: rental?.job_site || "",
+    current_job_address: rental ? rental.job_address || rental.job_site || "" : "",
+    current_job_lat: rental?.lat ?? null,
+    current_job_lng: rental?.lng ?? null,
+    current_rental_id: rental?.id || null,
+  };
 }
 
 const site = {
@@ -184,13 +208,37 @@ const server = http.createServer(async (req, res) => {
       total_reserved: equipment.reduce((sum, item) => sum + item.reserved, 0),
       total_on_rental: equipment.reduce((sum, item) => sum + item.on_rental, 0),
       total_pending_inspection: 0, returning_today: 0, active_rentals: rentals.length,
-      open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, vendors_count: 1,
+      open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, contacts_count: contacts.length, vendors_count: contacts.length,
       activity: [{ type: "demo", title: "Local demo data loaded", ts: now() }],
     });
     if (req.method === "GET" && route === "/api/dashboard/shortages") return send(res, 200, { rows: [] });
     if (req.method === "GET" && route === "/api/dashboard/items") return send(res, 200, dashboardItems.filter((item) => item.status === "open"));
     if (req.method === "GET" && route === "/api/inventory-counts") return send(res, 200, inventoryCounts);
+    if (req.method === "GET" && route === "/api/contacts") return send(res, 200, contacts.map(contactWithCurrentJob));
     if (req.method === "GET" && ["/api/shop-tasks", "/api/maintenance", "/api/vendors", "/api/transfers", "/api/ledger-entries"].includes(route)) return send(res, 200, []);
+
+    if (req.method === "POST" && route === "/api/contacts") {
+      const body = await readBody(req);
+      const contact = { id: `demo-contact-${randomUUID()}`, ...body, created_at: now() };
+      contacts.push(contact);
+      persistState();
+      return send(res, 201, contactWithCurrentJob(contact));
+    }
+    const contactRoute = route.match(/^\/api\/contacts\/([^/]+)$/);
+    if (contactRoute && req.method === "PUT") {
+      const contact = contacts.find((item) => item.id === decodeURIComponent(contactRoute[1]));
+      if (!contact) return send(res, 404, { detail: "Contact not found" });
+      Object.assign(contact, await readBody(req));
+      persistState();
+      return send(res, 200, contactWithCurrentJob(contact));
+    }
+    if (contactRoute && req.method === "DELETE") {
+      const index = contacts.findIndex((item) => item.id === decodeURIComponent(contactRoute[1]));
+      if (index < 0) return send(res, 404, { detail: "Contact not found" });
+      contacts.splice(index, 1);
+      persistState();
+      return send(res, 200, { ok: true });
+    }
 
     if (req.method === "POST" && route === "/api/yard-counts") {
       const body = await readBody(req);
@@ -279,7 +327,7 @@ const server = http.createServer(async (req, res) => {
         delivery = {
           id: `demo-delivery-${randomUUID()}`, direction: "outbound", status: "scheduled",
           scheduled_date: booking.start_date, date_confirmed: true,
-          customer_name: booking.customer_name, job_site: booking.job_site || "", booking_id: booking.id,
+          customer_name: booking.customer_name, customer_type: booking.customer_type || "company", job_site: booking.job_site || "", job_address: booking.job_address || "", lat: booking.lat ?? null, lng: booking.lng ?? null, booking_id: booking.id,
           rental_id: null, driver_name: "", truck: "", trailer: "", crew: "", notes: booking.notes || "",
           lines: (booking.items || []).map((line) => ({ equipment_id: line.equipment_id, sku: line.sku, name: line.name, qty: line.qty, delivered_qty: null, pickup_confirmed: false })),
           planning_only: false, created_by: "Demo Operator", created_at: now(), updated_at: now(),
@@ -302,7 +350,7 @@ const server = http.createServer(async (req, res) => {
           id: `demo-pickup-${randomUUID()}`, direction: "inbound", status: "scheduled",
           rental_id: rental.id, rental_completed: adminCompleted,
           scheduled_date: body.scheduled_date || null, date_confirmed: !!body.scheduled_date,
-          customer_name: rental.customer_name, job_site: rental.job_site || "", driver_name: body.driver_name || "",
+          customer_name: rental.customer_name, customer_type: rental.customer_type || "company", job_site: rental.job_site || "", job_address: rental.job_address || "", driver_name: body.driver_name || "",
           truck: body.truck || "", trailer: body.trailer || "", crew: body.crew || "", notes: body.notes || "",
           lines: (rental.lines || []).filter((line) => (line.delivered_qty || line.qty) > (line.returned_qty || 0)).map((line) => ({
             equipment_id: line.equipment_id, sku: line.sku, name: line.name,
@@ -347,13 +395,13 @@ const server = http.createServer(async (req, res) => {
         item.lines = item.lines.map((line, index) => ({ ...line, delivered_qty: Number(body.lines[index].delivered_qty) }));
         const rental = {
           id: `demo-rental-${randomUUID()}`, booking_id: item.booking_id || null,
-          customer_name: item.customer_name, customer_phone: "", customer_email: "", primary_contact: "",
+          customer_name: item.customer_name, customer_type: item.customer_type || "company", customer_phone: "", customer_email: "", primary_contact: "",
           preferred_contact_method: "call", contact_permission: false, communication_log: [],
-          job_site: item.job_site || "", start_date: item.scheduled_date || now(), due_date: null,
+          job_site: item.job_site || "", job_address: item.job_address || "", start_date: item.scheduled_date || now(), due_date: null,
           status: "active", lines: item.lines.filter((line) => line.delivered_qty > 0).map((line) => ({
             equipment_id: line.equipment_id, sku: line.sku, name: line.name, qty: line.delivered_qty,
             delivered_qty: line.delivered_qty, returned_qty: 0, damaged_qty: 0, daily_rate: 0,
-          })), lat: null, lng: null, notes: "", delivered_by: "Demo Operator", received_by: "",
+          })), lat: item.lat ?? null, lng: item.lng ?? null, notes: "", delivered_by: "Demo Operator", received_by: "",
         };
         rentals.push(rental);
         item.rental_id = rental.id;

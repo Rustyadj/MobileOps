@@ -18,6 +18,7 @@ import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { DISPATCH_STATUS, TERMINAL_DISPATCH_STATUSES, isDispatchLive, isRentalReturned } from "@/src/domain/status";
+import { geocodeString } from "@/src/components/MapCanvas";
 
 type Direction = "outbound" | "inbound";
 type DLine = {
@@ -28,7 +29,7 @@ type Eq = { id: string; sku: string; name: string; available: number };
 type RentalLite = { id: string; customer_name: string; job_site: string; status: string };
 type Dispatch = {
   id: string; direction: Direction; status: string;
-  scheduled_date?: string | null; customer_name: string; job_site: string;
+  scheduled_date?: string | null; customer_name: string; customer_type?: "company" | "homeowner"; job_site: string; job_address?: string;
   lat?: number | null; lng?: number | null;
   rental_id?: string | null; booking_id?: string | null;
   driver_name: string; truck: string; trailer: string; crew: string;
@@ -134,7 +135,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
 
   const [creating, setCreating] = useState(false);
   const [newDirection, setNewDirection] = useState<Direction>(initialDirection || "outbound");
-  const [outboundDraft, setOutboundDraft] = useState({ customer_name: "", job_site: "", scheduled_date: "" });
+  const [outboundDraft, setOutboundDraft] = useState({ customer_name: "", customer_type: "company" as "company" | "homeowner", job_site: "", job_address: "", lat: null as number | null, lng: null as number | null, scheduled_date: "" });
   const [outboundLines, setOutboundLines] = useState<DLine[]>([]);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
   const [pickupRentalId, setPickupRentalId] = useState<string>("");
@@ -149,7 +150,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
 
   const openNew = () => {
     setNewDirection(initialDirection || "outbound");
-    setOutboundDraft({ customer_name: "", job_site: "", scheduled_date: "" });
+    setOutboundDraft({ customer_name: "", customer_type: "company", job_site: "", job_address: "", lat: null, lng: null, scheduled_date: "" });
     setOutboundLines([]);
     setPickupRentalId("");
     setCreating(true);
@@ -324,16 +325,27 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const saveNewDispatch = async () => {
     try {
       if (newDirection === "outbound") {
-        if (!outboundDraft.customer_name.trim() || outboundLines.length === 0) {
-          Alert.alert("Required", "Customer name and at least one equipment line.");
+        const customerName = outboundDraft.customer_type === "homeowner" ? outboundDraft.job_site.trim() : outboundDraft.customer_name.trim();
+        if (!customerName || !outboundDraft.job_site.trim() || !outboundDraft.job_address.trim() || outboundLines.length === 0) {
+          Alert.alert("Required", "Company/job-site name, job site, job address, and at least one equipment line are required.");
+          return;
+        }
+        const coordinates = outboundDraft.lat != null && outboundDraft.lng != null
+          ? { lat: outboundDraft.lat, lng: outboundDraft.lng }
+          : await geocodeString(outboundDraft.job_address);
+        if (!coordinates) {
+          Alert.alert("Address not found", "Check the job address so MobileOps can place its map pin.");
           return;
         }
         await api("/dispatches", {
           method: "POST",
           body: JSON.stringify({
             direction: "outbound",
-            customer_name: outboundDraft.customer_name,
+            customer_name: customerName,
+            customer_type: outboundDraft.customer_type,
             job_site: outboundDraft.job_site,
+            job_address: outboundDraft.job_address,
+            ...coordinates,
             scheduled_date: outboundDraft.scheduled_date ? new Date(outboundDraft.scheduled_date).toISOString() : null,
             lines: outboundLines,
           }),
@@ -601,8 +613,13 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
 
           {newDirection === "outbound" ? (
             <>
-              <Input label="Customer Name" value={outboundDraft.customer_name} onChangeText={(t) => setOutboundDraft((d) => ({ ...d, customer_name: t }))} testID="dispatch-cust-name" />
-              <Input label="Job Site" value={outboundDraft.job_site} onChangeText={(t) => setOutboundDraft((d) => ({ ...d, job_site: t }))} testID="dispatch-job-site" />
+              <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+                <View style={{ flex: 1 }}><Button title="Company" variant={outboundDraft.customer_type === "company" ? "primary" : "outline"} onPress={() => setOutboundDraft((draft) => ({ ...draft, customer_type: "company" }))} testID="dispatch-customer-company" /></View>
+                <View style={{ flex: 1 }}><Button title="Homeowner" variant={outboundDraft.customer_type === "homeowner" ? "primary" : "outline"} onPress={() => setOutboundDraft((draft) => ({ ...draft, customer_type: "homeowner", customer_name: draft.job_site }))} testID="dispatch-customer-homeowner" /></View>
+              </Row>
+              {outboundDraft.customer_type === "company" ? <Input label="Company" value={outboundDraft.customer_name} onChangeText={(customer_name) => setOutboundDraft((draft) => ({ ...draft, customer_name }))} testID="dispatch-cust-name" /> : null}
+              <Input label="Job Site Name" value={outboundDraft.job_site} onChangeText={(job_site) => setOutboundDraft((draft) => ({ ...draft, job_site, ...(draft.customer_type === "homeowner" ? { customer_name: job_site } : {}) }))} testID="dispatch-job-site" />
+              <Input label="Job Address" value={outboundDraft.job_address} onChangeText={(job_address) => setOutboundDraft((draft) => ({ ...draft, job_address }))} testID="dispatch-job-address" />
               <Input label="Scheduled date (yyyy-mm-dd)" value={outboundDraft.scheduled_date} onChangeText={(t) => setOutboundDraft((d) => ({ ...d, scheduled_date: t }))} mono autoCapitalize="none" testID="dispatch-sched-date" />
 
               <SectionLabel>Equipment ({outboundLines.length})</SectionLabel>

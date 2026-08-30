@@ -1,13 +1,13 @@
 // Frontend aggregation for global search — no dedicated backend endpoint
 // exists, so we fan out to the existing list endpoints and rank matches
 // client-side. Covers equipment/QR codes, rentals (+ embedded customer/job
-// site), bookings, and vendors — every entity the nav surfaces.
+// site), bookings, and contacts — every entity the nav surfaces.
 import { api } from "@/src/api/client";
 import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 
 export type SearchResult = {
   id: string;
-  type: "equipment" | "rental" | "booking" | "vendor" | "task";
+  type: "equipment" | "rental" | "booking" | "contact" | "task";
   title: string;
   subtitle: string;
   route: string;
@@ -18,11 +18,11 @@ let cache: Cache = null;
 const CACHE_MS = 30_000;
 
 async function fetchAll(): Promise<SearchResult[]> {
-  const [equipment, rentals, bookings, vendors, tasks] = await Promise.all([
+  const [equipment, rentals, bookings, contacts, tasks] = await Promise.all([
     api<any[]>("/equipment").catch(() => []),
     api<any[]>("/rentals").catch(() => []),
     api<any[]>("/bookings").catch(() => []),
-    api<any[]>("/vendors").catch(() => []),
+    api<any[]>("/contacts").catch(() => []),
     api<any[]>("/shop-tasks").catch(() => []),
   ]);
 
@@ -64,13 +64,13 @@ async function fetchAll(): Promise<SearchResult[]> {
       route: `/(app)/operations/bookings?open=${b.id}`,
     });
   }
-  for (const v of vendors) {
+  for (const contact of contacts) {
     results.push({
-      id: v.id,
-      type: "vendor",
-      title: v.name,
-      subtitle: v.contact_name ? `Vendor · ${v.contact_name}` : "Vendor",
-      route: `/(app)/vendors?open=${v.id}`,
+      id: contact.id,
+      type: "contact",
+      title: contact.company,
+      subtitle: contact.contact ? `Contact · ${contact.contact}` : "Contact",
+      route: `/(app)/contacts?open=${contact.id}`,
     });
   }
   return results;

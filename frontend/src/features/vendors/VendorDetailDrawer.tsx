@@ -1,81 +1,89 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, Linking, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Mono, Row, Pill, Button } from "@/src/components/ui";
+import { Mono, Row, Button, SectionLabel } from "@/src/components/ui";
 import { ConfirmDialog } from "@/src/components/feedback/ConfirmDialog";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { colors, spacing, type as typo } from "@/src/theme";
-import type { Vendor } from "./useVendors";
+import type { Contact } from "./useVendors";
 
-export const VendorDetailDrawer: React.FC<{
-  vendor: Vendor | null;
+export const ContactDetailDrawer: React.FC<{
+  contact: Contact | null;
   onClose: () => void;
-  onEdit: (v: Vendor) => void;
+  onEdit: (contact: Contact) => void;
   onDelete: (id: string) => Promise<void>;
-}> = ({ vendor, onClose, onEdit, onDelete }) => {
+  onOpenMap: (contact: Contact) => void;
+}> = ({ contact, onClose, onEdit, onDelete, onOpenMap }) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  if (!vendor) return null;
+  if (!contact) return null;
 
   const handleDelete = async () => {
     setConfirmDelete(false);
-    try { await onDelete(vendor.id); onClose(); }
+    try { await onDelete(contact.id); onClose(); }
     catch (e: any) { Alert.alert("Delete failed", e.message); }
   };
 
   return (
     <>
-      <DetailDrawer visible={!!vendor} title={vendor.name} subtitle={vendor.contact_name || undefined} onClose={onClose} testID="vendor-detail-drawer">
-        <Row style={{ gap: 8, flexWrap: "wrap", marginBottom: spacing.md }}>
-          {vendor.categories.map((c) => <Pill key={c}>{c}</Pill>)}
-        </Row>
+      <DetailDrawer visible={!!contact} title={contact.company} subtitle={contact.contact || undefined} onClose={onClose} testID="contact-detail-drawer">
+        <SectionLabel>{contact.is_homeowner ? "Homeowner / Job Site" : "Company"}</SectionLabel>
 
-        {(vendor.phone || vendor.email) ? (
+        {(contact.phone || contact.email) ? (
           <Row style={{ gap: spacing.lg, marginBottom: spacing.md, flexWrap: "wrap" }}>
-            {vendor.phone ? (
-              <TouchableOpacity onPress={() => Linking.openURL(`tel:${vendor.phone}`)} testID="drawer-call-vendor">
-                <Row style={{ gap: 4 }}><Ionicons name="call-outline" size={14} color={colors.accent} /><Mono style={{ fontSize: 13 }}>{vendor.phone}</Mono></Row>
+            {contact.phone ? (
+              <TouchableOpacity onPress={() => Linking.openURL(`tel:${contact.phone}`)} testID="drawer-call-contact">
+                <Row style={{ gap: 4 }}><Ionicons name="call-outline" size={14} color={colors.accent} /><Mono style={{ fontSize: 13 }}>{contact.phone}</Mono></Row>
               </TouchableOpacity>
             ) : null}
-            {vendor.email ? (
-              <TouchableOpacity onPress={() => Linking.openURL(`mailto:${vendor.email}`)} testID="drawer-email-vendor">
-                <Row style={{ gap: 4 }}><Ionicons name="mail-outline" size={14} color={colors.accent} /><Mono style={{ fontSize: 13 }}>{vendor.email}</Mono></Row>
+            {contact.email ? (
+              <TouchableOpacity onPress={() => Linking.openURL(`mailto:${contact.email}`)} testID="drawer-email-contact">
+                <Row style={{ gap: 4 }}><Ionicons name="mail-outline" size={14} color={colors.accent} /><Mono style={{ fontSize: 13 }}>{contact.email}</Mono></Row>
               </TouchableOpacity>
             ) : null}
           </Row>
         ) : null}
 
-        {vendor.address ? <Text style={[typo.body, { marginBottom: spacing.md }]}>{vendor.address}</Text> : null}
+        {contact.current_job_site ? (
+          <View style={styles.locationCard}>
+            <Row style={{ gap: spacing.sm }}>
+              <Ionicons name="location" size={18} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={typo.label}>Current Job</Text>
+                <Text style={typo.body}>{contact.current_job_site}</Text>
+                <Text style={typo.bodySmall}>{contact.current_job_address || "Address not entered"}</Text>
+              </View>
+            </Row>
+            {contact.current_job_lat != null && contact.current_job_lng != null ? <Button title="Show Pin on Map" variant="outline" onPress={() => onOpenMap(contact)} testID="contact-open-map" style={{ marginTop: spacing.sm }} /> : <Text style={[typo.bodySmall, { color: colors.error, marginTop: spacing.sm }]}>This job still needs a map pin.</Text>}
+          </View>
+        ) : null}
 
-        <View style={styles.grid}>
-          {vendor.freight_terms ? <Text style={typo.label}>Freight <Text style={typo.body}>{vendor.freight_terms}</Text></Text> : null}
-          {vendor.truck_capacity ? <Text style={typo.label}>Truck <Text style={typo.body}>{vendor.truck_capacity}</Text></Text> : null}
-          {vendor.lead_time_days > 0 ? <Text style={typo.label}>Lead time <Text style={typo.body}>{vendor.lead_time_days} days</Text></Text> : null}
-        </View>
+        <SectionLabel>Business Address</SectionLabel>
+        <Text style={[typo.body, { marginBottom: spacing.md }]}>{contact.business_address || "Not entered"}</Text>
 
-        {vendor.notes ? (
+        {contact.notes ? (
           <>
             <View style={{ height: spacing.md }} />
             <Text style={typo.caption}>Notes</Text>
-            <Text style={[typo.body, { marginTop: 4 }]}>{vendor.notes}</Text>
+            <Text style={[typo.body, { marginTop: 4 }]}>{contact.notes}</Text>
           </>
         ) : null}
 
         <View style={{ height: spacing.lg }} />
         <Row style={{ gap: spacing.sm }}>
-          <View style={{ flex: 1 }}><Button title="Edit" onPress={() => onEdit(vendor)} variant="outline" testID="drawer-edit-vendor" /></View>
-          <View style={{ flex: 1 }}><RequiresOnline><Button title="Delete" onPress={() => setConfirmDelete(true)} variant="danger" testID="drawer-delete-vendor" /></RequiresOnline></View>
+          <View style={{ flex: 1 }}><Button title="Edit" onPress={() => onEdit(contact)} variant="outline" testID="drawer-edit-contact" /></View>
+          <View style={{ flex: 1 }}><RequiresOnline><Button title="Delete" onPress={() => setConfirmDelete(true)} variant="danger" testID="drawer-delete-contact" /></RequiresOnline></View>
         </Row>
       </DetailDrawer>
 
       <ConfirmDialog
         visible={confirmDelete}
-        title="Delete this vendor?"
-        message={`This removes ${vendor.name} from the directory. This can't be undone.`}
+        title="Delete this contact?"
+        message={`This removes ${contact.company} from the directory. This can't be undone.`}
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setConfirmDelete(false)}
-        testID="delete-vendor-confirm"
+        testID="delete-contact-confirm"
       />
     </>
   );
@@ -83,4 +91,5 @@ export const VendorDetailDrawer: React.FC<{
 
 const styles = StyleSheet.create({
   grid: { gap: 6 },
+  locationCard: { padding: spacing.md, marginBottom: spacing.md, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft },
 });

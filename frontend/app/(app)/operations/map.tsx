@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -46,7 +46,9 @@ type Rental = {
   customer_name: string;
   customer_phone: string;
   customer_email: string;
+  customer_type: "company" | "homeowner";
   job_site: string;
+  job_address: string;
   start_date: string;
   due_date?: string | null;
   deposit: number;
@@ -118,6 +120,7 @@ function RentalListRow({ rental, selected, onPress, onSetLocation }: {
           <Mono style={styles.unitCount}>{units}</Mono>
         </Row>
         <Text style={typo.bodySmall} numberOfLines={1}>{rental.job_site || "Job site not entered"}</Text>
+        {rental.job_address ? <Text style={styles.jobAddress} numberOfLines={1}>{rental.job_address}</Text> : null}
         <Row style={{ justifyContent: "space-between", marginTop: 5, gap: spacing.sm }}>
           {hasLocation(rental) ? (
             <Mono style={styles.coordinateText}>{rental.lat!.toFixed(4)}, {rental.lng!.toFixed(4)}</Mono>
@@ -238,6 +241,7 @@ function RentalDetail({ rental, mobile, onBack, onClose, onSetLocation, onOpenMa
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.locationTitle}>{rental.job_site || "Job site not entered"}</Text>
+              {rental.job_address ? <Text style={typo.bodySmall}>{rental.job_address}</Text> : null}
               {hasLocation(rental) ? (
                 <Mono style={styles.coordinateText}>{rental.lat!.toFixed(6)}, {rental.lng!.toFixed(6)}</Mono>
               ) : (
@@ -308,6 +312,7 @@ function RentalDetail({ rental, mobile, onBack, onClose, onSetLocation, onOpenMa
 
 export default function MapScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ open?: string }>();
   const insets = useSafeAreaInsets();
   const { isShellWide } = useBreakpoint();
   const [rentals, setRentals] = useState<Rental[]>([]);
@@ -335,6 +340,11 @@ export default function MapScreen() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!params.open) return;
+    const target = rentals.find((rental) => rental.id === String(params.open));
+    if (target) setSelected(target);
+  }, [params.open, rentals]);
 
   const openRentals = useMemo(() => rentals.filter(isOpenRental), [rentals]);
   const missingCount = useMemo(() => openRentals.filter((rental) => !hasLocation(rental)).length, [openRentals]);
@@ -347,7 +357,7 @@ export default function MapScreen() {
       if (filter !== "all" && filter !== "missing" && rental.status !== filter) return false;
       if (!query) return true;
       const equipment = rental.lines.map((line) => `${line.name} ${line.sku} ${line.qr_code || ""}`).join(" ");
-      return `${rental.customer_name} ${rental.job_site} ${rental.customer_phone} ${rental.customer_email} ${equipment}`.toLowerCase().includes(query);
+      return `${rental.customer_name} ${rental.job_site} ${rental.job_address} ${rental.customer_phone} ${rental.customer_email} ${equipment}`.toLowerCase().includes(query);
     });
   }, [filter, openRentals, search]);
 
@@ -355,8 +365,8 @@ export default function MapScreen() {
     id: rental.id,
     lat: rental.lat!,
     lng: rental.lng!,
-    title: rental.customer_name,
-    subtitle: `${rental.job_site || "No job site"} · ${rentalUnits(rental)} on site`,
+    title: rental.customer_type === "homeowner" ? rental.job_site || rental.customer_name : rental.customer_name,
+    subtitle: `${rental.job_site || "No job site"}${rental.job_address ? ` · ${rental.job_address}` : ""} · ${rentalUnits(rental)} on site`,
     status: rental.status,
   })), [filteredRentals]);
   const pins = useMemo<Pin[]>(() => [shopPin(site), ...rentalPins], [rentalPins, site]);
@@ -591,6 +601,7 @@ const styles = StyleSheet.create({
   rentalName: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.ink },
   unitCount: { fontSize: 16, fontWeight: "700", color: colors.ink },
   coordinateText: { fontSize: 10.5, color: colors.inkMuted },
+  jobAddress: { fontSize: 10.5, color: colors.inkMuted, marginTop: 2 },
   unitsLabel: { fontSize: 10.5, color: colors.inkMuted },
   locationNeeded: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 24 },
   locationNeededText: { fontSize: 11, fontWeight: "700", color: colors.error },

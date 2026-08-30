@@ -40,13 +40,14 @@ type Stats = {
   open_maintenance: number;
   open_shop_tasks: number;
   shortage_count: number;
+  contacts_count: number;
   vendors_count: number;
   activity: { type: string; title: string; ts: string }[];
 };
 
 type RentalLine = { equipment_id: string; name: string; sku: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = {
-  id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null;
+  id: string; customer_name: string; customer_type?: "company" | "homeowner"; job_site: string; job_address?: string; start_date: string; due_date?: string | null;
   status: string; notes?: string; lat?: number | null; lng?: number | null; lines: RentalLine[];
 };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string };
@@ -58,7 +59,7 @@ type Site = SiteWithShop & { brand_name?: string };
 const EMPTY_STATS: Stats = {
   total_quantity: 0, total_available: 0, total_reserved: 0, total_on_rental: 0,
   total_pending_inspection: 0, returning_today: 0, active_rentals: 0,
-  open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, vendors_count: 0, activity: [],
+  open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, contacts_count: 0, vendors_count: 0, activity: [],
 };
 
 const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -161,7 +162,7 @@ export default function Dashboard() {
   }, [dispatches]);
   const pins: Pin[] = useMemo(() => [
     shopPin(site),
-    ...activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_name, subtitle: r.job_site, status: r.status })),
+    ...activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_type === "homeowner" ? r.job_site || r.customer_name : r.customer_name, subtitle: r.job_address || r.job_site, status: r.status })),
   ], [activeRentals, site]);
 
   const createManualNextItem = async (input: ManualNextInput) => {
