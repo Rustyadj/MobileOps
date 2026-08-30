@@ -9,7 +9,8 @@ WORKDIR /app
 COPY requirements-prod.txt ./
 RUN pip install --no-cache-dir -r requirements-prod.txt
 
-COPY server.py whiteboard_service.py mcp_server.py tool_inventory_seed.csv inbound_plan_seed.json outbound_plan_seed.json hermes-agent-token.sha256 ./
+COPY server.py voice_app.py whiteboard_service.py mcp_server.py tool_inventory_seed.csv inbound_plan_seed.json outbound_plan_seed.json hermes-agent-token.sha256 ./
+COPY voice ./voice
 
 RUN useradd --create-home --uid 10001 mobileops \
     && chown -R mobileops:mobileops /app
@@ -17,4 +18,4 @@ USER mobileops
 
 EXPOSE 8000
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+CMD ["uvicorn", "voice_app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
