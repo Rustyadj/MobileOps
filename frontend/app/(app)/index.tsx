@@ -226,7 +226,6 @@ export default function Dashboard() {
           onCompleteManual={completeManualNextItem}
         />
         <WhiteboardFeed compact />
-        <ShortagesCard compact />
       </View>
 
       <View style={[styles.mainRow, !isShellWide && styles.stackGrid]}>
@@ -260,6 +259,7 @@ export default function Dashboard() {
           emptyLabel="No upcoming jobs." viewAllLabel="View all bookings" onViewAll={() => router.push("/(app)/operations/bookings" as any)}
           testID="dashboard-upcoming-bookings"
         />
+        <ShortagesCard compact />
         <OperationalTable
           title="Shop tasks" icon="checkbox-outline" columns={shopTaskColumns} rows={openShopTasks.slice(0, 5)}
           keyExtractor={(t) => t.id} onRowPress={(t) => router.push(`/(app)/shop/tasks?open=${t.id}` as any)}
@@ -311,9 +311,9 @@ export default function Dashboard() {
 const styles = StyleSheet.create({
   desktopPage: { flex: 1, backgroundColor: colors.bgMuted },
   commandCenter: { paddingTop: spacing.md, minWidth: 0 },
-  // Fixed height so none of the three top-row cards (Upcoming/Dispatch/
-  // Shortages) can balloon the row as their record counts grow — each card
-  // fills this via flex:1 and scrolls its own content internally.
+  // Fixed height so neither top-row card (Upcoming/Dispatch) can balloon
+  // the row as their record counts grow — each card fills this via flex:1
+  // and scrolls its own content internally.
   dashboardTopRow: { flexDirection: "row", gap: 12, alignItems: "stretch", height: 380, marginBottom: 12 },
   mainRow: { flexDirection: "row", gap: 12, height: 360, marginBottom: 12 },
   tableRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
