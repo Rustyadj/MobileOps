@@ -399,7 +399,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   }, [width]);
 
   return (
-    <Screen title={initialDirection === "outbound" ? "Outbound" : initialDirection === "inbound" ? "Inbound" : "Dispatch"}
+    <Screen title={initialDirection === "outbound" ? "Outbound" : initialDirection === "inbound" ? "Inbound" : "Logistics"}
       subtitle={initialDirection === "outbound" ? `${counts.outbound} scheduled, loading, or delivering` : initialDirection === "inbound" ? `${counts.inbound} pickups scheduled or returning` : `${counts.outbound} outbound · ${counts.inbound} inbound scheduled`} back
       rightAction={canEdit ? { icon: "add", onPress: openNew, testID: "new-dispatch-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="dispatch-screen" scroll={!isShellWide}>
@@ -411,7 +411,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
           </View> : null}
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job, driver, equipment…" testID="dispatch-search" style={{ flex: 1, maxWidth: 420 }} />
-            {canEdit ? <Button title="New Dispatch" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" /> : null}
+            {canEdit ? <Button title="New Logistics" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" /> : null}
           </PageToolbar>
           <View style={styles.tableWrap}>
             <DataTable
@@ -451,7 +451,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
 
       <DetailDrawer
         visible={!!selected}
-        title={selected ? (selected.direction === "outbound" ? "Outbound" : "Inbound") : "Dispatch detail"}
+        title={selected ? (selected.direction === "outbound" ? "Outbound" : "Inbound") : "Logistics detail"}
         subtitle={selected ? `${selected.customer_name} · ${dispatchDate(selected)}` : undefined}
         onClose={() => setSelected(null)}
         width={460}
@@ -559,7 +559,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
               {canEdit && isLive(selected) && selected.planning_only ? (
                 <Button title="Cancel Plan" onPress={() => cancelPlan(selected)} variant="danger" testID="planning-item-cancel-btn" />
               ) : canEdit && isLive(selected) && !selected.planning_only ? (
-                <Button title="Cancel Dispatch" onPress={() => cancelDispatch(selected)} variant="danger" testID="dispatch-cancel-btn" />
+                <Button title="Cancel Logistics" onPress={() => cancelDispatch(selected)} variant="danger" testID="dispatch-cancel-btn" />
               ) : null}
             </View>
           </View>
@@ -583,12 +583,12 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
 
       <Modal visible={creating} animationType="slide" onRequestClose={() => setCreating(false)}>
         <Screen
-          title="New Dispatch"
+          title="New Logistics"
           back
           rightAction={{ icon: "close", onPress: () => setCreating(false), testID: "close-new-dispatch" }}
           desktopHeader={
             <PageHeader
-              title="New Dispatch"
+              title="New Logistics"
               actions={<Button title="Close" onPress={() => setCreating(false)} variant="outline" fullWidth={false} style={{ height: 38 }} testID="close-new-dispatch" />}
             />
           }
@@ -639,7 +639,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
             </>
           )}
 
-          <Button title="Create Dispatch" onPress={saveNewDispatch} testID="save-dispatch-btn" />
+          <Button title="Create Logistics" onPress={saveNewDispatch} testID="save-dispatch-btn" />
         </Screen>
       </Modal>
 

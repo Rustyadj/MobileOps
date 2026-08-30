@@ -25,7 +25,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Overview",
     items: [
       { key: "dashboard", label: "Dashboard", route: "/(app)", icon: "grid-outline", testID: "nav-dashboard" },
-      { key: "whiteboard", label: "Whiteboard", route: "/(app)/whiteboard", icon: "chatbubbles-outline", testID: "nav-whiteboard" },
+      { key: "whiteboard", label: "Dispatch", route: "/(app)/whiteboard", icon: "chatbubbles-outline", testID: "nav-whiteboard" },
     ],
   },
   {
@@ -46,6 +46,8 @@ export const NAV_SECTIONS: NavSection[] = [
       { key: "bracing-inventory", label: "Bracing", route: "/(app)/inventory/bracing", icon: "construct-outline", testID: "nav-inventory-bracing" },
       { key: "scaffolding-inventory", label: "Scaffolding", route: "/(app)/inventory/scaffolding", icon: "grid-outline", testID: "nav-inventory-scaffolding" },
       { key: "tool-inventory", label: "Tools", route: "/(app)/inventory/tools", icon: "hammer-outline", testID: "nav-inventory-tools" },
+      { key: "consumables-inventory", label: "Consumables", route: "/(app)/inventory/consumables", icon: "flask-outline", testID: "nav-inventory-consumables" },
+      { key: "block-inventory", label: "Block", route: "/(app)/inventory/block", icon: "layers-outline", testID: "nav-inventory-block" },
       { key: "damaged-inventory", label: "Damaged", route: "/(app)/inventory/damaged", icon: "warning-outline", testID: "nav-inventory-damaged" },
       { key: "yard-count", label: "Yard Count", route: "/(app)/inventory/counts", icon: "clipboard-outline", testID: "nav-yard-count" },
     ],

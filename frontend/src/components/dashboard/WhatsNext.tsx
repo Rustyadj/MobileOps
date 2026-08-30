@@ -77,7 +77,7 @@ export const Upcoming: React.FC<{
   return <View style={styles.panel} testID="dashboard-upcoming">
     <View style={styles.header}><Text style={styles.title}>UPCOMING</Text><View style={styles.headerActions}>
       {canEdit ? <TouchableOpacity onPress={openCreate} style={styles.addButton} testID="upcoming-add"><Ionicons name="add" size={14} color={colors.primary} /><Text style={styles.viewAll}>Add item</Text></TouchableOpacity> : null}
-      <TouchableOpacity onPress={onViewAll} testID="upcoming-view-all"><Text style={styles.viewAll}>Open Dispatch</Text></TouchableOpacity>
+      <TouchableOpacity onPress={onViewAll} testID="upcoming-view-all"><Text style={styles.viewAll}>Open Logistics</Text></TouchableOpacity>
     </View></View>
     {!rows.length ? <View style={styles.empty}><Ionicons name="checkmark-circle-outline" size={20} color={colors.success} /><Text style={styles.emptyText}>Nothing due or scheduled.</Text></View> : rows.map((row) => <TouchableOpacity key={row.key} disabled={row.source === "manual"} onPress={() => openRow(row)} style={[styles.row, isCompact && styles.rowCompact]} testID={`upcoming-${row.key}`}>
       <View style={[styles.timeCol, isCompact && styles.timeColCompact]}><Text style={styles.timeText}>{timeLabel(row.date)}</Text></View>
@@ -97,7 +97,10 @@ export const Upcoming: React.FC<{
 export const WhatsNext = Upcoming;
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, minWidth: 0, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" },
+  // Fixed max height — this card always lives in the dashboard's fixed-height
+  // top row (see dashboardTopRow in app/(app)/index.tsx); it must not grow
+  // past that as items accumulate.
+  panel: { flex: 1, minWidth: 0, maxHeight: 380, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" },
   header: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }, headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.md }, addButton: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 32 },
   title: { fontSize: 11, fontWeight: "800", color: colors.inkSecondary, letterSpacing: 0.5 }, viewAll: { fontSize: 11.5, fontWeight: "700", color: colors.primary },
   row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, minHeight: 50, borderBottomWidth: 1, borderBottomColor: colors.border }, rowCompact: { gap: 5 }, timeCol: { width: 100 }, timeColCompact: { width: 72 }, timeText: { fontSize: 11, fontWeight: "700", color: colors.ink },
