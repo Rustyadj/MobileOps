@@ -14,7 +14,8 @@ class VoiceConfig:
     twilio_phone_number: str = ""
     openai_api_key: str = ""
     public_base_url: str = ""
-    realtime_model: str = "gpt-realtime-2.1"
+    realtime_model: str = "gpt-realtime-2.1-mini"
+    realtime_full_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
     transcription_model: str = "gpt-live-transcribe"
 
@@ -28,7 +29,8 @@ class VoiceConfig:
             twilio_phone_number=os.environ.get("TWILIO_PHONE_NUMBER", "").strip(),
             openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
             public_base_url=os.environ.get("VOICE_PUBLIC_BASE_URL", "").strip().rstrip("/"),
-            realtime_model=os.environ.get("VOICE_REALTIME_MODEL", "gpt-realtime-2.1").strip(),
+            realtime_model=os.environ.get("VOICE_REALTIME_MODEL", "gpt-realtime-2.1-mini").strip(),
+            realtime_full_model=os.environ.get("VOICE_REALTIME_FULL_MODEL", "gpt-realtime-2.1").strip(),
             realtime_voice=os.environ.get("VOICE_REALTIME_VOICE", "marin").strip(),
             transcription_model=os.environ.get("VOICE_TRANSCRIPTION_MODEL", "gpt-live-transcribe").strip(),
         )
