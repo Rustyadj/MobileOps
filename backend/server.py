@@ -4061,6 +4061,7 @@ async def resolve_whiteboard_mentions(body: str) -> list[dict]:
     users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(1000)
     directory: dict[str, dict] = {
         "nathan": WHITEBOARD_NATHAN,
+        "nathan2": WHITEBOARD_NATHAN,
         "everyone": {
             "id": "everyone", "handle": "everyone", "normalized_handle": "everyone",
             "display_name": "Everyone", "entity_type": "group", "label": "Team",
