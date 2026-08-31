@@ -32,7 +32,7 @@ export const TopBar: React.FC = () => {
 
   const { section, page } = breadcrumbForPath(pathname);
   const initials = (user?.name || user?.email || "?").split(" ").filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || "").join("") || "?";
-  const roleLabel = user?.role ? (ROLE_LABEL[user.role] || user.role) : "";
+  const roleLabel = user?.title || (user?.role ? (ROLE_LABEL[user.role] || user.role) : "");
 
   return (
     <View style={styles.wrap} testID="topbar">

@@ -294,6 +294,7 @@ class UserPublic(BaseModel):
     email: EmailStr
     name: str
     role: Role
+    title: Optional[str] = None
 
 
 class LoginReq(BaseModel):
@@ -1472,7 +1473,7 @@ async def get_current_user(request: Request) -> UserPublic:
     user = await db.users.find_one({"id": uid})
     if not user:
         raise HTTPException(401, "User not found")
-    return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
+    return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
 
 
 def require_role(min_role: Role):
@@ -1525,7 +1526,7 @@ async def user_from_access_token(token: str) -> UserPublic:
     user = await db.users.find_one({"id": payload.get("sub")})
     if not user:
         raise HTTPException(401, "User not found")
-    return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
+    return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
 
 
 # ----------------------------- App ----------------------------------------
@@ -1575,7 +1576,7 @@ async def register(body: RegisterReq, _user: UserPublic = Depends(require_role(R
         "created_at": now_utc(),
     }
     await db.users.insert_one(doc)
-    return UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]))
+    return UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]), title=doc.get("title"))
 
 
 @api.post("/auth/signup", response_model=TokenPair, status_code=201)
@@ -1604,7 +1605,7 @@ async def signup(body: SignupReq):
     await db.users.insert_one(doc)
     access = make_token(doc["id"], doc["role"], refresh=False)
     refresh = make_token(doc["id"], doc["role"], refresh=True)
-    pub = UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]))
+    pub = UserPublic(id=doc["id"], email=doc["email"], name=doc["name"], role=Role(doc["role"]), title=doc.get("title"))
     return TokenPair(access_token=access, refresh_token=refresh, user=pub)
 
 
@@ -1626,7 +1627,7 @@ async def login(body: LoginReq):
     await db.users.update_one({"id": user["id"]}, {"$set": {"failed_attempts": 0, "lock_until": None}})
     access = make_token(user["id"], user["role"], refresh=False)
     refresh = make_token(user["id"], user["role"], refresh=True)
-    pub = UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
+    pub = UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
     return TokenPair(access_token=access, refresh_token=refresh, user=pub)
 
 
@@ -1643,7 +1644,7 @@ async def refresh_token(body: RefreshReq):
         raise HTTPException(401, "User not found")
     access = make_token(user["id"], user["role"], refresh=False)
     new_refresh = make_token(user["id"], user["role"], refresh=True)
-    pub = UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]))
+    pub = UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
     return TokenPair(access_token=access, refresh_token=new_refresh, user=pub)
 
 
@@ -1655,7 +1656,7 @@ async def me(user: UserPublic = Depends(get_current_user)):
 @api.get("/auth/users", response_model=List[UserPublic])
 async def list_users(_: UserPublic = Depends(require_role(Role.admin))):
     docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(500)
-    return [UserPublic(id=d["id"], email=d["email"], name=d["name"], role=Role(d["role"])) for d in docs]
+    return [UserPublic(id=d["id"], email=d["email"], name=d["name"], role=Role(d["role"]), title=d.get("title")) for d in docs]
 
 
 # ----------------------------- Equipment ----------------------------------

@@ -6,7 +6,7 @@ import { storage } from "@/src/utils/storage";
 import { startSyncEngine } from "@/src/sync/syncEngine";
 
 export type Role = "admin" | "foreman" | "crew";
-export type User = { id: string; email: string; name: string; role: Role };
+export type User = { id: string; email: string; name: string; role: Role; title?: string | null };
 
 type Ctx = {
   user: User | null;
