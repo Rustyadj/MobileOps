@@ -26,7 +26,7 @@ function avatarColor(message: WhiteboardMessage) {
   return message.author_type === "agent" ? colors.accent : colors.primary;
 }
 
-// User-facing name is "Dispatch" (MobileOps' internal comms tool). Internal
+// User-facing name is "Live Feed" (MobileOps' internal comms tool). Internal
 // identifiers (component/hook/route/collection names, "whiteboard_*" on the
 // backend) stay as-is — only the on-screen label changed.
 export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
@@ -99,12 +99,12 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
       <View style={styles.header}>
         <View style={styles.headerTitleRow}>
           <Ionicons name="chatbubbles-outline" size={16} color={colors.primary} />
-          <Text style={styles.title}>DISPATCH</Text>
+          <Text style={styles.title}>LIVE FEED</Text>
           {board.unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{board.unread}</Text></View> : null}
         </View>
         {compact ? (
           <TouchableOpacity onPress={() => router.push("/(app)/whiteboard" as any)} testID="whiteboard-open-full">
-            <Text style={styles.viewAll}>Open Dispatch →</Text>
+            <Text style={styles.viewAll}>Open Live Feed →</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity onPress={board.reload}><Ionicons name="refresh" size={17} color={colors.inkSecondary} /></TouchableOpacity>

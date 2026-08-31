@@ -9,7 +9,7 @@ export default function WhiteboardScreen() {
   if (isShellWide) {
     return <View style={styles.desktop} testID="whiteboard-screen"><View style={styles.desktopCard}><WhiteboardFeed /></View></View>;
   }
-  return <Screen title="Dispatch" subtitle="Team updates, replies, files, and @Nathan" testID="whiteboard-screen"><View style={styles.mobile}><WhiteboardFeed /></View></Screen>;
+  return <Screen title="Live Feed" subtitle="Team updates, replies, files, and @Nathan" testID="whiteboard-screen"><View style={styles.mobile}><WhiteboardFeed /></View></Screen>;
 }
 
 const styles = StyleSheet.create({
