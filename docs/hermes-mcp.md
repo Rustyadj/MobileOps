@@ -47,9 +47,9 @@ The checked-in default public origin is the production MobileOps host,
 `https://icfops.srv1427612.hstgr.cloud`. Set `MCP_PUBLIC_URL` when deploying
 under any other hostname.
 
-For the connected Lisa deployment, the repository contains only the SHA-256
+For the connected Nathan2 deployment, the repository contains only the SHA-256
 digest in `backend/hermes-agent-token.sha256`; the high-entropy bearer token is
-stored only in Lisa's protected `~/.hermes/.env`. A token digest is not a bearer
+stored only in Nathan2's protected `/opt/data/.env`. A token digest is not a bearer
 credential. `HERMES_MCP_TOKEN` overrides the file when supplied. Deployments may
 instead provide `HERMES_MCP_TOKEN_SHA256`, or point
 `HERMES_MCP_TOKEN_SHA256_FILE` at another digest file. Set the file variable to
@@ -74,16 +74,15 @@ indexes. To rotate the credential, replace `HERMES_MCP_TOKEN` in both services a
 restart MobileOps, then Hermes. To revoke access immediately, remove the token
 from MobileOps and restart it (or set `mcp_agents.enabled` to `false`).
 
-## Connect Hermes
+## Connect Nathan2
 
-Hermes needs the Python `mcp` package with Streamable HTTP support:
+Hermes Agent 0.20 includes the Streamable HTTP MCP client. The MobileOps backend
+pins the matching Python MCP server SDK in `backend/requirements-prod.txt`; do
+not install packages interactively into the managed Nathan2 container.
 
-```bash
-pip install 'mcp==1.12.4'
-```
-
-Add this entry to `~/.hermes/config.yaml`. Keep the URL's trailing slash to avoid
-an HTTP redirect. Store the secret in `~/.hermes/.env`, not in YAML.
+Add this entry to `/opt/data/config.yaml` inside `hermes-nathan2` (host path
+`/docker/hermes-nathan2/data/config.yaml`). Keep the URL's trailing slash to
+avoid an HTTP redirect. Store the secret in `/opt/data/.env`, not in YAML.
 
 ```yaml
 mcp_servers:
@@ -97,10 +96,12 @@ mcp_servers:
       enabled: false
 ```
 
-Then restrict the configuration and restart Hermes:
+Then restrict the configuration and restart Nathan2:
 
 ```bash
-chmod 600 ~/.hermes/config.yaml
+chmod 640 /opt/data/config.yaml
+docker restart hermes-nathan2
+docker exec hermes-nathan2 hermes mcp test mobileops
 ```
 
 Hermes discovers the server on startup. Tools appear with names such as

@@ -1,6 +1,11 @@
 import json
 
-from whiteboard_service import build_nathan_prompt, mentioned_handles, normalize_handle
+from whiteboard_service import (
+    HermesNathanGateway,
+    build_nathan_prompt,
+    mentioned_handles,
+    normalize_handle,
+)
 
 
 def test_mentions_are_normalized_deduplicated_and_extensible():
@@ -29,3 +34,21 @@ def test_nathan_prompt_contains_exact_message_metadata_and_bounded_history():
     assert len(envelope["recent_thread_history"]) == 12
     assert envelope["recent_thread_history"][0]["message"] == "message 8"
     assert envelope["relevant_operations_context"] == {"active_rentals": 3}
+
+
+def test_current_dashboard_auth_reuses_the_provisioned_gateway_secret(monkeypatch):
+    monkeypatch.setenv("HERMES_NATHAN_GATEWAY_URL", "ws://127.0.0.1:4864/api/ws")
+    monkeypatch.setenv("HERMES_NATHAN_GATEWAY_TOKEN", "shared-secret")
+    monkeypatch.setenv("HERMES_NATHAN_GATEWAY_BASIC_AUTH", "true")
+    monkeypatch.setenv("HERMES_NATHAN_GATEWAY_USERNAME", "mobileops")
+    monkeypatch.setenv("HERMES_NATHAN_CONNECT_HOST", "host.docker.internal")
+    monkeypatch.setenv("HERMES_NATHAN_CONNECT_PORT", "4863")
+
+    gateway = HermesNathanGateway()
+
+    assert gateway.configured is True
+    assert gateway.password == "shared-secret"
+    assert gateway._dashboard_http_url("api/auth/ws-ticket") == (
+        "http://host.docker.internal:4863/api/auth/ws-ticket",
+        {"Host": "127.0.0.1:4864"},
+    )

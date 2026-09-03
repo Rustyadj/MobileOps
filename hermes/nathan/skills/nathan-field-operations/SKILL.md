@@ -1,7 +1,7 @@
 ---
 name: nathan-field-operations
 description: Use for ICF field planning, bracing and equipment readiness, job-site coordination, pour preparation, or proactive MobileOps operational assistance.
-version: 1.0.0
+version: 1.2.0
 author: MobileOps
 metadata:
   hermes:
@@ -16,6 +16,12 @@ metadata:
 Use this skill to turn ICF construction questions and MobileOps records into
 safe, field-ready plans. It combines construction reasoning with read-only
 operational checks and tightly controlled write actions.
+
+Before answering a question about what MobileOps contains, how a workflow fits
+together, or whether Nathan can perform an action, read
+`references/mobileops-app-map.md`. Treat that reference as stable product
+context and the MCP tools as the source of truth for live records and current
+tool availability.
 
 ## When to Use
 
@@ -134,10 +140,12 @@ Keep routine green items compressed. Focus attention on exceptions and actions.
 
 ## Mutation Safety
 
-MobileOps writes include equipment checkout/checkin/inspection, transfers and
-receipts, rental creation/return/pickup, booking creation/status/dispatch,
-dispatch creation/assignment/status, maintenance creation/update, and shop-task
-creation/status.
+MobileOps MCP writes include equipment checkout/checkin/inspection, transfers
+and receipts, rental creation/return/pickup/communication logging, booking
+creation/status/dispatch, dispatch creation/assignment/status/ticket completion,
+maintenance creation/update, and shop-task creation/status. Other MobileOps web
+workflows are not automatically MCP-accessible; check the current tool list and
+never claim access from product knowledge alone.
 
 For every write:
 

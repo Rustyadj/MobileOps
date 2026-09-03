@@ -12,8 +12,9 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
+import httpx
 from websockets.asyncio.client import connect
 
 
@@ -49,6 +50,19 @@ class HermesNathanGateway:
     def __init__(self) -> None:
         self.url = os.environ.get("HERMES_NATHAN_GATEWAY_URL", "").strip()
         self.token = os.environ.get("HERMES_NATHAN_GATEWAY_TOKEN", "").strip()
+        self.basic_auth = os.environ.get(
+            "HERMES_NATHAN_GATEWAY_BASIC_AUTH", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.username = os.environ.get(
+            "HERMES_NATHAN_GATEWAY_USERNAME", "mobileops"
+        ).strip()
+        # The legacy gateway token doubles as the dedicated dashboard password
+        # unless a separate password is provisioned. This keeps one shared
+        # service secret while supporting Hermes' current ticket-based WS auth.
+        self.password = (
+            os.environ.get("HERMES_NATHAN_GATEWAY_PASSWORD", "").strip()
+            or self.token
+        )
         self.connect_host = os.environ.get("HERMES_NATHAN_CONNECT_HOST", "").strip()
         self.connect_port = int(os.environ.get("HERMES_NATHAN_CONNECT_PORT", "0") or 0)
         self.profile = os.environ.get("HERMES_NATHAN_PROFILE", "nathan").strip() or "nathan"
@@ -56,14 +70,71 @@ class HermesNathanGateway:
 
     @property
     def configured(self) -> bool:
+        if self.basic_auth:
+            return bool(self.url and self.username and self.password)
         return bool(self.url and self.token)
+
+    def _dashboard_http_url(self, endpoint: str) -> tuple[str, dict[str, str]]:
+        """Build a dashboard HTTP URL while preserving its logical Host."""
+        parsed = urlparse(self.url)
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        logical_netloc = parsed.netloc
+        connect_netloc = logical_netloc
+        if self.connect_host:
+            port = self.connect_port or parsed.port
+            connect_netloc = f"{self.connect_host}:{port}" if port else self.connect_host
+
+        base_path = parsed.path
+        if base_path.endswith("/api/ws"):
+            base_path = base_path[: -len("/api/ws")]
+        path = f"{base_path.rstrip('/')}/{endpoint.lstrip('/')}"
+        url = urlunparse((scheme, connect_netloc, path, "", "", ""))
+        return url, {"Host": logical_netloc}
+
+    async def _authenticated_ws_url(self) -> str:
+        if not self.basic_auth:
+            separator = "&" if "?" in self.url else "?"
+            return f"{self.url}{separator}token={quote(self.token, safe='')}"
+
+        login_url, headers = self._dashboard_http_url("auth/password-login")
+        ticket_url, _ = self._dashboard_http_url("api/auth/ws-ticket")
+        timeout = httpx.Timeout(self.timeout_seconds, connect=min(30.0, self.timeout_seconds))
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            login = await client.post(
+                login_url,
+                json={
+                    "provider": "basic",
+                    "username": self.username,
+                    "password": self.password,
+                    "next": "/",
+                },
+            )
+            if login.status_code != 200:
+                raise RuntimeError(
+                    f"Nathan dashboard authentication failed ({login.status_code})"
+                )
+            ticket_response = await client.post(ticket_url)
+            if ticket_response.status_code != 200:
+                raise RuntimeError(
+                    f"Nathan WebSocket ticket failed ({ticket_response.status_code})"
+                )
+            ticket = str(ticket_response.json().get("ticket") or "").strip()
+            if not ticket:
+                raise RuntimeError("Nathan dashboard returned no WebSocket ticket")
+
+        separator = "&" if "?" in self.url else "?"
+        return f"{self.url}{separator}ticket={quote(ticket, safe='')}"
 
     async def invoke(self, *, title: str, prompt: str) -> HermesResult:
         if not self.configured:
             raise RuntimeError("Nathan gateway is not configured")
-        separator = "&" if "?" in self.url else "?"
-        ws_url = f"{self.url}{separator}token={quote(self.token, safe='')}"
         async with asyncio.timeout(self.timeout_seconds):
+            ws_url = await self._authenticated_ws_url()
             transport: dict[str, Any] = {}
             # A private TCP relay may be used while the WebSocket URI/Host must
             # stay loopback for Hermes' host validation.
