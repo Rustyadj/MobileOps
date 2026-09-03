@@ -675,6 +675,23 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           {directionRentals.length === 0 && planningActiveRentals.length === 0 ? (
             <Card><Text style={[typo.body, { color: colors.inkMuted }]}>{initialView === "active" ? "No equipment is currently on customer jobs." : initialView === "history" ? "No completed rentals yet." : `No ${direction} rentals.`}</Text></Card>
           ) : directionRentals.map((r) => {
+        if (initialView === "active") {
+          return (
+            <TouchableOpacity key={r.id} onPress={() => setSelected(r)} testID={`rental-${r.id}`}>
+              <Card style={{ marginBottom: spacing.sm }}>
+                <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <View style={{ flex: 1 }}>
+                    <H3>{r.customer_name}</H3>
+                    <Text style={[typo.bodySmall, { marginTop: 2 }]}>{r.job_site || "—"}</Text>
+                  </View>
+                  <StatusBadge label={r.status} />
+                </Row>
+                <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>{r.lines.length} line{r.lines.length === 1 ? "" : "s"} · {rentalUnits(r)} on site</Text>
+                <Text style={[typo.caption, { marginTop: 4 }]}>Start {shortDate(r.start_date)}</Text>
+              </Card>
+            </TouchableOpacity>
+          );
+        }
         const totalQty = r.lines.reduce((s, l) => s + l.qty, 0);
         const returnedQty = r.lines.reduce((s, l) => s + l.returned_qty, 0);
         return (
@@ -721,19 +738,13 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
               </View>
             ))}
             <View style={{ marginTop: spacing.sm }}>
-              {initialView === "active" ? (
-                canAdmin
-                  ? <Button title="Complete Rental" onPress={() => setCompletionTarget({ kind: "rental", id: r.id, customerName: r.customer_name, pickupDate: "" })} testID={`complete-rental-${r.id}`} />
-                  : <Text style={styles.detailText}>Awaiting admin completion</Text>
-              ) : (
-                <PickupStatus
-                  dispatch={pickupFor(r.id)}
-                  rentalReturned={isRentalReturned(r.status)}
-                  onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
-                  onSchedule={() => schedulePickup(r.id)}
-                  busy={pickupBusy}
-                />
-              )}
+              <PickupStatus
+                dispatch={pickupFor(r.id)}
+                rentalReturned={isRentalReturned(r.status)}
+                onOpen={(id) => router.push(`/(app)/operations/dispatch?open=${id}` as any)}
+                onSchedule={() => schedulePickup(r.id)}
+                busy={pickupBusy}
+              />
             </View>
             <View style={styles.mobileContactCard} testID={`rental-contact-${r.id}`}>
               <Text style={styles.detailLabel}>Customer / Job Contact</Text>
@@ -772,7 +783,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
       )}
 
       <DetailDrawer
-        visible={isShellWide && !!selected}
+        visible={(isShellWide || initialView === "active") && !!selected}
         title={selected?.id || "Rental detail"}
         subtitle={selected ? `${selected.customer_name} · ${selected.job_site || "No job site"}` : undefined}
         onClose={() => setSelected(null)}
