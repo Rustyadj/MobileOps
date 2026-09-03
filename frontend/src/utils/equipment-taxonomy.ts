@@ -53,6 +53,53 @@ export const toolFamily = (item: EquipmentTaxonomyItem) => {
   return "other_tools";
 };
 
+// Finer-grained tool classification than toolFamily — one bucket per
+// recognizable tool type (Circular Saw, Sawzall, Grinder, …) so the
+// Inventory landing screen can show a card per type instead of one lumped
+// "Tools" card. Order matters: more specific patterns are checked first.
+export const TOOL_TYPE_LABELS: Record<string, string> = {
+  battery_charger: "Battery / Charger",
+  circular_saw: "Circular Saw",
+  sawzall: "Sawzall",
+  miter_saw: "Miter / Chop Saw",
+  table_saw: "Table Saw",
+  band_saw: "Band Saw",
+  jigsaw: "Jigsaw",
+  other_saw: "Other Saw",
+  hammer_drill: "Hammer Drill",
+  impact: "Impact Wrench / Driver",
+  drill: "Drill",
+  grinder: "Grinder",
+  compressor: "Air Compressor",
+  laser_level: "Laser / Level",
+  concrete_tools: "Concrete / Rebar Tools",
+  nailer: "Nailer",
+  blower: "Blower",
+  other_tools: "Other Tools",
+};
+
+export const toolType = (item: EquipmentTaxonomyItem): string => {
+  const value = `${item.name} ${item.model} ${item.notes}`.toLowerCase();
+  if (/battery|charger|power supply|\badapter\b/.test(value)) return "battery_charger";
+  if (/circular saw/.test(value)) return "circular_saw";
+  if (/sawzall|reciprocating/.test(value)) return "sawzall";
+  if (/miter saw|chop saw/.test(value)) return "miter_saw";
+  if (/table saw/.test(value)) return "table_saw";
+  if (/band ?saw/.test(value)) return "band_saw";
+  if (/jigsaw/.test(value)) return "jigsaw";
+  if (/\bsaw\b/.test(value)) return "other_saw";
+  if (/hammer drill|rotary hammer/.test(value)) return "hammer_drill";
+  if (/impact/.test(value)) return "impact";
+  if (/\bdrill\b|driver/.test(value)) return "drill";
+  if (/grinder/.test(value)) return "grinder";
+  if (/air compressor|\bcompressor\b/.test(value)) return "compressor";
+  if (/laser|\blevel\b/.test(value)) return "laser_level";
+  if (/rebar|vibrator/.test(value)) return "concrete_tools";
+  if (/nailer/.test(value)) return "nailer";
+  if (/blower/.test(value)) return "blower";
+  return "other_tools";
+};
+
 export const bracingFamily = (item: EquipmentTaxonomyItem) => ({
   strongback: "sb",
   turnbuckle: "tb",

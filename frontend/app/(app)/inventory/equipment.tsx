@@ -21,7 +21,7 @@ import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { Ionicons } from "@expo/vector-icons";
 import { api, apiUpload } from "@/src/api/client";
 import { equipmentIdentifier, qrCodeDisplay } from "@/src/utils/equipment-identifier";
-import { familyOptionsFor, matchesEquipmentFamily, matchesEquipmentTab } from "@/src/utils/equipment-taxonomy";
+import { familyOptionsFor, matchesEquipmentFamily, matchesEquipmentTab, toolType as classifyToolType, TOOL_TYPE_LABELS } from "@/src/utils/equipment-taxonomy";
 import type { EquipmentTab } from "@/src/utils/equipment-taxonomy";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
@@ -76,19 +76,31 @@ const blank: Partial<Equipment> = {
 };
 const pretty = (value: string) => value.replace(/_/g, " ");
 
-type InventoryView = "all" | "bracing" | "scaffolding" | "tools" | "damaged";
-const SCAFFOLDING_CATEGORIES = new Set(["crankup_scaffold", "shoring_post"]);
+type InventoryView = "all" | "tools" | "damaged"
+  | "strongback" | "turnbuckle" | "walkboard_bracket" | "hand_rail" | "tb_extension" | "crankup_scaffold" | "shoring_post";
+
+export const INVENTORY_VIEW_LABELS: Record<Exclude<InventoryView, "all" | "tools" | "damaged">, string> = {
+  strongback: "Stiffbacks",
+  turnbuckle: "Turnbuckles",
+  walkboard_bracket: "Walk-Board Brackets",
+  hand_rail: "Handrails",
+  tb_extension: "Extensions",
+  crankup_scaffold: "Crankups",
+  shoring_post: "Shoring",
+};
+const VIEW_TITLES: Record<InventoryView, string> = {
+  all: "Equipment", tools: "Tools", damaged: "Damaged", ...INVENTORY_VIEW_LABELS,
+};
 const matchesInventoryView = (item: Equipment, view: InventoryView) => {
   if (view === "all") return true;
   if (view === "tools") return item.category === "tool";
-  if (view === "scaffolding") return SCAFFOLDING_CATEGORIES.has(item.category);
   if (view === "damaged") return item.in_maintenance > 0 || ["poor", "broken", "damaged"].includes(item.condition);
-  return matchesEquipmentTab(item, "bracing") && !SCAFFOLDING_CATEGORIES.has(item.category);
+  return item.category === view;
 };
 
-type EquipmentScreenProps = { initialView?: InventoryView };
+type EquipmentScreenProps = { initialView?: InventoryView; toolType?: string };
 
-export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = {}) {
+export function EquipmentScreen({ initialView = "all", toolType }: EquipmentScreenProps = {}) {
   const { isShellWide } = useBreakpoint();
   const { canEdit, canAdmin } = usePermissions();
   const params = useLocalSearchParams<{ open?: string; new?: string }>();
@@ -98,7 +110,7 @@ export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = 
   const items = equipmentRes.data;
   const maintenance = maintenanceRes.data;
   const rentals = rentalsRes.data;
-  const [tab, setTab] = useState<EquipmentTab>(initialView === "tools" ? "tool" : initialView === "bracing" || initialView === "scaffolding" ? "bracing" : "all");
+  const [tab, setTab] = useState<EquipmentTab>(initialView === "tools" ? "tool" : "all");
   const [family, setFamily] = useState("all");
   const [condition, setCondition] = useState("all");
   const [availability, setAvailability] = useState("all");
@@ -139,12 +151,13 @@ export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = 
     const query = search.trim().toLowerCase();
     return items.filter((item) => {
       if (!matchesInventoryView(item, initialView)) return false;
+      if (toolType && classifyToolType(item) !== toolType) return false;
       if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (!query) return true;
       return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
         .some((value) => value?.toLowerCase().includes(query));
     }).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-  }, [family, initialView, items, search, tab]);
+  }, [family, initialView, items, search, tab, toolType]);
   const conditionOptions = useMemo(() => [
     { key: "all", label: "All conditions" },
     ...Array.from(new Set(items.map((item) => item.condition).filter(Boolean))).sort().map((value) => ({ key: value, label: pretty(value) })),
@@ -153,6 +166,7 @@ export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = 
     const query = search.trim().toLowerCase();
     const rows = items.filter((item) => {
       if (!matchesInventoryView(item, initialView)) return false;
+      if (toolType && classifyToolType(item) !== toolType) return false;
       if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (condition !== "all" && item.condition !== condition) return false;
       if (availability === "available" && item.available <= 0) return false;
@@ -169,7 +183,7 @@ export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = 
         : String(av || "").localeCompare(String(bv || ""), undefined, { numeric: true, sensitivity: "base" });
       return sortDirection === "asc" ? compared : -compared;
     });
-  }, [availability, condition, family, initialView, items, search, sortDirection, sortKey, tab]);
+  }, [availability, condition, family, initialView, items, search, sortDirection, sortKey, tab, toolType]);
 
   const changeTab = (nextTab: string) => {
     setTab(nextTab as EquipmentTab);
@@ -316,7 +330,7 @@ export function EquipmentScreen({ initialView = "all" }: EquipmentScreenProps = 
   const selectedRentals = selected ? rentals.filter((rental) => rental.lines.some((line) => line.equipment_id === selected.id)) : [];
 
   return (
-    <Screen title={initialView === "all" ? "Equipment" : initialView[0].toUpperCase() + initialView.slice(1)} subtitle={`${desktopItems.length} types · ${desktopItems.reduce((sum, item) => sum + item.available, 0)} physically available`} back
+    <Screen title={toolType ? (TOOL_TYPE_LABELS[toolType] || VIEW_TITLES[initialView]) : VIEW_TITLES[initialView]} subtitle={`${desktopItems.length} types · ${desktopItems.reduce((sum, item) => sum + item.available, 0)} physically available`} back
       rightAction={canEdit ? { icon: "add", onPress: () => setEditing({ ...blank }), testID: "add-equipment-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="equipment-screen" scroll={false}>
       {isShellWide ? (
