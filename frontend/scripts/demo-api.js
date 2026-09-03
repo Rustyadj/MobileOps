@@ -58,6 +58,22 @@ let contacts = Array.isArray(savedState?.contacts) && savedState.contacts.length
 let dashboardItems = Array.isArray(savedState?.dashboardItems) ? savedState.dashboardItems : [];
 let inventoryCounts = [];
 
+const minutesAgo = (mins) => new Date(Date.now() - mins * 60000).toISOString();
+const initialWhiteboardMessages = [
+  { id: "demo-wb-1", thread_id: "dashboard", parent_id: null, body: "Community HS delivery is loaded, rolling out at 7 AM.", author_type: "user", author_id: "demo-driver", author_name: "Alex Rivera", author_avatar: "AR", agent_label: null, created_at: minutesAgo(60 * 26), edited_at: null, is_deleted: false, pinned: true, invocation_status: null, invocation_error: null, mentions: [], attachments: [], reply_count: 1 },
+  { id: "demo-wb-2", thread_id: "dashboard", parent_id: "demo-wb-1", body: "Copy that, I'll meet the truck on site at 8.", author_type: "user", author_id: "demo-user", author_name: "Demo Operator", author_avatar: "DO", agent_label: null, created_at: minutesAgo(60 * 25), edited_at: null, is_deleted: false, pinned: false, invocation_status: null, invocation_error: null, mentions: [], attachments: [], reply_count: 0 },
+  { id: "demo-wb-3", thread_id: "dashboard", parent_id: null, body: "@Nathan how many 20 ft stiffbacks are available right now?", author_type: "user", author_id: "demo-user", author_name: "Demo Operator", author_avatar: "DO", agent_label: null, created_at: minutesAgo(40), edited_at: null, is_deleted: false, pinned: false, invocation_status: null, invocation_error: null, mentions: [{ id: "m1", entity_type: "agent", entity_id: "nathan", handle: "Nathan", display_name: "Nathan" }], attachments: [], reply_count: 0 },
+  { id: "demo-wb-4", thread_id: "dashboard", parent_id: null, body: "120 available in Yard A, plus 60 more on rental due back from Lakeside Residence on Sep 5.", author_type: "agent", author_id: "nathan", author_name: "Nathan", author_avatar: "N", agent_label: "AI Agent", created_at: minutesAgo(39), edited_at: null, is_deleted: false, pinned: false, invocation_status: "complete", invocation_error: null, mentions: [], attachments: [], reply_count: 0 },
+  { id: "demo-wb-5", thread_id: "dashboard", parent_id: null, body: "Uploading the signed Ferris rental agreement.", author_type: "user", author_id: "demo-user", author_name: "Demo Operator", author_avatar: "DO", agent_label: null, created_at: minutesAgo(12), edited_at: null, is_deleted: false, pinned: false, invocation_status: null, invocation_error: null, mentions: [], attachments: [{ id: "demo-att-1", filename: "ferris-agreement-signed.pdf", content_type: "application/pdf", size: 182300 }], reply_count: 0 },
+  { id: "demo-wb-6", thread_id: "dashboard", parent_id: null, body: "@Nathan flag any equipment overdue for return this week.", author_type: "user", author_id: "demo-ops2", author_name: "Jamie Cole", author_avatar: "JC", agent_label: null, created_at: minutesAgo(3), edited_at: null, is_deleted: false, pinned: false, invocation_status: "failed", invocation_error: "Agent timed out", mentions: [{ id: "m2", entity_type: "agent", entity_id: "nathan", handle: "Nathan", display_name: "Nathan" }], attachments: [], reply_count: 0 },
+];
+let whiteboardMessages = Array.isArray(savedState?.whiteboardMessages) ? savedState.whiteboardMessages : initialWhiteboardMessages;
+const whiteboardMentionables = [
+  { id: "nathan", handle: "Nathan", display_name: "Nathan", entity_type: "agent", label: "AI operations agent" },
+  { id: "demo-ops2", handle: "jamie", display_name: "Jamie Cole", entity_type: "user", label: "Operations" },
+  { id: "demo-driver", handle: "alex", display_name: "Alex Rivera", entity_type: "user", label: "Driver" },
+];
+
 const seededDispatches = [
   ...loadSeed("outbound_plan_seed.json").map((row) => ({
     id: row.source_key, direction: row.status === "active_rental" ? "inbound" : "outbound", planning_only: true, lines: [], truck: "", trailer: "", crew: "", driver_name: "", created_by: "Demo import", created_at: now(), updated_at: now(), ...row,
@@ -74,7 +90,7 @@ const dispatches = seededDispatches.map((item) => normalizeDeliveredPlan(savedDi
 
 function persistState() {
   fs.mkdirSync(demoDataRoot, { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify({ bookings, rentals, contacts, dispatches, dashboardItems }, null, 2));
+  fs.writeFileSync(statePath, JSON.stringify({ bookings, rentals, contacts, dispatches, dashboardItems, whiteboardMessages }, null, 2));
 }
 
 function contactWithCurrentJob(contact) {
@@ -480,6 +496,64 @@ const server = http.createServer(async (req, res) => {
       }
       persistState();
       return send(res, 200, item);
+    }
+
+    if (req.method === "GET" && route === "/api/whiteboard/messages") {
+      const limit = Number(url.searchParams.get("limit") || 80);
+      return send(res, 200, whiteboardMessages.slice(-limit));
+    }
+    if (req.method === "GET" && route === "/api/whiteboard/mentionables") return send(res, 200, whiteboardMentionables);
+    if (req.method === "GET" && route === "/api/whiteboard/unread") return send(res, 200, { count: 0 });
+    if (req.method === "POST" && route === "/api/whiteboard/read") return send(res, 200, { ok: true });
+    if (req.method === "POST" && route === "/api/whiteboard/messages") {
+      const body = await readBody(req);
+      if (!String(body.body || "").trim()) return send(res, 400, { detail: "Message body is required" });
+      const message = {
+        id: `demo-wb-${randomUUID()}`, thread_id: body.thread_id || "dashboard", parent_id: body.parent_id || null,
+        body: String(body.body).trim(), author_type: "user", author_id: "demo-user", author_name: "Demo Operator", author_avatar: "DO",
+        agent_label: null, created_at: now(), edited_at: null, is_deleted: false, pinned: false,
+        invocation_status: null, invocation_error: null, mentions: [], attachments: [], reply_count: 0,
+      };
+      whiteboardMessages.push(message);
+      if (body.parent_id) {
+        const parent = whiteboardMessages.find((entry) => entry.id === body.parent_id);
+        if (parent) parent.reply_count = (parent.reply_count || 0) + 1;
+      }
+      persistState();
+      return send(res, 201, message);
+    }
+    const whiteboardAttachments = route.match(/^\/api\/whiteboard\/messages\/([^/]+)\/attachments$/);
+    if (req.method === "POST" && whiteboardAttachments) {
+      const message = whiteboardMessages.find((entry) => entry.id === decodeURIComponent(whiteboardAttachments[1]));
+      if (!message) return send(res, 404, { detail: "Message not found" });
+      return send(res, 200, message);
+    }
+    const whiteboardPin = route.match(/^\/api\/whiteboard\/messages\/([^/]+)\/pin$/);
+    if (req.method === "PATCH" && whiteboardPin) {
+      const message = whiteboardMessages.find((entry) => entry.id === decodeURIComponent(whiteboardPin[1]));
+      if (!message) return send(res, 404, { detail: "Message not found" });
+      const body = await readBody(req);
+      message.pinned = !!body.pinned;
+      persistState();
+      return send(res, 200, message);
+    }
+    const whiteboardMessage = route.match(/^\/api\/whiteboard\/messages\/([^/]+)$/);
+    if (req.method === "PATCH" && whiteboardMessage) {
+      const message = whiteboardMessages.find((entry) => entry.id === decodeURIComponent(whiteboardMessage[1]));
+      if (!message) return send(res, 404, { detail: "Message not found" });
+      const body = await readBody(req);
+      message.body = String(body.body || "").trim();
+      message.edited_at = now();
+      persistState();
+      return send(res, 200, message);
+    }
+    if (req.method === "DELETE" && whiteboardMessage) {
+      const message = whiteboardMessages.find((entry) => entry.id === decodeURIComponent(whiteboardMessage[1]));
+      if (!message) return send(res, 404, { detail: "Message not found" });
+      message.is_deleted = true;
+      message.body = "";
+      persistState();
+      return send(res, 200, message);
     }
 
     return send(res, 404, { detail: `Demo route not implemented: ${req.method} ${route}` });
