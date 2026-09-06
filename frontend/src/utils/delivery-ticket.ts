@@ -58,8 +58,7 @@ export function buildDeliveryTicketHtml(ticket: DeliveryTicketData, site?: Deliv
     ? `<img src="${escapeHtml(site.logo_base64)}" alt="" class="logo"/>`
     : `<div class="tile"></div>`;
   const assignment = [
-    ticket.driverName && `Driver: ${ticket.driverName}`,
-    ticket.truck && `Truck: ${ticket.truck}`,
+    ticket.driverName && `Contact: ${ticket.driverName}`,
     ticket.trailer && `Trailer: ${ticket.trailer}`,
     ticket.crew && `Crew: ${ticket.crew}`,
   ].filter(Boolean).join(" · ");

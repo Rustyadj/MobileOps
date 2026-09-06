@@ -35,7 +35,7 @@ type Dispatch = {
   driver_name: string; truck: string; trailer: string; crew: string;
   lines: DLine[]; notes: string; created_by: string;
   planning_only?: boolean; requirements?: string[]; source_date_text?: string;
-  date_confirmed?: boolean; raw_text?: string;
+  date_confirmed?: boolean; status_note?: string; raw_text?: string;
   started_at?: string | null; arrived_at?: string | null; completed_at?: string | null;
 };
 
@@ -50,7 +50,7 @@ const OUTBOUND_STEPS: Record<string, { label: string; next: string }> = {
   [DISPATCH_STATUS.arrived]: { label: "Complete Delivery", next: DISPATCH_STATUS.completed },
 };
 const INBOUND_STEPS: Record<string, { label: string; next: string }> = {
-  [DISPATCH_STATUS.scheduled]: { label: "Dispatch Driver", next: DISPATCH_STATUS.dispatched },
+  [DISPATCH_STATUS.scheduled]: { label: "Dispatch", next: DISPATCH_STATUS.dispatched },
   [DISPATCH_STATUS.dispatched]: { label: "Arrived at Job", next: DISPATCH_STATUS.arrived },
   [DISPATCH_STATUS.arrived]: { label: "Mark Loaded", next: DISPATCH_STATUS.loaded },
   [DISPATCH_STATUS.loaded]: { label: "Returning to Yard", next: DISPATCH_STATUS.returning },
@@ -93,14 +93,17 @@ const shortDateTime = (value?: string | null) =>
 const dispatchDate = (dispatch: Dispatch) => dispatch.source_date_text || shortDateTime(dispatch.scheduled_date);
 const awaitingAdminCompletion = (dispatch: Dispatch) => dispatch.planning_only && dispatch.status === DISPATCH_STATUS.activeRental;
 const visibleMovement = (dispatch: Dispatch) => isLive(dispatch) && !awaitingAdminCompletion(dispatch);
-const displayStatus = (dispatch: Dispatch) => {
-  const awaitingPickup = dispatch.direction === "inbound" &&
-    [DISPATCH_STATUS.scheduled, DISPATCH_STATUS.readyForPickup].includes(dispatch.status as any);
-  if (!awaitingPickup) return { label: dispatch.status };
-  return dispatch.date_confirmed && dispatch.scheduled_date
+const displayStatus = (dispatch: Dispatch) =>
+  (dispatch.date_confirmed ?? !!dispatch.scheduled_date)
     ? { label: "Confirmed", tone: "success" as const }
-    : { label: "Pickup date unconfirmed", tone: "warning" as const };
-};
+    : { label: "Unconfirmed", tone: "warning" as const };
+
+const DispatchStatus = ({ dispatch }: { dispatch: Dispatch }) => (
+  <View style={{ gap: spacing.xs, minWidth: 0, maxWidth: 200 }}>
+    <StatusBadge {...displayStatus(dispatch)} />
+    {dispatch.status_note ? <Text style={[typo.bodySmall, { color: colors.inkSecondary, flexShrink: 1 }]} testID={`status-note-${dispatch.id}`}>{dispatch.status_note}</Text> : null}
+  </View>
+);
 
 type Tab = "all" | "outbound" | "inbound" | "completed";
 const TABS: { key: Tab; label: string }[] = [
@@ -131,6 +134,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [assignDraft, setAssignDraft] = useState<{ driver_name: string; truck: string; trailer: string; crew: string; scheduled_date: string } | null>(null);
+  const [statusDraft, setStatusDraft] = useState({ date_confirmed: false, status_note: "" });
   const [ticketLines, setTicketLines] = useState<Array<{ deliveredQty: string; pickupConfirmed: boolean }>>([]);
 
   const [creating, setCreating] = useState(false);
@@ -166,6 +170,13 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
     if (selected) setAssignDraft({
       driver_name: selected.driver_name, truck: selected.truck, trailer: selected.trailer, crew: selected.crew,
       scheduled_date: selected.scheduled_date ? new Date(selected.scheduled_date).toISOString().slice(0, 16) : "",
+    });
+  }, [selected]);
+
+  useEffect(() => {
+    if (selected) setStatusDraft({
+      date_confirmed: selected.date_confirmed ?? !!selected.scheduled_date,
+      status_note: selected.status_note || "",
     });
   }, [selected]);
 
@@ -282,6 +293,22 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
     });
   };
 
+  const saveStatus = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api(`/dispatches/${selected.id}/assign`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...statusDraft, status_note: statusDraft.status_note.trim() }),
+      });
+      dispatchesRes.onRefresh();
+    } catch (e: any) {
+      Alert.alert("Save failed", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveAssignment = async () => {
     if (!selected || !assignDraft) return;
     setBusy(true);
@@ -289,7 +316,12 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
       const { scheduled_date, ...rest } = assignDraft;
       await api(`/dispatches/${selected.id}/assign`, {
         method: "PATCH",
-        body: JSON.stringify({ ...rest, scheduled_date: scheduled_date ? new Date(scheduled_date).toISOString() : null }),
+        body: JSON.stringify({
+          ...rest,
+          ...(scheduled_date !== (selected.scheduled_date ? new Date(selected.scheduled_date).toISOString().slice(0, 16) : "")
+            ? { scheduled_date: scheduled_date ? new Date(scheduled_date).toISOString() : null }
+            : {}),
+        }),
       });
       dispatchesRes.onRefresh();
     } catch (e: any) {
@@ -380,7 +412,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
     });
     if (query) {
       rows = rows.filter((d) =>
-        [d.id, d.customer_name, d.job_site, d.driver_name, d.truck, d.notes, d.raw_text, ...(d.requirements || []), ...d.lines.flatMap((l) => [l.sku, l.name])]
+        [d.id, d.customer_name, d.job_site, d.driver_name, d.truck, d.notes, d.status_note, d.raw_text, ...(d.requirements || []), ...d.lines.flatMap((l) => [l.sku, l.name])]
           .some((v) => v?.toLowerCase().includes(query))
       );
     }
@@ -399,14 +431,13 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
       ) },
     ];
     if (width < 1280) {
-      return [...identity, { key: "status", label: "Status", width: 160, render: (d) => <StatusBadge {...displayStatus(d)} /> }];
+      return [...identity, { key: "status", label: "Status", width: 160, render: (d) => <DispatchStatus dispatch={d} /> }];
     }
     return [
       ...identity,
       { key: "equipment", label: "Equipment", flex: 1, render: (d) => <Text numberOfLines={1}>{equipmentSummary(d.lines, d.requirements)}</Text> },
-      { key: "driver_name", label: "Driver", width: 110, render: (d) => d.driver_name || "—" },
-      { key: "truck", label: "Truck", width: 90, render: (d) => d.truck || "—" },
-      { key: "status", label: "Status", width: 160, render: (d) => <StatusBadge {...displayStatus(d)} /> },
+      { key: "driver_name", label: "Contact", width: 200, render: (d) => d.driver_name || "—" },
+      { key: "status", label: "Status", width: 160, render: (d) => <DispatchStatus dispatch={d} /> },
     ];
   }, [width]);
 
@@ -422,7 +453,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
             <DispatchTabs tab={tab} counts={counts} onChange={setTab} />
           </View> : null}
           <PageToolbar>
-            <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job, driver, equipment…" testID="dispatch-search" style={{ flex: 1, maxWidth: 420 }} />
+            <SearchInput value={search} onChangeText={setSearch} placeholder="Search customer, job, contact, equipment…" testID="dispatch-search" style={{ flex: 1, maxWidth: 420 }} />
             {canEdit ? <Button title="New Logistics" onPress={openNew} fullWidth={false} style={styles.toolbarButton} testID="new-dispatch-desktop" /> : null}
           </PageToolbar>
           <View style={styles.tableWrap}>
@@ -445,16 +476,16 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
           ) : filtered.map((d) => (
             <TouchableOpacity key={d.id} onPress={() => setSelected(d)} testID={`dispatch-${d.id}`}>
               <Card style={{ marginBottom: spacing.sm }}>
-                <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                <Row style={{ flexDirection: "column", alignItems: "stretch", gap: spacing.sm }}>
                   <View style={{ flex: 1 }}>
                     <Row style={{ gap: 6 }}><DirectionTag direction={d.direction} /><Mono style={{ fontSize: 11, color: colors.inkMuted }}>{dispatchDate(d)}</Mono></Row>
                     <H3 style={{ marginTop: 4 }}>{d.customer_name}</H3>
                     <Text style={[typo.bodySmall, { marginTop: 2 }]}>{d.job_site || "—"}</Text>
                   </View>
-                  <StatusBadge {...displayStatus(d)} />
+                  <DispatchStatus dispatch={d} />
                 </Row>
                 <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>{equipmentSummary(d.lines, d.requirements)}</Text>
-                {d.driver_name ? <Text style={[typo.caption, { marginTop: 4 }]}>{d.planning_only ? "Owner" : "Driver"}: {d.driver_name}{d.truck ? ` · ${d.truck}` : ""}</Text> : null}
+                {d.driver_name ? <Text style={[typo.caption, { marginTop: 4 }]}>Contact: {d.driver_name}</Text> : null}
               </Card>
             </TouchableOpacity>
           ))}
@@ -472,9 +503,17 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
         {selected ? (
           <View>
             <View style={styles.detailStatusRow}>
-              <StatusBadge {...displayStatus(selected)} />
+              <DispatchStatus dispatch={selected} />
               <DirectionTag direction={selected.direction} />
             </View>
+            {canEdit ? <DetailSection label="Status">
+              <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+                <Button title="Confirmed" variant={statusDraft.date_confirmed ? "primary" : "outline"} fullWidth={false} onPress={() => setStatusDraft((draft) => ({ ...draft, date_confirmed: true }))} testID="status-confirmed" />
+                <Button title="Unconfirmed" variant={!statusDraft.date_confirmed ? "primary" : "outline"} fullWidth={false} onPress={() => setStatusDraft((draft) => ({ ...draft, date_confirmed: false }))} testID="status-unconfirmed" />
+              </Row>
+              <Input label="Status note" placeholder="Call ahead, waiting on permit, waiting on shops…" value={statusDraft.status_note} onChangeText={(status_note) => setStatusDraft((draft) => ({ ...draft, status_note }))} multiline testID="status-note-input" />
+              <Button title="Save status" onPress={saveStatus} variant="outline" loading={busy} testID="save-status-btn" />
+            </DetailSection> : null}
             <DetailSection label="Job site">
               <Text style={styles.detailTitle}>{selected.job_site || "No job site"}</Text>
             </DetailSection>
@@ -492,7 +531,7 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
                     </Row>
                   )) : <Text style={styles.detailText}>Equipment list pending.</Text>}
                 </DetailSection>
-                {selected.driver_name ? <DetailSection label="Owner"><Text style={styles.detailTitle}>{selected.driver_name}</Text></DetailSection> : null}
+                {selected.driver_name ? <DetailSection label="Contact"><Text style={styles.detailTitle}>{selected.driver_name}</Text></DetailSection> : null}
               </>
             ) : (
               <>
@@ -544,9 +583,8 @@ export function DispatchScreen({ initialDirection }: DispatchScreenProps = {}) {
                     autoCapitalize="none"
                     testID="assign-scheduled-date"
                   />
-                  <Input label="Driver" value={assignDraft?.driver_name || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, driver_name: t } : a)} testID="assign-driver" />
+                  <Input label="Contact" value={assignDraft?.driver_name || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, driver_name: t } : a)} testID="assign-driver" />
                   <Row style={{ gap: spacing.md }}>
-                    <View style={{ flex: 1 }}><Input label="Truck" value={assignDraft?.truck || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, truck: t } : a)} testID="assign-truck" /></View>
                     <View style={{ flex: 1 }}><Input label="Trailer" value={assignDraft?.trailer || ""} onChangeText={(t) => setAssignDraft((a) => a ? { ...a, trailer: t } : a)} testID="assign-trailer" /></View>
                   </Row>
                   {canEdit ? <Button title="Save assignment" onPress={saveAssignment} variant="outline" loading={busy} testID="save-assignment-btn" /> : null}

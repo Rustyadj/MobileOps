@@ -1179,7 +1179,7 @@ const PickupStatus: React.FC<{
         <Text style={styles.detailTitle}>
           {dispatch.scheduled_date ? new Date(dispatch.scheduled_date).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : "Time not set"}
         </Text>
-        <Text style={styles.detailText}>Driver: {dispatch.driver_name || "Unassigned"}</Text>
+        <Text style={styles.detailText}>Contact: {dispatch.driver_name || "Unassigned"}</Text>
         <StatusBadge label={dispatch.status} />
       </TouchableOpacity>
     );

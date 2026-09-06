@@ -707,6 +707,7 @@ class Dispatch(BaseModel):
     source_key: Optional[str] = None
     source_date_text: str = ""
     date_confirmed: bool = True
+    status_note: str = ""
     raw_text: str = ""
     notes: str = ""
     created_by: str = ""
@@ -741,6 +742,8 @@ class DispatchStatusUpdate(BaseModel):
 
 
 class DispatchAssignUpdate(BaseModel):
+    date_confirmed: Optional[bool] = None
+    status_note: Optional[str] = None
     driver_name: Optional[str] = None
     truck: Optional[str] = None
     trailer: Optional[str] = None
@@ -2541,7 +2544,10 @@ async def assign_dispatch(d_id: str, body: DispatchAssignUpdate, _: UserPublic =
     # the unconfirmed state instead of silently retaining the previous date.
     if "scheduled_date" in body.model_fields_set:
         upd["scheduled_date"] = body.scheduled_date
-        upd["date_confirmed"] = body.scheduled_date is not None
+        if body.date_confirmed is None:
+            upd["date_confirmed"] = body.scheduled_date is not None
+    if body.status_note is not None:
+        upd["status_note"] = body.status_note.strip()
     if upd:
         upd["updated_at"] = now_utc()
         await db.dispatches.update_one({"id": d_id}, {"$set": upd})
