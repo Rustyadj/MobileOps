@@ -65,6 +65,15 @@ SIGNUP_ALLOWED_DOMAINS = {
 SIGNUP_INVITE_CODES = {
     c.strip() for c in os.environ.get("SIGNUP_INVITE_CODES", "").split(",") if c.strip()
 }
+# Temporary access suspension list. Values may be an email address, an exact
+# display name, or an exact first name. Every authenticated request reloads the
+# user from Mongo before this check, so adding somebody here also kills access
+# from already-issued JWTs instead of merely blocking the login form.
+SUSPENDED_USER_IDENTIFIERS = {
+    value.strip().casefold()
+    for value in os.environ.get("SUSPENDED_USER_IDENTIFIERS", "").split(",")
+    if value.strip()
+}
 
 
 def _signup_authorized(email: str, invite_code: Optional[str]) -> bool:
@@ -74,6 +83,21 @@ def _signup_authorized(email: str, invite_code: Optional[str]) -> bool:
     if SIGNUP_INVITE_CODES and invite_code and invite_code.strip() in SIGNUP_INVITE_CODES:
         return True
     return False
+
+
+def user_is_suspended(user: dict[str, Any]) -> bool:
+    if not SUSPENDED_USER_IDENTIFIERS:
+        return False
+    email = str(user.get("email") or "").strip().casefold()
+    name = str(user.get("name") or "").strip().casefold()
+    first_name = name.split(maxsplit=1)[0] if name else ""
+    return bool({email, name, first_name} & SUSPENDED_USER_IDENTIFIERS)
+
+
+def reject_suspended_user(user: dict[str, Any], *, hide_reason: bool = False) -> None:
+    if user_is_suspended(user):
+        detail = "Invalid credentials" if hide_reason else "Account disabled"
+        raise HTTPException(401, detail)
 
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -1476,6 +1500,7 @@ async def get_current_user(request: Request) -> UserPublic:
     user = await db.users.find_one({"id": uid})
     if not user:
         raise HTTPException(401, "User not found")
+    reject_suspended_user(user)
     return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
 
 
@@ -1529,6 +1554,7 @@ async def user_from_access_token(token: str) -> UserPublic:
     user = await db.users.find_one({"id": payload.get("sub")})
     if not user:
         raise HTTPException(401, "User not found")
+    reject_suspended_user(user)
     return UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
 
 
@@ -1617,6 +1643,7 @@ async def login(body: LoginReq):
     user = await db.users.find_one({"email": body.email})
     if not user:
         raise HTTPException(401, "Invalid credentials")
+    reject_suspended_user(user, hide_reason=True)
     lock_until = user.get("lock_until")
     if lock_until and lock_until > now_utc().replace(tzinfo=None):
         raise HTTPException(403, "Account temporarily locked")
@@ -1645,6 +1672,7 @@ async def refresh_token(body: RefreshReq):
     user = await db.users.find_one({"id": payload.get("sub")})
     if not user:
         raise HTTPException(401, "User not found")
+    reject_suspended_user(user)
     access = make_token(user["id"], user["role"], refresh=False)
     new_refresh = make_token(user["id"], user["role"], refresh=True)
     pub = UserPublic(id=user["id"], email=user["email"], name=user["name"], role=Role(user["role"]), title=user.get("title"))
