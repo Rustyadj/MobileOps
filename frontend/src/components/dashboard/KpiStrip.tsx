@@ -1,6 +1,5 @@
 import React from "react";
 import { View, StyleSheet } from "react-native";
-import { colors, radii } from "@/src/theme";
 import { KpiTile } from "./KpiTile";
 import { useBreakpoint } from "@/src/hooks/use-breakpoint";
 
@@ -15,11 +14,8 @@ export { KpiTile };
 const styles = StyleSheet.create({
   wrap: {
     flexDirection: "row",
-    backgroundColor: colors.bg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 10,
   },
-  wrapMobile: { flexWrap: "wrap" },
+  wrapMobile: { flexWrap: "wrap", gap: 8 },
 });

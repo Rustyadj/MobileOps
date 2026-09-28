@@ -24,9 +24,10 @@ type Props = {
   testID?: string;
   desktopHeader?: React.ReactNode; // optional compact header shown even on wide shell
   clampWidth?: boolean; // clamp body to maxContentWidth and center (desktop forms)
+  tabs?: React.ReactNode; // in-page section tab bar, pinned under the header (see SectionTabs)
 };
 
-export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, children, scroll = true, refreshing, onRefresh, testID, desktopHeader, clampWidth }) => {
+export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, children, scroll = true, refreshing, onRefresh, testID, desktopHeader, clampWidth, tabs }) => {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { isShellWide } = useBreakpoint();
@@ -65,6 +66,7 @@ export const Screen: React.FC<Props> = ({ title, subtitle, back, rightAction, ch
   return (
     <SafeAreaView edges={isShellWide ? [] : ["top"]} style={styles.safe} testID={testID}>
       {isShellWide ? desktopHeader ?? null : Header}
+      {tabs}
       {scroll ? (
         <ScrollView
           contentContainerStyle={styles.scroll}

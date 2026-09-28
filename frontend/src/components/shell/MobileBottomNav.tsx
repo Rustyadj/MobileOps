@@ -1,5 +1,5 @@
-// Reorganized 5-item bottom nav for phones: Home / Rentals / Inventory /
-// Shop / Menu. Secondary destinations (Tools, Vendors, Site Admin, account)
+// 5-item bottom nav for phones, mirroring the top of the desktop sidebar:
+// Home / Rentals / Inventory / Shop / Menu. Live Feed, Utilities and Admin
 // live behind Menu instead of crowding the bar.
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
@@ -9,25 +9,19 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme";
 import { MOBILE_TABS, activeSectionForPath } from "./nav-config";
 
-const TAB_TO_SECTION: Record<string, string> = {
-  home: "overview",
-  rentals: "operations",
-  inventory: "inventory",
-  shop: "shop",
-  menu: "menu",
-};
-
 export const MobileBottomNav: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const rawSection = activeSectionForPath(pathname);
-  const activeSection = rawSection === "contacts" || rawSection === "admin" || rawSection === "tools" ? "menu" : rawSection;
+  // Utilities/Admin/Live Feed have no bottom-nav tab of their own — they read
+  // as "Menu" so the bar never shows a phantom selection.
+  const activeSection = ["admin", "utilities", "whiteboard"].includes(rawSection) ? "menu" : rawSection;
 
   return (
     <View style={[styles.wrap, { height: 58 + insets.bottom, paddingBottom: insets.bottom }]} testID="mobile-bottom-nav">
       {MOBILE_TABS.map((tab) => {
-        const active = TAB_TO_SECTION[tab.key] === activeSection;
+        const active = tab.key === activeSection;
         return (
           <TouchableOpacity
             key={tab.key}

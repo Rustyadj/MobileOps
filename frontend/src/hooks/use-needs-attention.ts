@@ -7,8 +7,17 @@ import { DISPATCH_STATUS, isBookingActive, isDispatchLive, isRentalReturned } fr
 type RentalLine = { equipment_id: string; sku: string; name: string; qty: number; delivered_qty?: number; returned_qty: number; damaged_qty?: number };
 type Rental = { id: string; customer_name: string; job_site: string; start_date: string; due_date?: string | null; status: string; lines: RentalLine[] };
 type Booking = { id: string; customer_name: string; job_site: string; start_date: string; end_date: string; status: string; items: RentalLine[] };
-type Equipment = { id: string; sku: string; qr_code?: string | null; name: string; pending_inspection: number; in_maintenance: number };
-type Shortage = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[] };
+type Equipment = {
+  id: string; sku: string; qr_code?: string | null; name: string; category?: string;
+  pending_inspection: number; in_maintenance: number; missing?: number;
+  checked_out?: number; checked_out_to?: string; expected_return_at?: string | null;
+};
+type Shortage = { date: string; equipment_id: string; sku: string; name: string; shortage: number; demand: number; owned: number; jobs: string[]; outbound_id?: string };
+type OutboundRisk = {
+  outbound_id: string; customer_name: string; job_site: string; requested_date: string;
+  risk: "green" | "yellow" | "red" | "critical"; route: string;
+  lines: { equipment_id: string; name: string; requested_qty: number; available_now: number; projected_available: number; projected_shortage: number; inbound_dependency_qty?: number; preferred_equipment_match?: boolean; preference_type?: string | null; risky_returns?: unknown[] }[];
+};
 type InventoryCount = { id: string; equipment_id: string; equipment_name: string; variance: number; status: string; counted_at: string };
 type ShopTask = {
   id: string;
@@ -34,7 +43,7 @@ const rowsResponse = <T,>(value: unknown): T[] => {
 
 export type AttentionItem = {
   id: string;
-  kind: "rental-overdue" | "due-soon" | "returning-today" | "shortage" | "pending-inspection" | "booking-missing-site" | "damaged-maintenance" | "count-variance" | "loadout-incomplete" | "pickup-overdue" | "inbound-not-checked-in" | "dispatch-unassigned" | "rental-no-pickup";
+  kind: "rental-overdue" | "due-soon" | "returning-today" | "shortage" | "future-shortage" | "return-dependency" | "preferred-equipment-conflict" | "pending-inspection" | "booking-missing-site" | "damaged-maintenance" | "count-variance" | "loadout-incomplete" | "pickup-overdue" | "inbound-not-checked-in" | "dispatch-unassigned" | "rental-no-pickup" | "outbound-today" | "inbound-today" | "tool-overdue" | "equipment-missing";
   title: string;
   subtitle: string;
   route: string;
@@ -72,7 +81,7 @@ export function useNeedsAttention(): AttentionData {
     const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
       p.catch(() => { hadError = true; return fallback; });
     try {
-      const [rentals, bookings, equipment, shortages, inventoryCounts, shopTasks, dispatches] = await Promise.all([
+      const [rentals, bookings, equipment, shortages, inventoryCounts, shopTasks, dispatches, outboundRisks] = await Promise.all([
         guard(api<unknown>("/rentals").then(arrayResponse<Rental>), []),
         guard(api<unknown>("/bookings").then(arrayResponse<Booking>), []),
         guard(api<unknown>("/equipment").then(arrayResponse<Equipment>), []),
@@ -80,6 +89,7 @@ export function useNeedsAttention(): AttentionData {
         guard(api<unknown>("/inventory-counts").then(arrayResponse<InventoryCount>), []),
         guard(api<unknown>("/shop-tasks").then(arrayResponse<ShopTask>), []),
         guard(api<unknown>("/dispatches").then(arrayResponse<DispatchDoc>), []),
+        guard(api<unknown>("/dashboard/outbound-risks?days=30").then(rowsResponse<OutboundRisk>), []),
       ]);
       const out: AttentionItem[] = [];
       const now = new Date();
@@ -98,7 +108,7 @@ export function useNeedsAttention(): AttentionData {
             if (lineUnits === 0) continue;
             const returningToday = sameLocalDay(due, now);
             const timing = returningToday ? "returning today" : `due back ${due.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
-            out.push({ id: `due-soon-${rental.id}-${line.equipment_id}`, kind: returningToday ? "returning-today" : "due-soon", title: `${unitLabel(line.name, lineUnits)} ${timing}`, subtitle: `Rental ${rentalLabel(rental.id)} · ${rental.customer_name}`, route: returningToday ? "/(app)/operations/returns" : `/(app)/operations/rentals?open=${rental.id}` });
+            out.push({ id: `due-soon-${rental.id}-${line.equipment_id}`, kind: returningToday ? "returning-today" : "due-soon", title: `${unitLabel(line.name, lineUnits)} ${timing}`, subtitle: `Rental ${rentalLabel(rental.id)} · ${rental.customer_name}`, route: returningToday ? "/(app)/operations/inbound" : `/(app)/operations/rentals?open=${rental.id}` });
           }
         }
       }
@@ -109,12 +119,13 @@ export function useNeedsAttention(): AttentionData {
         if (sameLocalDay(endDate, now)) {
           for (const item of booking.items) {
             if (item.qty <= 0) continue;
-            out.push({ id: `returning-${booking.id}-${item.equipment_id}`, kind: "returning-today", title: `${unitLabel(item.name, item.qty)} returning today`, subtitle: `${booking.customer_name} · ${booking.job_site || "No job site"}`, route: "/(app)/operations/returns" });
+            out.push({ id: `returning-${booking.id}-${item.equipment_id}`, kind: "returning-today", title: `${unitLabel(item.name, item.qty)} returning today`, subtitle: `${booking.customer_name} · ${booking.job_site || "No job site"}`, route: "/(app)/operations/inbound" });
           }
         }
       }
 
       for (const shortage of shortages) {
+        if (shortage.outbound_id) continue; // represented below with a direct outbound deep-link
         out.push({
           id: `shortage-${shortage.date}-${shortage.equipment_id}`,
           kind: "shortage",
@@ -123,6 +134,21 @@ export function useNeedsAttention(): AttentionData {
           route: `/(app)/operations/capacity?date=${shortage.date}`,
           jobs: shortage.jobs,
         });
+      }
+
+      for (const risk of outboundRisks) {
+        for (const line of risk.lines) {
+          const customer = risk.customer_name || risk.job_site || "Outbound";
+          if (line.projected_shortage > 0) {
+            out.push({ id: `forecast-shortage-${risk.outbound_id}-${line.equipment_id}`, kind: "future-shortage", title: `Future Shortage · ${customer}`, subtitle: `${risk.requested_date} · ${line.name} · ${line.projected_shortage} units short`, route: risk.route });
+          } else if ((line.inbound_dependency_qty || 0) > 0 || (line.risky_returns?.length || 0) > 0) {
+            const dependency = line.inbound_dependency_qty || 0;
+            out.push({ id: `return-dependency-${risk.outbound_id}-${line.equipment_id}`, kind: "return-dependency", title: `Return Dependency · ${customer}`, subtitle: `${risk.requested_date} · ${line.name} depends on ${dependency} inbound unit${dependency === 1 ? "" : "s"}`, route: risk.route });
+          } else if ((line.preference_type === "preferred" || line.preference_type === "required") && !line.preferred_equipment_match) {
+            const percent = line.requested_qty ? Math.min(100, Math.round(line.projected_available / line.requested_qty * 100)) : 0;
+            out.push({ id: `preference-conflict-${risk.outbound_id}-${line.equipment_id}`, kind: "preferred-equipment-conflict", title: `Preferred Equipment Conflict · ${customer}`, subtitle: `${line.name} · ${percent}% currently fulfillable`, route: risk.route });
+          }
+        }
       }
 
       const activeRepairByEquipment = new Map<string, ShopTask>();
@@ -181,7 +207,30 @@ export function useNeedsAttention(): AttentionData {
         }
       }
 
-      const rentalsWithLivePickup = new Set(liveDispatches.filter((d) => d.direction === "inbound" && d.rental_id).map((d) => d.rental_id));
+      // Today's movements — the two things the yard has to get right before
+      // anything else, deep-linked into the matching Rentals tab.
+      for (const d of liveDispatches) {
+        if (!d.scheduled_date || !sameLocalDay(new Date(d.scheduled_date), now)) continue;
+        const label = d.job_site || d.customer_name;
+        if (d.direction === "outbound") {
+          out.push({ id: `outbound-today-${d.id}`, kind: "outbound-today", title: `${d.customer_name} delivery leaves today`, subtitle: `${label} · ${d.status.replace(/_/g, " ")}`, route: `/(app)/operations/dispatch?open=${d.id}` });
+        } else {
+          out.push({ id: `inbound-today-${d.id}`, kind: "inbound-today", title: `${d.customer_name} pickup due in today`, subtitle: `${label} · ${d.status.replace(/_/g, " ")}`, route: `/(app)/operations/dispatch?open=${d.id}` });
+        }
+      }
+
+      // Tools out past their expected return, and anything unaccounted for at
+      // the last physical count.
+      for (const item of equipment) {
+        if ((item.checked_out || 0) > 0 && item.expected_return_at && new Date(item.expected_return_at) < now) {
+          out.push({ id: `tool-overdue-${item.id}`, kind: "tool-overdue", title: `${item.name} overdue back from ${item.checked_out_to || "the field"}`, subtitle: `${equipmentIdentifier(item)} · due ${new Date(item.expected_return_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`, route: "/(app)/inventory/tools" });
+        }
+        if ((item.missing || 0) > 0) {
+          out.push({ id: `missing-${item.id}`, kind: "equipment-missing", title: `${unitLabel(item.name, item.missing || 0)} missing`, subtitle: `${equipmentIdentifier(item)} · unaccounted for at last count`, route: "/(app)/inventory/counts" });
+        }
+      }
+
+            const rentalsWithLivePickup = new Set(liveDispatches.filter((d) => d.direction === "inbound" && d.rental_id).map((d) => d.rental_id));
       for (const rental of rentals) {
         if (isRentalReturned(rental.status) || rentalsWithLivePickup.has(rental.id)) continue;
         // Rentals created by an outbound Dispatch completing (the primary

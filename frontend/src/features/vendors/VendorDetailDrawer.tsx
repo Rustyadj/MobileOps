@@ -61,6 +61,18 @@ export const ContactDetailDrawer: React.FC<{
         <SectionLabel>Business Address</SectionLabel>
         <Text style={[typo.body, { marginBottom: spacing.md }]}>{contact.business_address || "Not entered"}</Text>
 
+        {contact.preferred_equipment?.length ? (
+          <>
+            <SectionLabel>Equipment preferences</SectionLabel>
+            {[...contact.preferred_equipment].sort((a, b) => a.priority - b.priority).map((preference, index) => (
+              <Row key={`${preference.equipment_family}-${index}`} style={{ justifyContent: "space-between", marginBottom: spacing.xs }}>
+                <Text style={typo.body}>{preference.equipment_family || preference.category || "Any equipment"}</Text>
+                <Mono style={{ fontSize: 11 }}>{preference.preference_type.replace("_", " ")} · P{preference.priority}</Mono>
+              </Row>
+            ))}
+          </>
+        ) : null}
+
         {contact.notes ? (
           <>
             <View style={{ height: spacing.md }} />

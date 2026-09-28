@@ -1,15 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { apiUpload } from "@/src/api/client";
+import { apiMediaUrl, apiUpload, releaseMediaUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useWhiteboard } from "@/src/hooks/use-whiteboard";
-import type { Mentionable, WhiteboardMessage } from "@/src/types/whiteboard";
+import type { Mentionable, WhiteboardAttachment, WhiteboardMessage } from "@/src/types/whiteboard";
 import { colors, radii, spacing } from "@/src/theme";
 
 type PickedAsset = DocumentPicker.DocumentPickerAsset;
+
+const MAX_ATTACHMENTS = 5;
+const isImage = (type?: string | null) => !!type?.startsWith("image/");
+
+/**
+ * Wrap a clipboard or dropped File as the same asset shape the document
+ * picker produces, so pasted and picked attachments travel one code path.
+ * Clipboard images arrive named "image.png" (or unnamed), so they get a
+ * timestamped name to stay distinguishable in the feed.
+ */
+const assetFromFile = (file: File): PickedAsset => {
+  const extension = (file.type.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "");
+  const name = file.name && file.name !== "image.png"
+    ? file.name
+    : `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+  return { name, uri: URL.createObjectURL(file), mimeType: file.type, size: file.size, file } as PickedAsset;
+};
 
 const timeLabel = (value: string) => new Date(value).toLocaleTimeString(undefined, {
   hour: "numeric", minute: "2-digit",
@@ -55,6 +72,9 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
   const [newBelow, setNewBelow] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
+  const composerRef = useRef<TextInput>(null);
+  const assetsRef = useRef<PickedAsset[]>([]);
+  assetsRef.current = assets;
   const nearBottomRef = useRef(true);
   const lastCountRef = useRef(0);
 
@@ -110,11 +130,45 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
     if (!result.canceled) setAssets((current) => [...current, ...result.assets].slice(0, 5));
   };
 
-  const removeAsset = (index: number) => setAssets((current) => current.filter((_, i) => i !== index));
+  const addAssets = (incoming: PickedAsset[]) =>
+    setAssets((current) => [...current, ...incoming].slice(0, MAX_ATTACHMENTS));
+
+  const removeAsset = (index: number) => setAssets((current) => {
+    releaseMediaUrl(current[index]?.uri ?? null);
+    return current.filter((_, i) => i !== index);
+  });
+
+  // Paste-to-attach (web). The clipboard carries screenshots as File items
+  // with no name, so they are wrapped exactly like picked documents. Only
+  // files are intercepted — pasting text keeps its normal behaviour.
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const onPaste = (event: any) => {
+      const composer = composerRef.current as any;
+      const active = document.activeElement;
+      // Only when the composer has focus, so a paste elsewhere on the page is
+      // never silently swallowed into this feed.
+      if (!composer || (active !== composer && !composer.contains?.(active))) return;
+      const files: File[] = Array.from(event.clipboardData?.files || []);
+      const images = files.filter((file) => isImage(file.type));
+      if (!images.length) return;
+      event.preventDefault();
+      addAssets(images.map(assetFromFile));
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, []);
+
+  // Object URLs for pending attachments are owned by this component.
+  useEffect(() => () => { assetsRef.current.forEach((asset) => releaseMediaUrl(asset.uri)); }, []);
+
+  const canSubmit = !busy && (!!draft.trim() || (!editing && assets.length > 0));
 
   const submit = async () => {
     const body = draft.trim();
-    if (!body || busy) return;
+    // A pasted screenshot is a complete message on its own; only an edit still
+    // requires text, since editing cannot change attachments.
+    if (!canSubmit) return;
     setBusy(true);
     try {
       if (editing) {
@@ -130,6 +184,7 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
         }
       }
       setDraft("");
+      assets.forEach((asset) => releaseMediaUrl(asset.uri));
       setAssets([]);
       setReplyTo(null);
       setEditing(null);
@@ -238,7 +293,9 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
                     ) : null}
                     <MentionText body={message.body} />
                     {message.attachments?.length ? <View style={styles.attachmentRow}>{message.attachments.map((attachment) => (
-                      <View key={attachment.id} style={styles.attachment}><Ionicons name="attach" size={13} color={colors.primary} /><Text style={styles.attachmentText} numberOfLines={1}>{attachment.filename}</Text></View>
+                      isImage(attachment.content_type)
+                        ? <AttachmentImage key={attachment.id} attachment={attachment} />
+                        : <View key={attachment.id} style={styles.attachment}><Ionicons name="attach" size={13} color={colors.primary} /><Text style={styles.attachmentText} numberOfLines={1}>{attachment.filename}</Text></View>
                     ))}</View> : null}
                     {message.invocation_status === "responding" || message.invocation_status === "pending" ? (
                       <View style={styles.respondingRow}><View style={styles.respondingDot} /><Text style={styles.responding}>Nathan is responding…</Text></View>
@@ -275,10 +332,11 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
       ))}</View> : null}
 
       {(replyTo || editing) ? <View style={styles.composerMode}><Text style={styles.composerModeText}>{editing ? `Editing your message` : `Replying to ${replyTo?.author_name}`}</Text><TouchableOpacity onPress={cancelComposerMode} hitSlop={8}><Ionicons name="close" size={16} color={colors.inkSecondary} /></TouchableOpacity></View> : null}
-      {assets.length ? <View style={styles.attachmentRow}>{assets.map((asset, index) => (
-        <View key={`${asset.name}-${index}`} style={styles.attachment}>
+      {assets.length ? <View style={styles.attachmentRow} testID="whiteboard-pending-attachments">{assets.map((asset, index) => (
+        <View key={`${asset.name}-${index}`} style={[styles.attachment, isImage(asset.mimeType) && styles.attachmentWithThumb]}>
+          {isImage(asset.mimeType) ? <Image source={{ uri: asset.uri }} style={styles.pendingThumb} accessibilityLabel={asset.name} /> : null}
           <Text style={styles.attachmentText} numberOfLines={1}>{asset.name}</Text>
-          <TouchableOpacity onPress={() => removeAsset(index)} hitSlop={6}><Ionicons name="close-circle" size={14} color={colors.inkMuted} /></TouchableOpacity>
+          <TouchableOpacity onPress={() => removeAsset(index)} hitSlop={6} accessibilityLabel={`Remove ${asset.name}`}><Ionicons name="close-circle" size={14} color={colors.inkMuted} /></TouchableOpacity>
         </View>
       ))}</View> : null}
       <View style={styles.composer}>
@@ -289,6 +347,7 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
           multiline
           placeholder="Share an update, or mention @Nathan…"
           placeholderTextColor={colors.inkMuted}
+          ref={composerRef}
           style={[styles.input, compact && styles.compactInput]}
           onKeyPress={(event: any) => {
             if (event.nativeEvent.key === "Enter" && !event.nativeEvent.shiftKey) {
@@ -298,11 +357,50 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
           }}
           testID="whiteboard-input"
         />
-        <TouchableOpacity disabled={!draft.trim() || busy} onPress={submit} style={[styles.send, (!draft.trim() || busy) && styles.sendDisabled]} testID="whiteboard-send">
+        <TouchableOpacity disabled={!canSubmit} onPress={submit} style={[styles.send, !canSubmit && styles.sendDisabled]} testID="whiteboard-send">
           <Ionicons name={busy ? "hourglass-outline" : "send"} size={16} color={colors.bg} />
         </TouchableOpacity>
       </View>
       {!compact ? <Text style={styles.hint}>Enter to send · Shift+Enter for a new line · Mention @Nathan for the AI operations agent</Text> : null}
+    </View>
+  );
+}
+
+/**
+ * Attachment downloads are token-protected, so the bytes are fetched through
+ * the API client and turned into a renderable URL. The URL is revoked when the
+ * message scrolls out of the tree.
+ */
+function AttachmentImage({ attachment }: { attachment: WhiteboardAttachment }) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let current: string | null = null;
+    let alive = true;
+    apiMediaUrl(`/whiteboard/attachments/${attachment.id}`)
+      .then((value) => {
+        if (!alive) { releaseMediaUrl(value); return; }
+        current = value;
+        setUri(value);
+      })
+      .catch(() => { if (alive) setFailed(true); });
+    return () => { alive = false; releaseMediaUrl(current); };
+  }, [attachment.id]);
+
+  if (failed) {
+    return (
+      <View style={styles.attachment}>
+        <Ionicons name="image-outline" size={13} color={colors.inkMuted} />
+        <Text style={styles.attachmentText} numberOfLines={1}>{attachment.filename} — could not load</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.imageAttachment} testID={`whiteboard-image-${attachment.id}`}>
+      {uri
+        ? <Image source={{ uri }} style={styles.imageAttachmentImage} resizeMode="cover" accessibilityLabel={attachment.filename} />
+        : <View style={[styles.imageAttachmentImage, styles.imagePlaceholder]} />}
     </View>
   );
 }
@@ -370,6 +468,11 @@ const styles = StyleSheet.create({
   attachmentRow: { flexDirection: "row", flexWrap: "wrap", gap: 5, paddingHorizontal: 10, paddingVertical: 4 },
   attachment: { maxWidth: 210, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, paddingVertical: 4, backgroundColor: colors.bgMuted, borderRadius: radii.sm },
   attachmentText: { maxWidth: 160, color: colors.inkSecondary, fontSize: 10.5 },
+  attachmentWithThumb: { paddingLeft: 4 },
+  pendingThumb: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: colors.bgTint },
+  imageAttachment: { borderRadius: radii.sm, overflow: "hidden", borderWidth: 1, borderColor: colors.border },
+  imageAttachmentImage: { width: 168, height: 126, backgroundColor: colors.bgTint },
+  imagePlaceholder: { backgroundColor: colors.bgMuted },
   jumpPill: { position: "absolute", bottom: 10, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: colors.primary, ...shadowPill },
   jumpPillText: { color: colors.bg, fontSize: 11, fontWeight: "700" },
   suggestions: { borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg, paddingVertical: 4 },

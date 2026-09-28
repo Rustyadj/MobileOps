@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { View, Text, Image, Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { Screen } from "@/src/components/Screen";
+import { AdminTabs } from "@/src/components/shell/AdminTabs";
 import { Card, Input, Button, SectionLabel, Row } from "@/src/components/ui";
 import { PageHeader } from "@/src/components/layout/PageHeader";
 import { ErrorState } from "@/src/components/feedback/ErrorState";
@@ -71,9 +72,9 @@ export default function SiteAdminScreen() {
 
   return (
     <Screen
-      title="Site Admin"
+      title="Admin"
       subtitle="Brand · Logo · Contact"
-      back
+      tabs={<AdminTabs active="settings" />}
       scroll={isShellWide ? false : true}
       clampWidth
       desktopHeader={desktopHeader}

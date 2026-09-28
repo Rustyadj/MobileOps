@@ -14,14 +14,15 @@ export const PageBody: React.FC<{
   onRefresh?: () => void;
   style?: StyleProp<ViewStyle>;
   testID?: string;
-}> = ({ children, scroll = true, clampWidth = false, refreshing, onRefresh, style, testID }) => {
+  dense?: boolean;
+}> = ({ children, scroll = true, clampWidth = false, refreshing, onRefresh, style, testID, dense = false }) => {
   const inner = <View style={[clampWidth && styles.clamp, style]}>{children}</View>;
   if (!scroll) return <View style={{ flex: 1 }} testID={testID}>{inner}</View>;
   return (
     <ScrollView
       testID={testID}
       style={{ flex: 1 }}
-      contentContainerStyle={styles.scroll}
+      contentContainerStyle={[styles.scroll, dense && styles.scrollDense]}
       showsVerticalScrollIndicator={false}
       refreshControl={onRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={onRefresh} tintColor={colors.primary} /> : undefined}
     >
@@ -32,5 +33,6 @@ export const PageBody: React.FC<{
 
 const styles = StyleSheet.create({
   scroll: { paddingHorizontal: spacing.xl, paddingBottom: spacing.xxl },
+  scrollDense: { paddingHorizontal: 18, paddingBottom: spacing.lg },
   clamp: { maxWidth: maxContentWidth, width: "100%", alignSelf: "center" },
 });

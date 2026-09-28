@@ -25,13 +25,19 @@ export const RecentActivity: React.FC<{
   rows: ActivityRow[];
   onViewAll: () => void;
   onRowPress: (row: ActivityRow) => void;
-}> = ({ rows, onViewAll, onRowPress }) => {
-  const columns: OpColumn<ActivityRow & { _i: number }>[] = [
+  compact?: boolean;
+}> = ({ rows, onViewAll, onRowPress, compact = false }) => {
+  const fullColumns: OpColumn<ActivityRow & { _i: number }>[] = [
     { key: "time", label: "Time", width: 90, render: (r) => <Text style={styles.time}>{new Date(r.ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</Text> },
     { key: "activity", label: "Activity", flex: 1.1, render: (r) => <Text style={styles.cell} numberOfLines={1}>{KIND_LABEL[r.type] || r.type}</Text> },
     { key: "details", label: "Details", flex: 2, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.title}</Text> },
     { key: "related", label: "Related to", flex: 1.2, render: (r) => <Text style={styles.link} numberOfLines={1}>{relatedTo(r.title)}</Text> },
     { key: "performed", label: "Performed by", flex: 1, render: () => <Text style={styles.muted}>—</Text> },
+  ];
+  const compactColumns: OpColumn<ActivityRow & { _i: number }>[] = [
+    { key: "time", label: "Time", width: 62, render: (r) => <Text style={styles.time}>{new Date(r.ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</Text> },
+    { key: "activity", label: "Activity", flex: 0.9, render: (r) => <Text style={styles.cell} numberOfLines={1}>{KIND_LABEL[r.type] || r.type}</Text> },
+    { key: "details", label: "Details", flex: 1.6, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.title}</Text> },
   ];
 
   const withIndex = rows.map((r, i) => ({ ...r, _i: i }));
@@ -39,15 +45,16 @@ export const RecentActivity: React.FC<{
   return (
     <OperationalTable
       title="Recent Activity"
-      columns={columns}
-      rows={withIndex}
+      columns={compact ? compactColumns : fullColumns}
+      rows={compact ? withIndex.slice(0, 4) : withIndex}
       keyExtractor={(r) => `${r.type}-${r.ts}-${r._i}`}
       onRowPress={onRowPress}
       emptyLabel="No activity yet."
       viewAllLabel="View all"
       onViewAll={onViewAll}
       testID="dashboard-recent-activity"
-      fullWidth
+      fullWidth={!compact}
+      compact={compact}
     />
   );
 };

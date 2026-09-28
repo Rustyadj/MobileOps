@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { View, Alert, Text } from "react-native";
-import { Input, Button, Row } from "@/src/components/ui";
+import { Input, Button, Row, SectionLabel, Card } from "@/src/components/ui";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
 import { RequiresOnline } from "@/src/components/RequiresOnline";
 import { colors, spacing, type as typo } from "@/src/theme";
@@ -43,6 +43,27 @@ export const ContactForm: React.FC<{
           <Button title={editing.follows_current_job ? "Address follows current job ✓" : "Use permanent business address"} variant={editing.follows_current_job ? "primary" : "outline"} onPress={() => setEditing((value: any) => ({ ...value, follows_current_job: !value.follows_current_job }))} testID="contact-follow-job" />
           <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: spacing.xs }]}>Turn this on for crews that move from one active job to the next.</Text>
         </View>
+      ) : null}
+      {!editing.is_homeowner ? (
+        <>
+          <SectionLabel>Equipment preferences</SectionLabel>
+          {(editing.preferred_equipment || []).map((preference, index) => (
+            <Card key={`preference-${index}`} style={{ marginBottom: spacing.sm }}>
+              <Row style={{ gap: spacing.sm }}>
+                <View style={{ flex: 1 }}><Input label="Category" value={preference.category} onChangeText={(category) => setEditing((value: any) => ({ ...value, preferred_equipment: value.preferred_equipment.map((item: any, i: number) => i === index ? { ...item, category } : item) }))} testID={`preference-category-${index}`} /></View>
+                <View style={{ flex: 1 }}><Input label="Equipment family" value={preference.equipment_family} onChangeText={(equipment_family) => setEditing((value: any) => ({ ...value, preferred_equipment: value.preferred_equipment.map((item: any, i: number) => i === index ? { ...item, equipment_family } : item) }))} placeholder="nudura_gen2" autoCapitalize="none" testID={`preference-family-${index}`} /></View>
+              </Row>
+              <Row style={{ gap: spacing.xs, flexWrap: "wrap", marginBottom: spacing.sm }}>
+                {(["preferred", "acceptable_alternate", "avoid", "required"] as const).map((kind) => (
+                  <Button key={kind} title={kind.replace("_", " ")} variant={preference.preference_type === kind ? "primary" : "outline"} fullWidth={false} onPress={() => setEditing((value: any) => ({ ...value, preferred_equipment: value.preferred_equipment.map((item: any, i: number) => i === index ? { ...item, preference_type: kind } : item) }))} testID={`preference-type-${index}-${kind}`} />
+                ))}
+              </Row>
+              <Button title="Remove preference" variant="outline" onPress={() => setEditing((value: any) => ({ ...value, preferred_equipment: value.preferred_equipment.filter((_: any, i: number) => i !== index) }))} testID={`remove-preference-${index}`} />
+            </Card>
+          ))}
+          <Button title="Add equipment preference" variant="outline" onPress={() => setEditing((value: any) => ({ ...value, preferred_equipment: [...(value.preferred_equipment || []), { category: "", equipment_family: "", priority: (value.preferred_equipment || []).length + 1, preference_type: "preferred" }] }))} testID="add-equipment-preference" />
+          <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: spacing.xs, marginBottom: spacing.md }]}>Use the equipment family key shown in inventory. Lower priority numbers are considered first.</Text>
+        </>
       ) : null}
       <Input label="Notes" value={editing.notes || ""} onChangeText={(text) => setEditing((value: any) => ({ ...value, notes: text }))} testID="contact-notes" />
       <RequiresOnline><Button title="Save Contact" onPress={handleSave} loading={saving} testID="save-contact-btn" /></RequiresOnline>

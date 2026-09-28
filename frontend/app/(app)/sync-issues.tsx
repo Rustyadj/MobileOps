@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { Screen } from "@/src/components/Screen";
+import { AdminTabs } from "@/src/components/shell/AdminTabs";
 import { Card, Row, Button } from "@/src/components/ui";
 import { colors, spacing, type as typo } from "@/src/theme";
 import { failedRows, subscribeQueueChanged, retryFailed, discardFailed } from "@/src/sync/syncEngine";
@@ -26,7 +27,7 @@ export default function SyncIssuesScreen() {
   }, []);
 
   return (
-    <Screen title="Sync Issues" subtitle={`${rows.length} action${rows.length === 1 ? "" : "s"} couldn't sync`} back testID="sync-issues-screen">
+    <Screen title="Admin" subtitle={`${rows.length} action${rows.length === 1 ? "" : "s"} couldn't sync`} tabs={<AdminTabs active="sync" />} testID="sync-issues-screen">
       {rows.length === 0 ? (
         <Card><Text style={[typo.body, { color: colors.inkMuted }]}>Nothing to review — everything queued has synced.</Text></Card>
       ) : rows.map((row) => (

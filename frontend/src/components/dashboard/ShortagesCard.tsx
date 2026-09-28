@@ -53,8 +53,8 @@ export function ShortagesCard({ compact = false }: { compact?: boolean }) {
   return (
     <View style={[styles.panel, compact && styles.compactPanel]} testID="dashboard-shortages-card">
       <View style={styles.header}>
-        <Text style={styles.title}>SHORTAGES</Text>
-        <TouchableOpacity onPress={openFull} testID="shortages-open-full"><Text style={styles.viewAll}>Open Shortages →</Text></TouchableOpacity>
+        <View style={styles.titleRow}><Ionicons name="warning-outline" size={17} color={colors.error} /><Text style={styles.title}>Shortages</Text></View>
+        <TouchableOpacity onPress={openFull} testID="shortages-open-full"><Text style={styles.viewAll}>View All  →</Text></TouchableOpacity>
       </View>
 
       <ScrollView style={[styles.list, compact && styles.compactList]} contentContainerStyle={styles.listContent} nestedScrollEnabled>
@@ -63,24 +63,25 @@ export function ShortagesCard({ compact = false }: { compact?: boolean }) {
         {!shortages.loading && !shortages.error && !visible.length ? <Text style={styles.empty}>Nothing short right now.</Text> : null}
         {visible.map((row) => (
           <TouchableOpacity
-            key={row.id} style={styles.row} activeOpacity={row.source === "manual" && canEdit ? 0.6 : 1}
+            key={row.id} style={[styles.row, compact && styles.rowCompact]} activeOpacity={row.source === "manual" && canEdit ? 0.6 : 1}
             onPress={row.source === "manual" && canEdit && row.status !== "resolved" ? () => advanceStatus(row) : undefined}
             testID={`shortage-row-${row.id}`}
           >
-            <View style={[styles.sourceTag, row.source === "auto" ? styles.autoTag : styles.manualTag]}>
+            <View style={[styles.sourceTag, compact && styles.sourceTagCompact, row.source === "auto" ? styles.autoTag : styles.manualTag]}>
               <Text style={[styles.sourceText, row.source === "auto" ? styles.autoText : styles.manualText]}>{row.source === "auto" ? "AUTO" : "MANUAL"}</Text>
             </View>
             <View style={styles.rowMain}>
               <Text style={styles.rowTitle} numberOfLines={1}>{row.item_name}</Text>
-              <Text style={styles.rowSubtitle} numberOfLines={1}>{needLabel(row)}</Text>
+              {!compact ? <Text style={styles.rowSubtitle} numberOfLines={1}>{needLabel(row)}</Text> : null}
             </View>
+            {compact ? <Text style={styles.qtyText}>{row.qty_needed}</Text> : null}
             <StatusBadge label={row.status} tone={STATUS_TONE[row.status]} />
           </TouchableOpacity>
         ))}
       </ScrollView>
 
       {canEdit ? (
-        <TouchableOpacity onPress={openCreate} style={styles.addRow} testID="shortages-add">
+        <TouchableOpacity onPress={openCreate} style={[styles.addRow, compact && styles.addRowCompact]} testID="shortages-add">
           <Ionicons name="add-circle-outline" size={16} color={colors.primary} />
           <Text style={styles.addText}>Add Shortage</Text>
         </TouchableOpacity>
@@ -108,27 +109,32 @@ export function ShortagesCard({ compact = false }: { compact?: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, minWidth: 0, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" },
+  panel: { flex: 1, minWidth: 0, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, overflow: "hidden" },
   // Only the compact (dashboard) rendering is height-capped — the full page
   // (app/(app)/shortages.tsx) fills its own tall container instead.
-  compactPanel: { maxHeight: 380 },
-  header: { minHeight: 44, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderBottomColor: colors.border },
-  title: { fontSize: 11, fontWeight: "800", color: colors.inkSecondary, letterSpacing: 0.5 },
+  compactPanel: { maxHeight: 178 },
+  header: { minHeight: 36, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderBottomColor: colors.border },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+  title: { fontSize: 13, fontWeight: "800", color: colors.ink, letterSpacing: -0.1 },
   viewAll: { fontSize: 11.5, color: colors.primary, fontWeight: "700" },
   list: { flex: 1 },
-  compactList: { maxHeight: 284 },
-  listContent: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  compactList: { maxHeight: 111 },
+  listContent: { paddingHorizontal: 12, paddingVertical: 0 },
   empty: { paddingVertical: spacing.xl, textAlign: "center", color: colors.inkMuted, fontSize: 12 },
   error: { padding: spacing.md, color: colors.error, fontSize: 12 },
   row: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  rowCompact: { minHeight: 34, paddingVertical: 3, gap: 7 },
   sourceTag: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: radii.sm, width: 58, alignItems: "center" },
+  sourceTagCompact: { width: 48, paddingHorizontal: 4, paddingVertical: 2 },
   autoTag: { backgroundColor: colors.bgTint }, manualTag: { backgroundColor: colors.primarySoft },
   sourceText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.3 },
   autoText: { color: colors.inkSecondary }, manualText: { color: colors.primary },
   rowMain: { flex: 1, minWidth: 0 },
   rowTitle: { fontSize: 12.5, fontWeight: "700", color: colors.ink },
   rowSubtitle: { fontSize: 10.5, color: colors.inkMuted, marginTop: 2 },
-  addRow: { minHeight: 40, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderTopWidth: 1, borderTopColor: colors.border },
+  qtyText: { minWidth: 24, textAlign: "right", fontSize: 11.5, color: colors.inkSecondary, fontWeight: "700" },
+  addRow: { minHeight: 32, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderTopWidth: 1, borderTopColor: colors.border },
+  addRowCompact: { minHeight: 31 },
   addText: { fontSize: 12, fontWeight: "700", color: colors.primary },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.42)", alignItems: "center", justifyContent: "center", padding: spacing.md },
   modalCard: { width: "100%", maxWidth: 480, padding: spacing.lg, borderRadius: radii.xl, backgroundColor: colors.bg },

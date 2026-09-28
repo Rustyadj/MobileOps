@@ -1,59 +1,73 @@
-// Inventory section landing — mobile "Inventory" tab target; also reachable
-// from the desktop sidebar. Mirrors the sidebar's top-level groups; tapping
-// Bracing / Crankups & Shoring / Tools opens a landing page that groups
-// their categories (Stiffbacks, Turnbuckles, Circular Saw, …).
-import { useCallback, useEffect, useState } from "react";
-import { CategoryCardGrid } from "@/src/components/inventory/CategoryCardGrid";
-import { api } from "@/src/api/client";
+// Inventory section landing. One sidebar row ("Inventory") opens this; the
+// five primary categories live here as rows, not as sidebar clutter.
+// Every count comes from useEquipmentLedger -> rollupEquipment, the single
+// authoritative read of the backend inventory ledger.
+import { useMemo } from "react";
+import { View, Text } from "react-native";
+import { Screen } from "@/src/components/Screen";
+import { SectionLabel } from "@/src/components/ui";
+import { ErrorState } from "@/src/components/feedback/ErrorState";
+import { StatusBoard, AvailabilityNote } from "@/src/components/inventory/StatusCounts";
+import { InventoryRowList, UtilityLinks, type InventoryRow } from "@/src/components/inventory/InventorySectionList";
+import { useEquipmentLedger } from "@/src/hooks/use-equipment-ledger";
 import { BRACING_CATEGORIES, SCAFFOLDING_CATEGORIES } from "@/src/utils/inventory-categories";
+import { spacing, type as typo } from "@/src/theme";
+
+const BRACING_KEYS = BRACING_CATEGORIES.map((c) => c.key);
+const SCAFFOLDING_KEYS = SCAFFOLDING_CATEGORIES.map((c) => c.key);
 
 export default function InventoryIndex() {
-  const [bracingCount, setBracingCount] = useState<number | null>(null);
-  const [scaffoldingCount, setScaffoldingCount] = useState<number | null>(null);
-  const [toolCount, setToolCount] = useState<number | null>(null);
-  const [damagedCount, setDamagedCount] = useState<number | null>(null);
-  const [pendingCounts, setPendingCounts] = useState<number | null>(null);
-  const [loadError, setLoadError] = useState(false);
+  const ledger = useEquipmentLedger();
+  const { equipment, forCategories, forPredicate } = ledger;
 
-  const load = useCallback(async () => {
-    try {
-      const [equipment, counts] = await Promise.all([
-        api<any[]>("/equipment"),
-        api<{ status: string }[]>("/inventory-counts"),
-      ]);
-      const bracingKeys = new Set(BRACING_CATEGORIES.map((c) => c.key));
-      const scaffoldingKeys = new Set(SCAFFOLDING_CATEGORIES.map((c) => c.key));
-      setBracingCount(equipment.filter((item) => bracingKeys.has(item.category)).reduce((sum, item) => sum + (item.available || 0), 0));
-      setScaffoldingCount(equipment.filter((item) => scaffoldingKeys.has(item.category)).reduce((sum, item) => sum + (item.available || 0), 0));
-      setToolCount(equipment.filter((item) => item.category === "tool").length);
-      setDamagedCount(equipment.filter((item) => (item.in_maintenance || 0) > 0 || ["poor", "broken", "damaged"].includes(item.condition)).length);
-      setPendingCounts(counts.filter((count) => count.status === "pending").length);
-      setLoadError(false);
-    } catch {
-      setLoadError(true);
-    }
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  const bracing = useMemo(() => forCategories(BRACING_KEYS), [forCategories]);
+  const scaffolding = useMemo(() => forCategories(SCAFFOLDING_KEYS), [forCategories]);
+  const tools = useMemo(() => forPredicate((item) => item.category === "tool"), [forPredicate]);
+  const rentalFleet = useMemo(
+    () => forCategories([...BRACING_KEYS, ...SCAFFOLDING_KEYS]),
+    [forCategories],
+  );
+  const toolCount = useMemo(() => equipment.filter((item) => item.category === "tool").length, [equipment]);
 
-  const items = [
-    { label: "Bracing", sub: `${bracingCount ?? "—"} units physically available`, route: "/(app)/inventory/bracing", icon: "construct-outline" as const, testID: "inventory-bracing" },
-    { label: "Crankups & Shoring", sub: `${scaffoldingCount ?? "—"} units physically available`, route: "/(app)/inventory/scaffolding", icon: "grid-outline" as const, testID: "inventory-scaffolding" },
-    { label: "Tools", sub: `${toolCount ?? "—"} tools tracked`, route: "/(app)/inventory/tools", icon: "hammer-outline" as const, testID: "inventory-tools" },
-    { label: "Consumables", sub: "Tap to view", route: "/(app)/inventory/consumables", icon: "flask-outline" as const, testID: "inventory-consumables" },
-    { label: "ICF Block", sub: "Tap to view", route: "/(app)/inventory/block", icon: "layers-outline" as const, testID: "inventory-block" },
-    { label: "Damaged", sub: `${damagedCount ?? "—"} types need attention`, route: "/(app)/inventory/damaged", icon: "warning-outline" as const, testID: "inventory-damaged" },
-    { label: "Yard Count", sub: `${pendingCounts ?? "—"} variances awaiting review`, route: "/(app)/inventory/counts", icon: "clipboard-outline" as const, testID: "inventory-yard-count" },
+  const rows: InventoryRow[] = [
+    { key: "bracing", label: "Bracing", sub: BRACING_CATEGORIES.map((c) => c.label).join(" · "), route: "/(app)/inventory/bracing", icon: "construct-outline", rollup: bracing, testID: "inventory-bracing" },
+    { key: "scaffolding", label: "Crankups / Shoring", sub: SCAFFOLDING_CATEGORIES.map((c) => c.label).join(" · "), route: "/(app)/inventory/scaffolding", icon: "grid-outline", rollup: scaffolding, testID: "inventory-scaffolding" },
+    { key: "tools", label: "Tools", sub: `${toolCount} individually tracked assets`, route: "/(app)/inventory/tools", icon: "hammer-outline", rollup: tools, testID: "inventory-tools" },
+    { key: "consumables", label: "Consumables", sub: "Sold and consumed stock", route: "/(app)/inventory/consumables", icon: "flask-outline", testID: "inventory-consumables" },
+    { key: "block", label: "ICF Block", sub: "Nudura · FoxBlocks · Amvic · BuildBlock", route: "/(app)/inventory/block", icon: "layers-outline", testID: "inventory-block" },
   ];
 
   return (
-    <CategoryCardGrid
+    <Screen
       title="Inventory"
-      subtitle="Bracing · Crankups & Shoring · Tools · Consumables · ICF Block · Damaged · Yard Count"
-      testID="inventory-index-screen"
+      subtitle="Bracing · Crankups/Shoring · Tools · Consumables · ICF Block"
       back={false}
-      onRefresh={load}
-      loadError={loadError}
-      items={items}
-    />
+      onRefresh={ledger.onRefresh}
+      refreshing={ledger.refreshing}
+      testID="inventory-index-screen"
+    >
+      {ledger.error && equipment.length === 0 ? (
+        <ErrorState message="Couldn't load the inventory ledger." onRetry={ledger.onRefresh} testID="inventory-index-error" />
+      ) : null}
+
+      <SectionLabel>Rental fleet — all bracing, crankups &amp; shoring</SectionLabel>
+      <StatusBoard rollup={rentalFleet} testID="inventory-fleet-status" />
+      <AvailabilityNote />
+
+      <View style={{ height: spacing.lg }} />
+      <SectionLabel>Categories</SectionLabel>
+      <InventoryRowList rows={rows} />
+
+      <SectionLabel style={{ marginTop: spacing.lg }}>Inventory tools</SectionLabel>
+      <UtilityLinks
+        links={[
+          { label: "Yard Count", route: "/(app)/inventory/counts", icon: "clipboard-outline", testID: "inventory-utility-counts" },
+          { label: "Transfers", route: "/(app)/inventory/transfers", icon: "swap-horizontal-outline", testID: "inventory-utility-transfers" },
+          { label: "Damaged", route: "/(app)/inventory/damaged", icon: "warning-outline", badge: rentalFleet.repair + tools.repair || undefined, testID: "inventory-utility-damaged" },
+          { label: "All Equipment", route: "/(app)/inventory/equipment", icon: "list-outline", testID: "inventory-utility-equipment" },
+        ]}
+      />
+      {ledger.stale ? <Text style={[typo.bodySmall, { marginTop: spacing.sm }]}>Showing last synced counts — reconnecting.</Text> : null}
+    </Screen>
   );
 }

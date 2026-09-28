@@ -4,7 +4,7 @@
 // limits, and pin interaction all come from the existing map stack; this
 // component adds no fabricated map behavior of its own.
 import React, { useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radii } from "@/src/theme";
 import { MapCanvas, Pin } from "@/src/components/MapCanvas";
@@ -17,7 +17,8 @@ export const DashboardMap: React.FC<{
   onRefresh: () => void;
   lastUpdated: Date;
   shopAddress: string;
-}> = ({ pins, missingLocationCount, onPinPress, onOpenMap, onRefresh, lastUpdated, shopAddress }) => {
+  style?: StyleProp<ViewStyle>;
+}> = ({ pins, missingLocationCount, onPinPress, onOpenMap, onRefresh, lastUpdated, shopAddress, style }) => {
   const sites = useMemo(() => Array.from(new Set(pins.map((p) => p.subtitle).filter(Boolean))) as string[], [pins]);
   const [siteFilter, setSiteFilter] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -25,10 +26,11 @@ export const DashboardMap: React.FC<{
   const filteredPins = siteFilter ? pins.filter((p) => p.subtitle === siteFilter) : pins;
 
   return (
-    <View style={styles.panel} testID="dashboard-map-panel">
+    <View style={[styles.panel, style]} testID="dashboard-map-panel">
       <View style={styles.header}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
-          <Text style={styles.title} numberOfLines={1}>LIVE RENTAL MAP</Text>
+          <Ionicons name="map-outline" size={16} color={colors.inkSecondary} />
+          <Text style={styles.title} numberOfLines={1}>Live Rental Map</Text>
           <View style={styles.liveDot} />
           <Text style={styles.liveText}>Live</Text>
         </View>
@@ -55,7 +57,7 @@ export const DashboardMap: React.FC<{
           ) : null}
         </View>
         <TouchableOpacity onPress={onOpenMap} testID="dashboard-map-open" style={styles.openMap}>
-          <Text style={styles.openMapText}>Open map</Text>
+          <Text style={styles.openMapText}>Open in Map</Text>
           <Ionicons name="arrow-forward" size={12} color={colors.primary} />
         </TouchableOpacity>
       </View>
@@ -78,9 +80,9 @@ export const DashboardMap: React.FC<{
 };
 
 const styles = StyleSheet.create({
-  panel: { flex: 1.7, minHeight: 300, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden" },
-  header: { height: 40, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  title: { fontSize: 11, fontWeight: "800", color: colors.inkSecondary, letterSpacing: 0.5 },
+  panel: { flex: 0.92, minWidth: 0, minHeight: 254, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, overflow: "hidden" },
+  header: { height: 38, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border, position: "relative", zIndex: 20, overflow: "visible" },
+  title: { fontSize: 13, fontWeight: "800", color: colors.ink, letterSpacing: -0.1 },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success },
   liveText: { fontSize: 10.5, fontWeight: "700", color: colors.success },
   siteFilter: { flexDirection: "row", alignItems: "center", gap: 5, height: 26, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm, backgroundColor: colors.bgMuted, maxWidth: 150 },
@@ -90,7 +92,7 @@ const styles = StyleSheet.create({
   siteMenuText: { fontSize: 12.5, color: colors.ink },
   openMap: { flexDirection: "row", alignItems: "center", gap: 4 },
   openMapText: { fontSize: 11.5, fontWeight: "700", color: colors.primary },
-  body: { flex: 1, minHeight: 0 },
+  body: { flex: 1, minHeight: 0, position: "relative", zIndex: 1 },
   footer: { minHeight: 28, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.border },
   footerText: { fontSize: 10.5, color: colors.inkMuted },
 });

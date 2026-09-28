@@ -1,4 +1,5 @@
 // API client with auth token attach + silent refresh on 401.
+import { Platform } from "react-native";
 import { storage } from "@/src/utils/storage";
 
 // The sync engine and useCachedResource need to tell "never reached the
@@ -125,5 +126,43 @@ export async function apiUpload<T = any>(path: string, formData: FormData): Prom
   }
   return resp.json() as Promise<T>;
 }
+
+/**
+ * Fetch a binary endpoint with auth and return a URL an <Image> can render.
+ *
+ * Attachment downloads are token-protected, so an <img src> pointed straight
+ * at the API would 401. Web gets an object URL (cheap, revocable); native has
+ * no URL.createObjectURL, so it gets a base64 data URI.
+ *
+ * On web the caller owns the returned URL and must revoke it — see
+ * releaseMediaUrl.
+ */
+export async function apiMediaUrl(path: string): Promise<string> {
+  const h: Record<string, string> = {};
+  if (accessToken) h["Authorization"] = `Bearer ${accessToken}`;
+  let resp = await doFetch(`${API}${path}`, { headers: h });
+  if (resp.status === 401) {
+    if (!refreshing) refreshing = doRefresh();
+    const newTok = await refreshing;
+    refreshing = null;
+    if (newTok) {
+      h["Authorization"] = `Bearer ${newTok}`;
+      resp = await doFetch(`${API}${path}`, { headers: h });
+    }
+  }
+  if (!resp.ok) throw new ApiHttpError(resp.status, `HTTP ${resp.status}`);
+  const blob = await resp.blob();
+  if (Platform.OS === "web") return URL.createObjectURL(blob);
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Attachment could not be read"));
+    reader.onloadend = () => resolve(String(reader.result));
+    reader.readAsDataURL(blob);
+  });
+}
+
+export const releaseMediaUrl = (url: string | null) => {
+  if (url && Platform.OS === "web" && url.startsWith("blob:")) URL.revokeObjectURL(url);
+};
 
 export const apiBaseUrl = () => API;

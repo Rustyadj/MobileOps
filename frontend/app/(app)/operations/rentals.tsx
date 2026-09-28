@@ -21,6 +21,8 @@ import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 import { DISPATCH_STATUS, RENTAL_STATUS, isDispatchLive, isRentalOpen, isRentalReturned } from "@/src/domain/status";
+import { RentalTabs } from "@/src/components/rentals/RentalTabs";
+import { EquipmentPicker } from "@/src/components/equipment/EquipmentSearch";
 
 type Eq = { id: string; sku: string; qr_code?: string | null; category?: string; name: string; daily_rate: number; available: number };
 type Line = {
@@ -55,9 +57,18 @@ type Dispatch = {
   requirements?: string[]; date_confirmed?: boolean;
 };
 type RentalSortKey = "status" | "customer_name" | "job_site" | "start_date" | "due_date" | "units" | "lines";
-type RentalDirection = "outbound" | "inbound";
+// A table row is either a real rental or a planning dispatch shown alongside
+// them. `planning` is set only for the latter.
+type RentalRow = Rental & { planning?: Dispatch };
+const EMPTY_RENTAL: Rental = {
+  id: "", customer_name: "", customer_phone: "", customer_email: "",
+  primary_contact: "", preferred_contact_method: "", delivery_notes: "", return_notes: "",
+  gate_access_instructions: "", contact_permission: false, communication_log: [],
+  customer_type: "company", job_site: "", job_address: "", start_date: "", due_date: null,
+  deposit: 0, notes: "", lines: [], status: "", delivered_by: "", received_by: "",
+};
 type ReturnPrompt = { rental: Rental; line: Line; qty: string; damagedQty: string };
-type RentalsView = "default" | "active" | "history";
+type RentalsView = "active" | "history";
 type CompletionTarget = { kind: "rental" | "planning"; id: string; customerName: string; pickupDate: string };
 
 const STATUS_OPTIONS = [
@@ -66,11 +77,6 @@ const STATUS_OPTIONS = [
   { key: RENTAL_STATUS.partiallyReturned, label: "Partial return" },
   { key: RENTAL_STATUS.returned, label: "Returned" },
 ];
-
-// Direction tabs group rentals into "outbound" (nothing back yet) vs.
-// "inbound" (some or all units back) — a rental has started its return if
-// it's carrying either return status.
-const HAS_ANY_RETURN_STATUSES: readonly string[] = [RENTAL_STATUS.partiallyReturned, RENTAL_STATUS.returned];
 
 const lineLifecycle = (line: Line) => {
   const delivered = line.delivered_qty > 0 ? line.delivered_qty : line.qty;
@@ -89,7 +95,7 @@ const shortDate = (value?: string | null) => value ? new Date(value).toLocaleDat
 
 type RentalsScreenProps = { initialView?: RentalsView };
 
-export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = {}) {
+export function RentalsScreen({ initialView = "active" }: RentalsScreenProps = {}) {
   const { isShellWide, width } = useBreakpoint();
   const { canEdit, canAdmin } = usePermissions();
   const router = useRouter();
@@ -113,13 +119,13 @@ export function RentalsScreen({ initialView = "default" }: RentalsScreenProps = 
   const [addressResults, setAddressResults] = useState<GeocodeResult[]>([]);
   const [addressBusy, setAddressBusy] = useState(false);
   const [qtyPrompt, setQtyPrompt] = useState<{ eq: Eq; qty: string } | null>(null);
+  const [pickingEquipment, setPickingEquipment] = useState(false);
   const [returnPrompt, setReturnPrompt] = useState<ReturnPrompt | null>(null);
   const [logDraft, setLogDraft] = useState<{ rentalId: string; channel: string; direction: string; summary: string; outcome: string } | null>(null);
   const [selectedRaw, setSelectedRaw] = useState<Rental | null>(null);
   const selected = selectedRaw ? rentals.find((r) => r.id === selectedRaw.id) || selectedRaw : null;
   const setSelected = setSelectedRaw;
   const [search, setSearch] = useState("");
-  const [direction, setDirection] = useState<RentalDirection>("outbound");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortKey, setSortKey] = useState<RentalSortKey>("start_date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -528,10 +534,8 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     }
   };
 
-  const directionCounts = useMemo(() => ({
-    outbound: rentals.filter((rental) => !HAS_ANY_RETURN_STATUSES.includes(rental.status)).length,
-    inbound: rentals.filter((rental) => HAS_ANY_RETURN_STATUSES.includes(rental.status)).length,
-  }), [rentals]);
+  const activeTabCount = useMemo(() => rentals.filter((rental) => isRentalOpen(rental.status)).length, [rentals]);
+  const historyTabCount = useMemo(() => rentals.filter((rental) => isRentalReturned(rental.status)).length, [rentals]);
 
   const directionRentals = useMemo(
     () => initialView === "active"
@@ -540,10 +544,8 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
         ))
       : initialView === "history"
         ? rentals.filter((rental) => isRentalReturned(rental.status))
-        : rentals.filter((rental) => direction === "inbound"
-          ? HAS_ANY_RETURN_STATUSES.includes(rental.status)
-          : !HAS_ANY_RETURN_STATUSES.includes(rental.status)),
-    [direction, dispatches, initialView, rentals],
+        : rentals.filter((rental) => isRentalOpen(rental.status)),
+    [dispatches, initialView, rentals],
   );
 
   const planningActiveRentals = useMemo(() => {
@@ -582,28 +584,25 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     });
   }, [directionRentals, search, sortDirection, sortKey, statusFilter]);
 
-  const selectDirection = (next: RentalDirection) => {
-    setDirection(next);
-    setStatusFilter("all");
-    setSelected(null);
-  };
-
-  const columns = useMemo<ColumnDef<Rental>[]>(() => {
-    const identity: ColumnDef<Rental>[] = [
-      { key: "status", label: "Status", width: width < 1280 ? 88 : 104, render: (rental) => <StatusBadge label={rental.status} /> },
-      { key: "rental", label: "Rental", width: width < 1280 ? 96 : 116, render: (rental) => <Mono style={styles.tableLink}>{rental.id.slice(0, 12)}</Mono> },
+  const columns = useMemo<ColumnDef<RentalRow>[]>(() => {
+    const identity: ColumnDef<RentalRow>[] = [
+      { key: "status", label: "Status", width: width < 1280 ? 88 : 104, render: (rental) => <StatusBadge label={rental.planning ? "Planning" : rental.status} tone={rental.planning ? "neutral" : undefined} /> },
+      { key: "rental", label: "Rental", width: width < 1280 ? 96 : 116, render: (rental) => <Mono style={styles.tableLink}>{rental.planning ? "—" : rental.id.slice(0, 12)}</Mono> },
       { key: "customer_name", label: "Customer", flex: 1.15, render: (rental) => rental.customer_name },
       { key: "job_site", label: "Job Site", flex: 1.35, render: (rental) => rental.job_site || "—" },
     ];
+    // A planning item has no ledger movement behind it, so its counts are
+    // blank rather than a misleading zero.
+    const units = (rental: RentalRow) => <Mono style={styles.tableMono}>{rental.planning ? "—" : rentalUnits(rental)}</Mono>;
     if (width < 1280) {
-      return [...identity, { key: "units", label: "Units", width: 54, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rentalUnits(rental)}</Mono> }];
+      return [...identity, { key: "units", label: "Units", width: 54, align: "right", render: units }];
     }
     return [
       ...identity,
-      { key: "start_date", label: "Start", width: 112, render: (rental) => shortDate(rental.start_date) },
-      { key: "due_date", label: "Due", width: 112, render: (rental) => shortDate(rental.due_date) },
-      { key: "units", label: "Units", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rentalUnits(rental)}</Mono> },
-      { key: "lines", label: "Lines", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rental.lines.length}</Mono> },
+      { key: "start_date", label: "Start", width: 112, render: (rental) => rental.planning ? "—" : shortDate(rental.start_date) },
+      { key: "due_date", label: "Due", width: 112, render: (rental) => rental.planning ? "—" : shortDate(rental.due_date) },
+      { key: "units", label: "Units", width: 70, align: "right", render: units },
+      { key: "lines", label: "Lines", width: 70, align: "right", render: (rental) => <Mono style={styles.tableMono}>{rental.planning ? "—" : rental.lines.length}</Mono> },
     ];
   }, [width]);
 
@@ -613,53 +612,53 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
     else { setSortKey(nextKey); setSortDirection("asc"); }
   };
 
-  const planningCards = planningActiveRentals.map((dispatch) => (
-    <Card key={dispatch.id} style={styles.planningRentalCard} testID={`planning-active-rental-${dispatch.id}`}>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Row style={{ gap: spacing.sm, flexWrap: "wrap" }}>
-          <StatusBadge label="Active rental" tone="neutral" />
-          <Text style={styles.planningLabel}>Planning item · inventory unchanged</Text>
-        </Row>
-        <Text style={[styles.detailTitle, { marginTop: spacing.sm }]}>{dispatch.customer_name || "Customer pending"}</Text>
-        <Text style={styles.detailText}>{dispatch.job_site || "Job site pending"}</Text>
-        <Text style={styles.detailText}>{(dispatch.requirements || []).join(" · ") || "Equipment list pending"}</Text>
-      </View>
-      {canAdmin ? (
-        <Button
-          title="Complete Rental"
-          onPress={() => setCompletionTarget({ kind: "planning", id: dispatch.id, customerName: dispatch.customer_name || "Planning rental", pickupDate: "" })}
-          fullWidth={false}
-          testID={`complete-planning-rental-${dispatch.id}`}
-        />
-      ) : <Text style={styles.planningLabel}>Awaiting admin completion</Text>}
-    </Card>
-  ));
+  // Planning items are real active rentals whose inventory was never moved.
+  // They sit in the same list as everything else rather than in a stack of
+  // oversized cards above it — same row height, same columns, with the
+  // planning status carried by the badge.
+  const planningRows = useMemo<RentalRow[]>(() => planningActiveRentals.map((dispatch) => ({
+    ...EMPTY_RENTAL,
+    id: dispatch.id,
+    customer_name: dispatch.customer_name || "Customer pending",
+    job_site: dispatch.job_site || "Job site pending",
+    status: RENTAL_STATUS.active,
+    notes: (dispatch.requirements || []).join(" · "),
+    planning: dispatch,
+  })), [planningActiveRentals]);
+
+  const tableRows = useMemo<RentalRow[]>(() => [...planningRows, ...filteredRentals], [planningRows, filteredRentals]);
+
+  const openRow = (row: RentalRow) => {
+    if (!row.planning) { setSelected(row); return; }
+    if (canAdmin) {
+      setCompletionTarget({ kind: "planning", id: row.id, customerName: row.customer_name, pickupDate: "" });
+    }
+  };
 
   return (
-    <Screen title={initialView === "active" ? "Active Rentals" : initialView === "history" ? "Rental History" : "Rentals"}
-      subtitle={initialView === "active" ? `${directionRentals.length + planningActiveRentals.length} delivered jobs awaiting completion` : initialView === "history" ? `${directionRentals.length} completed rentals` : `${rentals.length} total · ${rentals.filter(r => r.status === RENTAL_STATUS.active).length} active`} back
-      rightAction={canEdit ? { icon: "add", onPress: newRental, testID: "new-rental-btn" } : undefined}
+    <Screen title="Rentals"
+      subtitle={initialView === "history" ? `${directionRentals.length} completed rentals` : `${directionRentals.length + planningActiveRentals.length} rentals out on jobs`}
+      tabs={<RentalTabs active={initialView === "history" ? "history" : "active"} counts={{ active: activeTabCount, history: historyTabCount }} />}
+      rightAction={canEdit ? { icon: "add", onPress: () => router.push("/(app)/operations/new-rental" as any), testID: "new-rental-btn" } : undefined}
       onRefresh={onRefresh} refreshing={refreshing} testID="rentals-screen" scroll={!isShellWide}>
 
       {isShellWide ? (
         <View style={styles.desktopWorkspace}>
-          {initialView === "default" ? <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} desktop /> : null}
           <PageToolbar>
             <SearchInput value={search} onChangeText={setSearch} placeholder="Search rental, customer, site, equipment…" testID="rentals-search" style={{ flex: 1, maxWidth: 420 }} />
-            {canEdit ? <Button title="New Rental" onPress={newRental} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" /> : null}
+            {canEdit ? <Button title="New Rental" onPress={() => router.push("/(app)/operations/new-rental" as any)} fullWidth={false} style={styles.toolbarButton} testID="new-rental-desktop" /> : null}
           </PageToolbar>
           <View style={styles.filterRow}>
             <FilterChips options={STATUS_OPTIONS} value={statusFilter} onChange={setStatusFilter} testIDPrefix="rentals-status-filter" />
             <Text style={styles.resultCount}>{filteredRentals.length + planningActiveRentals.length} matching rentals</Text>
           </View>
-          {planningActiveRentals.length ? <View style={styles.planningRentalList}>{planningCards}</View> : null}
           <View style={styles.tableWrap}>
             <DataTable
               columns={columns}
-              rows={filteredRentals}
+              rows={tableRows}
               keyExtractor={(rental) => rental.id}
-              rowTestID={(rental) => `rental-${rental.id}`}
-              onRowPress={setSelected}
+              rowTestID={(rental) => rental.planning ? `planning-active-rental-${rental.id}` : `rental-${rental.id}`}
+              onRowPress={openRow}
               selectedId={selected?.id}
               sortKey={sortKey}
               sortDirection={sortDirection}
@@ -670,10 +669,22 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
         </View>
       ) : (
         <>
-          {initialView === "default" ? <RentalDirectionTabs direction={direction} counts={directionCounts} onChange={selectDirection} /> : null}
-          {planningActiveRentals.length ? <View style={{ gap: spacing.sm, marginBottom: spacing.sm }}>{planningCards}</View> : null}
+          {planningRows.map((row) => (
+            <TouchableOpacity key={row.id} onPress={() => openRow(row)} testID={`planning-active-rental-${row.id}`}>
+              <Card style={{ marginBottom: spacing.sm }}>
+                <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <View style={{ flex: 1 }}>
+                    <H3>{row.customer_name}</H3>
+                    <Text style={[typo.bodySmall, { marginTop: 2 }]}>{row.job_site}</Text>
+                  </View>
+                  <StatusBadge label="Planning" tone="neutral" />
+                </Row>
+                <Text style={[typo.caption, { marginTop: 4 }]} numberOfLines={1}>{row.notes || "Equipment list pending"}</Text>
+              </Card>
+            </TouchableOpacity>
+          ))}
           {directionRentals.length === 0 && planningActiveRentals.length === 0 ? (
-            <Card><Text style={[typo.body, { color: colors.inkMuted }]}>{initialView === "active" ? "No equipment is currently on customer jobs." : initialView === "history" ? "No completed rentals yet." : `No ${direction} rentals.`}</Text></Card>
+            <Card><Text style={[typo.body, { color: colors.inkMuted }]}>{initialView === "active" ? "No equipment is currently on customer jobs." : initialView === "history" ? "No completed rentals yet." : "No rentals."}</Text></Card>
           ) : directionRentals.map((r) => {
         if (initialView === "active") {
           return (
@@ -899,7 +910,7 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
             <View style={{ flex: 1 }}><Input label="Email" value={draft?.customer_email || ""} onChangeText={(t) => setDraft({ ...draft, customer_email: t })} keyboardType="email-address" autoCapitalize="none" testID="cust-email" /></View>
           </Row>
           <Input label="Job Site Name" value={draft?.job_site || ""} onChangeText={(job_site) => setDraft({ ...draft, job_site, ...(draft?.customer_type === "homeowner" ? { customer_name: job_site } : {}) })} testID="cust-site" />
-          {draft?.customer_type === "homeowner" ? <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: -spacing.sm, marginBottom: spacing.md }]}>This job-site name is also used as the homeowner's company name in Contacts.</Text> : null}
+          {draft?.customer_type === "homeowner" ? <Text style={[typo.bodySmall, { color: colors.inkMuted, marginTop: -spacing.sm, marginBottom: spacing.md }]}>This job-site name is also used as the homeowner&rsquo;s company name in Contacts.</Text> : null}
           <Input label="Job Address" value={draft?.job_address || ""} onChangeText={(job_address) => { setDraft({ ...draft, job_address }); setAddressQuery(job_address); }} testID="job-address" />
           <SectionLabel>Preferred Contact Method</SectionLabel>
           <Row style={{ gap: spacing.sm, marginBottom: spacing.md }}>
@@ -1005,21 +1016,20 @@ ${r.notes ? `<div class="box" style="margin-top:24px"><div class="label">Notes</
           ))}
 
           <SectionLabel>Add equipment</SectionLabel>
-          <View style={{ borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="add-eq-list">
-            {equipment.map((e) => (
-              <TouchableOpacity key={e.id} onPress={() => addLine(e)} style={styles.eqRow} testID={`add-eq-${e.sku}`}>
-                <View style={{ flex: 1 }}>
-                  <Text style={typo.body}>{e.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(e)} · {e.available} avail</Mono>
-                </View>
-                <Ionicons name="add-circle" size={26} color={colors.orange} />
-              </TouchableOpacity>
-            ))}
-          </View>
+          <Button title="Search or scan equipment…" onPress={() => setPickingEquipment(true)} variant="outline" style={{ marginBottom: spacing.md }} testID="add-eq-open-picker" />
 
           <Button title={draft?.id ? "Save Changes" : "Save Rental"} onPress={save} testID="save-rental-btn" />
         </Screen>
       </Modal>
+
+      <EquipmentPicker
+        visible={pickingEquipment}
+        equipment={equipment as any}
+        onSelect={(item) => { setPickingEquipment(false); addLine(item as unknown as Eq); }}
+        onClose={() => setPickingEquipment(false)}
+        title="Add equipment to this rental"
+        testID="rental-equipment-picker"
+      />
 
       <Modal visible={!!logDraft} animationType="slide" onRequestClose={() => setLogDraft(null)}>
         <Screen title="Log Communication" subtitle={logDraft ? rentals.find((r) => r.id === logDraft.rentalId)?.customer_name : undefined} back rightAction={{ icon: "close", onPress: () => setLogDraft(null), testID: "close-communication-log" }} testID="communication-log-screen">
@@ -1187,32 +1197,6 @@ const PickupStatus: React.FC<{
   return <Button title="Schedule Pickup" onPress={onSchedule} loading={busy} variant="outline" testID="schedule-pickup-btn" />;
 };
 
-const RentalDirectionTabs: React.FC<{
-  direction: RentalDirection;
-  counts: Record<RentalDirection, number>;
-  onChange: (direction: RentalDirection) => void;
-  desktop?: boolean;
-}> = ({ direction, counts, onChange, desktop = false }) => (
-  <View style={[styles.directionTabs, desktop && styles.directionTabsDesktop]} testID="rentals-direction-tabs">
-    {(["outbound", "inbound"] as RentalDirection[]).map((value) => {
-      const active = direction === value;
-      return (
-        <TouchableOpacity
-          key={value}
-          onPress={() => onChange(value)}
-          style={[styles.directionTab, active && styles.directionTabActive]}
-          activeOpacity={0.72}
-          testID={`rentals-direction-${value}`}
-        >
-          <Ionicons name={value === "outbound" ? "arrow-up-outline" : "arrow-down-outline"} size={15} color={active ? colors.primary : colors.inkMuted} />
-          <Text style={[styles.directionTabText, active && styles.directionTabTextActive]}>{value === "outbound" ? "Outbound" : "Inbound"}</Text>
-          <View style={[styles.directionCount, active && styles.directionCountActive]}><Text style={[styles.directionCountText, active && styles.directionCountTextActive]}>{counts[value]}</Text></View>
-        </TouchableOpacity>
-      );
-    })}
-  </View>
-);
-
 const styles = StyleSheet.create({
   desktopWorkspace: { flex: 1, paddingTop: spacing.lg },
   directionTabs: { flexDirection: "row", gap: spacing.xs, marginBottom: spacing.md },
@@ -1228,9 +1212,6 @@ const styles = StyleSheet.create({
   toolbarButton: { height: 40 },
   filterRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingHorizontal: spacing.xl, paddingBottom: spacing.sm },
   resultCount: { ...typo.bodySmall, fontSize: 12 },
-  planningRentalList: { paddingHorizontal: spacing.xl, paddingBottom: spacing.sm, gap: spacing.sm },
-  planningRentalCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, marginBottom: spacing.sm },
-  planningLabel: { ...typo.caption, color: colors.inkMuted, textTransform: "none", letterSpacing: 0 },
   tableWrap: { flex: 1, marginHorizontal: spacing.xl, marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, overflow: "hidden", backgroundColor: colors.bg },
   tableLink: { fontSize: 12, color: colors.primary, fontWeight: "700" },
   tableMono: { fontSize: 12 },

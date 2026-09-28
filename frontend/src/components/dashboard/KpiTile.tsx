@@ -1,6 +1,6 @@
-// Single tile within the dashboard KPI strip — icon, label, big value, meta
-// line, chevron. Tiles sit edge-to-edge with subtle vertical separators so
-// the row reads as one continuous strip rather than detached cards.
+// Single summary card within the dashboard KPI strip. The card anatomy mirrors
+// the supplied operations-dashboard reference while values and destinations
+// remain backed by MobileOps' live data and routes.
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,27 +26,53 @@ export const KpiTile: React.FC<{
   last?: boolean;
   onPress: () => void;
   testID?: string;
-}> = ({ label, value, meta, icon, tone = "primary", last, onPress, testID }) => {
+}> = ({ label, value, meta, icon, tone = "primary", onPress, testID }) => {
   const { isShellWide } = useBreakpoint();
-  return <TouchableOpacity style={[styles.tile, !last && styles.tileBorder, !isShellWide && styles.tileMobile]} onPress={onPress} activeOpacity={0.7} testID={testID}>
-    <View style={[styles.iconWrap, { backgroundColor: `${TONE_COLOR[tone]}1A` }]}>
-      <Ionicons name={icon} size={15} color={TONE_COLOR[tone]} />
+  const toneColor = TONE_COLOR[tone];
+  return <TouchableOpacity
+    style={[styles.tile, !isShellWide && styles.tileMobile]}
+    onPress={onPress}
+    activeOpacity={0.72}
+    testID={testID}
+    accessibilityRole="button"
+    accessibilityLabel={`${label}: ${value}${meta ? `. ${meta}` : ""}`}
+  >
+    <View style={[styles.iconWrap, !isShellWide && styles.iconWrapMobile, { backgroundColor: `${toneColor}14` }]}>
+      <Ionicons name={icon} size={isShellWide ? 22 : 18} color={toneColor} />
     </View>
-    <View style={{ flex: 1, minWidth: 0 }}>
-      <Text style={styles.label} numberOfLines={1}>{label}</Text>
-      <Text style={styles.value} numberOfLines={1}>{value}</Text>
+    <View style={styles.copy}>
+      <View style={styles.valueRow}>
+        <Text style={styles.value} numberOfLines={1}>{value}</Text>
+        <Ionicons name="chevron-forward" size={14} color={colors.inkMuted} />
+      </View>
+      <Text style={[styles.label, !isShellWide && styles.labelMobile]} numberOfLines={1}>{label}</Text>
       {meta ? <Text style={styles.meta} numberOfLines={1}>{meta}</Text> : null}
     </View>
-    <Ionicons name="chevron-forward" size={14} color={colors.inkMuted} />
   </TouchableOpacity>;
 };
 
 const styles = StyleSheet.create({
-  tile: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 14, minWidth: 0 },
-  tileBorder: { borderRightWidth: 1, borderRightColor: colors.border },
-  tileMobile: { flexBasis: "50%", flexGrow: 0, borderBottomWidth: 1, borderBottomColor: colors.border },
-  iconWrap: { width: 30, height: 30, borderRadius: radii.sm, alignItems: "center", justifyContent: "center" },
-  label: { fontSize: 10, fontWeight: "700", color: colors.inkSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
-  value: { fontSize: 21, fontWeight: "700", color: colors.ink, marginTop: 2, fontFamily: "monospace" },
-  meta: { fontSize: 10.5, color: colors.inkMuted, marginTop: 1 },
+  tile: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 74,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+  },
+  tileMobile: { flexBasis: "48%", flexGrow: 1, minWidth: 150, gap: 8, paddingHorizontal: 10 },
+  iconWrap: { width: 44, height: 44, borderRadius: radii.lg, alignItems: "center", justifyContent: "center" },
+  iconWrapMobile: { width: 34, height: 34 },
+  copy: { flex: 1, minWidth: 0 },
+  valueRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 },
+  label: { fontSize: 12, fontWeight: "700", color: colors.ink, marginTop: 1 },
+  labelMobile: { fontSize: 11.5 },
+  value: { fontSize: 22, lineHeight: 25, fontWeight: "800", color: colors.ink, letterSpacing: -0.4 },
+  meta: { fontSize: 10.5, lineHeight: 14, color: colors.inkMuted, marginTop: 1 },
 });

@@ -1,7 +1,7 @@
-// Mobile "Menu" tab — secondary destinations not on the primary bottom nav
-// (Tools, Contacts, Administration) plus account info and sign out.
-// Home/Operations/Inventory/Shop each have their own bottom-nav tab, so
-// they aren't repeated here.
+// Mobile "Menu" tab — the sidebar sections that don't get a bottom-nav tab
+// (Live Feed, Utilities, Admin) plus account info and sign out.
+// Dashboard/Rentals/Inventory/Shop each have their own tab, so they aren't
+// repeated here.
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,9 +11,9 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
-  { label: "Utilities", sub: "Delivery tickets, bracing, and calculators", route: "/(app)/tools", icon: "construct-outline", testID: "more-tools" },
-  { label: "Contacts", sub: "Companies, homeowners, and current job locations", route: "/(app)/contacts", icon: "people-outline", testID: "more-contacts" },
-  { label: "Site Admin", sub: "Brand, logo, company contact", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
+  { label: "Live Feed", sub: "Yard notes, rental activity, mentions", route: "/(app)/whiteboard", icon: "chatbubbles-outline", testID: "more-live-feed" },
+  { label: "Utilities", sub: "Delivery tickets, bracing, and calculators", route: "/(app)/tools", icon: "calculator-outline", testID: "more-tools" },
+  { label: "Admin", sub: "Site settings, contacts, sync issues", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];
 
 export default function MenuScreen() {
@@ -28,7 +28,7 @@ export default function MenuScreen() {
     .join("") || "?";
 
   return (
-    <Screen title="Menu" subtitle="Partners, admin & account" testID="menu-screen">
+    <Screen title="Menu" subtitle="Live Feed · Utilities · Admin · Account" testID="menu-screen">
       <View style={styles.userCard}>
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>{initials}</Text>
@@ -42,7 +42,7 @@ export default function MenuScreen() {
         </View>
       </View>
 
-      <SectionLabel>Tools, partners &amp; administration</SectionLabel>
+      <SectionLabel>Sections</SectionLabel>
       {ITEMS.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>
           <Card style={{ marginBottom: spacing.sm, flexDirection: "row", alignItems: "center" }}>

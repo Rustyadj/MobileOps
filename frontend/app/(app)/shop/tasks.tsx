@@ -7,10 +7,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { Screen } from "@/src/components/Screen";
-import { Card, Input, Button, Mono, SectionLabel, Row, H3 } from "@/src/components/ui";
+import { Card, Input, Button, SectionLabel, Row, H3 } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
 import { FilterChips } from "@/src/components/data/FilterBar";
 import { SearchInput } from "@/src/components/data/SearchInput";
+import { EquipmentPicker } from "@/src/components/equipment/EquipmentSearch";
 import { StatusBadge, StatusTone } from "@/src/components/data/StatusBadge";
 import { PageToolbar } from "@/src/components/layout/PageToolbar";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -21,14 +22,14 @@ import { useCachedResource } from "@/src/hooks/use-cached-resource";
 import { mutate } from "@/src/sync/mutate";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api/client";
-import { equipmentIdentifier } from "@/src/utils/equipment-identifier";
 import { colors, radii, spacing, type as typo } from "@/src/theme";
 
 type ChecklistItem = { text: string; done: boolean };
+type TaskUpdate = { id: string; body: string; created_by: string; created_at: string };
 type ShopTask = {
   id: string; title: string; description: string; task_type: string;
   status: string; priority: string; assignee: string; due_date: string | null;
-  notes: string; checklist: ChecklistItem[]; qty: number;
+  notes: string; updates: TaskUpdate[]; checklist: ChecklistItem[]; qty: number;
   related_rental_id: string | null; related_booking_id: string | null; related_equipment_id: string | null;
   created_by: string; completed_by: string; completed_at: string | null; created_at: string;
 };
@@ -87,8 +88,10 @@ export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }:
   const setSelected = (t: ShopTask | null) => setSelectedId(t?.id ?? null);
   const [editing, setEditing] = useState<Partial<ShopTask> | null>(null);
   const [deleting, setDeleting] = useState<ShopTask | null>(null);
-  const [eqSearch, setEqSearch] = useState("");
+  const [pickingEquipment, setPickingEquipment] = useState(false);
   const [checklistDraft, setChecklistDraft] = useState("");
+  const [updateDraft, setUpdateDraft] = useState("");
+  const [addingUpdate, setAddingUpdate] = useState(false);
   const newTask = () => setEditing({ ...blank, task_type: initialTaskType || "general" });
 
   const refreshing = tasksRes.refreshing || equipmentRes.refreshing || rentalsRes.refreshing || bookingsRes.refreshing;
@@ -128,11 +131,6 @@ export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }:
       });
   }, [tasks, status, taskType, search]);
 
-  const eqMatches = useMemo(() => {
-    const q = eqSearch.trim().toLowerCase();
-    if (!q) return equipment.slice(0, 6);
-    return equipment.filter((e) => `${e.qr_code || ""} ${e.name}`.toLowerCase().includes(q)).slice(0, 6);
-  }, [equipment, eqSearch]);
 
   const save = async () => {
     if (!editing || !editing.title?.trim()) { Alert.alert("Title required", "Give the task a title."); return; }
@@ -179,6 +177,17 @@ export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }:
       await api<ShopTask>(`/shop-tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ ...task, checklist }) });
       tasksRes.onRefresh();
     } catch (e: any) { Alert.alert("Update failed", e.message); }
+  };
+  const addRepairUpdate = async (task: ShopTask) => {
+    const body = updateDraft.trim();
+    if (!body) return;
+    setAddingUpdate(true);
+    try {
+      await api<ShopTask>(`/shop-tasks/${task.id}/updates`, { method: "POST", body: JSON.stringify({ body }) });
+      setUpdateDraft("");
+      await tasksRes.onRefresh();
+    } catch (e: any) { Alert.alert("Update failed", e.message); }
+    finally { setAddingUpdate(false); }
   };
   const del = async () => {
     if (!deleting) return;
@@ -274,6 +283,21 @@ export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }:
 
           {selected.notes ? <><SectionLabel>Notes</SectionLabel><Text style={[typo.body, styles.detailText]}>{selected.notes}</Text></> : null}
 
+          {selected.task_type === "repair" ? <>
+            <SectionLabel>Repair updates</SectionLabel>
+            {(selected.updates || []).length === 0 ? <Text style={[typo.body, styles.emptyUpdates]}>No updates yet.</Text> :
+              [...(selected.updates || [])].reverse().map((item) => (
+                <View key={item.id} style={styles.updateCard}>
+                  <Text style={typo.body}>{item.body}</Text>
+                  <Text style={styles.updateMeta}>{item.created_by} · {new Date(item.created_at).toLocaleString()}</Text>
+                </View>
+              ))}
+            {canEdit ? <>
+              <Input label="Add update" value={updateDraft} onChangeText={setUpdateDraft} multiline placeholder="What changed with this repair?" testID="repair-update-input" />
+              <Button title={addingUpdate ? "Adding…" : "Add update"} onPress={() => addRepairUpdate(selected)} disabled={addingUpdate || !updateDraft.trim()} testID="add-repair-update-btn" />
+            </> : null}
+          </> : null}
+
           {selected.status === "done" ? (
             <View style={styles.completedBox}>
               <Ionicons name="checkmark-circle" size={16} color={colors.success} />
@@ -320,18 +344,23 @@ export function ShopTasksScreen({ initialTaskType, screenTitle = "Shop Tasks" }:
           ) : null}
 
           <SectionLabel>Related equipment</SectionLabel>
-          <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search QR code or equipment…" testID="task-eq-search" style={{ marginBottom: spacing.sm }} />
-          <View style={styles.eqResults}>
-            {eqMatches.map((item) => {
-              const active = editing?.related_equipment_id === item.id;
-              return (
-                <TouchableOpacity key={item.id} onPress={() => setEditing((e) => ({ ...e!, related_equipment_id: active ? null : item.id }))} style={[styles.eqRow, active && styles.eqRowActive]} testID={`task-eq-${item.sku}`}>
-                  <Text style={typo.body} numberOfLines={1}>{item.name}</Text>
-                  <Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(item)}</Mono>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          <Button
+            title={editing?.related_equipment_id ? (eqById[editing.related_equipment_id]?.name || "Change equipment") : "Search or scan equipment\u2026"}
+            onPress={() => setPickingEquipment(true)}
+            variant="outline"
+            testID="task-eq-open-picker"
+          />
+          {editing?.related_equipment_id ? (
+            <Button title="Clear equipment" onPress={() => setEditing((e) => ({ ...e!, related_equipment_id: null }))} variant="ghost" style={{ marginBottom: spacing.md }} testID="task-eq-clear" />
+          ) : <View style={{ height: spacing.md }} />}
+          <EquipmentPicker
+            visible={pickingEquipment}
+            equipment={equipment as any}
+            onSelect={(item) => { setPickingEquipment(false); setEditing((e) => ({ ...e!, related_equipment_id: item.id })); }}
+            onClose={() => setPickingEquipment(false)}
+            title="Link equipment to this task"
+            testID="task-equipment-picker"
+          />
 
           <SectionLabel>Checklist</SectionLabel>
           {(editing?.checklist || []).map((item, idx) => (
@@ -376,6 +405,9 @@ const styles = StyleSheet.create({
   statusChipText: { fontSize: 12, fontWeight: "700", color: colors.inkSecondary },
   detailGrid: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -spacing.xs, marginBottom: spacing.lg }, detailStat: { width: "50%", padding: spacing.xs, gap: 4 },
   detailText: { marginBottom: spacing.lg },
+  emptyUpdates: { color: colors.inkMuted, marginBottom: spacing.md },
+  updateCard: { borderLeftWidth: 3, borderLeftColor: colors.primary, paddingLeft: spacing.sm, paddingVertical: spacing.xs, marginBottom: spacing.sm },
+  updateMeta: { ...typo.caption, color: colors.inkMuted, marginTop: 4 },
   checklistRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
   completedBox: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.successSoft, borderRadius: radii.md, padding: spacing.sm, marginTop: spacing.md },
   completedText: { ...typo.bodySmall, color: colors.success, fontWeight: "600" },

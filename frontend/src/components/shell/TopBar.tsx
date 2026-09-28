@@ -13,7 +13,7 @@ import { useSidebarCollapsed } from "@/src/hooks/use-sidebar-collapsed";
 import { breadcrumbForPath } from "./nav-config";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 
-export const TOPBAR_HEIGHT = 56;
+export const TOPBAR_HEIGHT = 50;
 
 const ROLE_LABEL: Record<string, string> = {
   admin: "Operations Manager",
@@ -29,6 +29,7 @@ export const TopBar: React.FC = () => {
   const { toggle: toggleSidebar } = useSidebarCollapsed();
   const router = useRouter();
   const [profileOpen, setProfileOpen] = useState(false);
+  const isDashboard = pathname === "/";
 
   const { section, page } = breadcrumbForPath(pathname);
   const initials = (user?.name || user?.email || "?").split(" ").filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || "").join("") || "?";
@@ -36,17 +37,17 @@ export const TopBar: React.FC = () => {
 
   return (
     <View style={styles.wrap} testID="topbar">
-      <TouchableOpacity onPress={toggleSidebar} style={styles.iconBtn} testID="topbar-sidebar-toggle" accessibilityLabel="Toggle sidebar" accessibilityRole="button">
+      {!isDashboard ? <TouchableOpacity onPress={toggleSidebar} style={styles.iconBtn} testID="topbar-sidebar-toggle" accessibilityLabel="Toggle sidebar" accessibilityRole="button">
         <Ionicons name="menu-outline" size={20} color={colors.inkSecondary} />
-      </TouchableOpacity>
+      </TouchableOpacity> : null}
 
-      <View style={styles.breadcrumb}>
+      {!isDashboard ? <View style={styles.breadcrumb}>
         <Text style={styles.crumbMuted} numberOfLines={1}>{section}</Text>
         <Ionicons name="chevron-forward" size={12} color={colors.inkMuted} style={{ marginHorizontal: 4 }} />
         <Text style={styles.crumbActive} numberOfLines={1}>{page}</Text>
-      </View>
+      </View> : null}
 
-      <TouchableOpacity onPress={openSearch} style={styles.searchBtn} testID="topbar-search" activeOpacity={0.7} accessibilityLabel="Search rentals, equipment, sites, contacts" accessibilityRole="button">
+      <TouchableOpacity onPress={openSearch} style={[styles.searchBtn, isDashboard && styles.searchBtnDashboard]} testID="topbar-search" activeOpacity={0.7} accessibilityLabel="Search rentals, equipment, sites, contacts" accessibilityRole="button">
         <Ionicons name="search" size={15} color={colors.inkMuted} />
         <Text style={styles.searchText} numberOfLines={1}>Search rentals, equipment, sites, contacts…</Text>
         <View style={styles.kbd}><Text style={styles.kbdText}>⌘K</Text></View>
@@ -133,6 +134,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, borderRadius: radii.md,
     backgroundColor: colors.bgMuted,
   },
+  searchBtnDashboard: { marginLeft: 0, maxWidth: 520 },
   searchText: { flex: 1, fontSize: 12.5, color: colors.inkMuted },
   kbd: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm, paddingHorizontal: 5, paddingVertical: 1 },
   kbdText: { fontSize: 10, fontWeight: "700", color: colors.inkMuted },

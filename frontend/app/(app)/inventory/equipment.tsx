@@ -49,7 +49,7 @@ const EQUIPMENT_CATEGORIES = [
 
 type Equipment = {
   id: string; sku: string; name: string; category: string;
-  qr_code?: string | null; model: string; serial_number: string;
+  qr_code?: string | null; model: string; equipment_family?: string; serial_number: string;
   condition: string; location: string; daily_rate: number;
   quantity: number; available: number; notes: string; created_at?: string;
   reserved: number; on_rental: number; in_transit: number;
@@ -71,7 +71,7 @@ type Rental = {
 type SortKey = "qr_code" | "name" | "category" | "location" | "quantity" | "available" | "condition";
 
 const blank: Partial<Equipment> = {
-  sku: "", qr_code: "", model: "", serial_number: "", name: "", category: "tool", condition: "good",
+  sku: "", qr_code: "", model: "", equipment_family: "", serial_number: "", name: "", category: "tool", condition: "good",
   location: "Yard", daily_rate: 0, quantity: 1, available: 1, tracking_type: "serialized", notes: "",
 };
 const pretty = (value: string) => value.replace(/_/g, " ");
@@ -154,7 +154,7 @@ export function EquipmentScreen({ initialView = "all", toolType }: EquipmentScre
       if (toolType && classifyToolType(item) !== toolType) return false;
       if (!matchesEquipmentTab(item, tab) || !matchesEquipmentFamily(item, tab, family)) return false;
       if (!query) return true;
-      return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
+      return [item.qr_code, item.name, item.model, item.equipment_family, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
         .some((value) => value?.toLowerCase().includes(query));
     }).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   }, [family, initialView, items, search, tab, toolType]);
@@ -172,7 +172,7 @@ export function EquipmentScreen({ initialView = "all", toolType }: EquipmentScre
       if (availability === "available" && item.available <= 0) return false;
       if (availability === "unavailable" && item.available > 0) return false;
       if (!query) return true;
-      return [item.qr_code, item.name, item.model, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
+      return [item.qr_code, item.name, item.model, item.equipment_family, item.serial_number, item.category, item.location, item.checked_out_to, item.condition, item.notes]
         .some((value) => value?.toLowerCase().includes(query));
     });
     return rows.sort((a, b) => {
@@ -199,7 +199,7 @@ export function EquipmentScreen({ initialView = "all", toolType }: EquipmentScre
     if (!editing) return;
     try {
       const body = {
-        sku: editing.sku || "", qr_code: editing.qr_code || null, model: editing.model || "", serial_number: editing.serial_number || "",
+        sku: editing.sku || "", qr_code: editing.qr_code || null, model: editing.model || "", equipment_family: editing.equipment_family || "", serial_number: editing.serial_number || "",
         name: editing.name || "", category: editing.category || "tool",
         condition: editing.condition || "good", location: editing.location || "",
         daily_rate: Number(editing.daily_rate) || 0, quantity: Number(editing.quantity) || 1,
@@ -438,6 +438,7 @@ export function EquipmentScreen({ initialView = "all", toolType }: EquipmentScre
           <Input label="QR Code" value={editing?.qr_code || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, qr_code: text }))} mono keyboardType="number-pad" testID="edit-sku" />
           <Input label="Name" value={editing?.name || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, name: text }))} testID="edit-name" />
           <Input label="Model" value={editing?.model || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, model: text }))} mono testID="edit-model" />
+          <Input label="Equipment Family" value={editing?.equipment_family || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, equipment_family: text.toLowerCase().replace(/[^a-z0-9]+/g, "_") }))} placeholder="nudura_gen2" mono autoCapitalize="none" testID="edit-equipment-family" />
           <Input label="Serial Number" value={editing?.serial_number || ""} onChangeText={(text) => setEditing((entry) => ({ ...entry!, serial_number: text }))} mono testID="edit-serial-number" />
           <SectionLabel>Category</SectionLabel>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 8 }} style={{ marginBottom: spacing.md }}>{EQUIPMENT_CATEGORIES.map((category) => <TouchableOpacity key={category.key} onPress={() => setEditing((entry) => ({ ...entry!, category: category.key }))} style={[styles.chip, editing?.category === category.key && styles.chipActive]} testID={`edit-cat-${category.key}`}><Text style={[styles.chipText, editing?.category === category.key && { color: colors.inverse }]}>{category.label}</Text></TouchableOpacity>)}</ScrollView>

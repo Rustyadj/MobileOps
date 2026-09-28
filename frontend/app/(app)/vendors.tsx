@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { View, Text, TouchableOpacity } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Screen } from "@/src/components/Screen";
+import { AdminTabs } from "@/src/components/shell/AdminTabs";
 import { Card, Mono, Row, H3 } from "@/src/components/ui";
 import { PageHeader } from "@/src/components/layout/PageHeader";
 import { PageToolbar } from "@/src/components/layout/PageToolbar";
@@ -69,7 +70,7 @@ export default function ContactsScreen() {
   ];
 
   if (loading) {
-    return <Screen title="Contacts" back testID="contacts-screen"><LoadingState label="Loading contacts…" /></Screen>;
+    return <Screen title="Admin" tabs={<AdminTabs active="contacts" />} testID="contacts-screen"><LoadingState label="Loading contacts…" /></Screen>;
   }
 
   const desktopHeader = (
@@ -86,9 +87,9 @@ export default function ContactsScreen() {
 
   return (
     <Screen
-      title="Contacts"
+      title="Admin"
       subtitle={`${contacts.length} companies and homeowners`}
-      back
+      tabs={<AdminTabs active="contacts" />}
       rightAction={{ icon: "add", onPress: openNew, testID: "add-contact-btn" }}
       onRefresh={refresh}
       refreshing={refreshing}

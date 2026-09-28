@@ -12,7 +12,7 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Upload your company logo for delivery tickets",
-        "NSCameraUsageDescription": "Photograph equipment damage during service",
+        "NSCameraUsageDescription": "Scan equipment QR codes and photograph equipment damage during service",
         "NSDocumentsFolderUsageDescription": "Save delivery ticket PDFs",
         "NSLocationWhenInUseUsageDescription": "Pin rental sites on the map from your current location"
       },
@@ -53,6 +53,13 @@
         "expo-image-picker",
         {
           "photosPermission": "Upload your company logo for delivery tickets"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Concrete Form to scan equipment QR codes",
+          "recordAudioAndroid": false
         }
       ],
       [

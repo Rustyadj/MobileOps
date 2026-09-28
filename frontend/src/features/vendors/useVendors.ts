@@ -6,7 +6,13 @@ export type Contact = {
   is_homeowner: boolean; follows_current_job: boolean;
   current_job_site: string; current_job_address: string;
   current_job_lat?: number | null; current_job_lng?: number | null; current_rental_id?: string | null;
+  preferred_equipment: EquipmentPreference[];
   notes: string;
+};
+
+export type EquipmentPreference = {
+  category: string; equipment_family: string; equipment_id?: string | null;
+  priority: number; preference_type: "preferred" | "acceptable_alternate" | "avoid" | "required";
 };
 
 export function useContacts() {
@@ -31,6 +37,7 @@ export function useContacts() {
       phone: editing.phone || "", email: editing.email || "", business_address: editing.business_address || "",
       is_homeowner: !!editing.is_homeowner,
       follows_current_job: !!editing.follows_current_job || !!editing.is_homeowner,
+      preferred_equipment: editing.preferred_equipment || [],
       notes: editing.notes || "",
     };
     if (editing.id) await api(`/contacts/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });

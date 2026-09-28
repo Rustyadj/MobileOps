@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Modal, Alert, ScrollView, TouchableOpacity } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { Screen } from "@/src/components/Screen";
 import { Card, Input, Button, Mono, SectionLabel, Pill, Row, H3 } from "@/src/components/ui";
 import { DataTable, ColumnDef } from "@/src/components/data/DataTable";
 import { SearchInput } from "@/src/components/data/SearchInput";
+import { EquipmentPicker } from "@/src/components/equipment/EquipmentSearch";
 import { FilterChips } from "@/src/components/data/FilterBar";
 import { StatusBadge } from "@/src/components/data/StatusBadge";
 import { PageToolbar } from "@/src/components/layout/PageToolbar";
@@ -44,7 +44,7 @@ export default function BookingsScreen() {
   const [equipment, setEquipment] = useState<Eq[]>([]);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
-  const [eqSearch, setEqSearch] = useState("");
+  const [pickingEquipment, setPickingEquipment] = useState(false);
   const [availability, setAvailability] = useState<Record<string, CapacityRow>>({});
   const [selected, setSelected] = useState<Booking | null>(null);
   const [deleting, setDeleting] = useState<Booking | null>(null);
@@ -109,7 +109,7 @@ export default function BookingsScreen() {
     const now = new Date();
     const end = new Date(now.getTime() + 3 * 86400000);
     setDraft({ customer_name: "", customer_type: "company", job_site: "", job_address: "", lat: null, lng: null, start_date: now.toISOString(), end_date: end.toISOString(), status: BOOKING_STATUS.tentative, items: [], notes: "" });
-    setEqSearch("");
+    setPickingEquipment(false);
     setCreating(true);
   };
 
@@ -273,19 +273,16 @@ export default function BookingsScreen() {
           })}
 
           <SectionLabel>Add equipment</SectionLabel>
-          <SearchInput value={eqSearch} onChangeText={setEqSearch} placeholder="Search SKU or equipment…" testID="bk-eq-search" style={{ marginBottom: spacing.sm }} />
-          <View style={{ borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md }} testID="bk-add-eq-list">
-            {equipment
-              .filter((e) => !(draft?.items || []).some((i: BookingLine) => i.equipment_id === e.id))
-              .filter((e) => !eqSearch.trim() || `${e.qr_code || ""} ${e.sku} ${e.name}`.toLowerCase().includes(eqSearch.trim().toLowerCase()))
-              .slice(0, 8)
-              .map((e) => (
-                <TouchableOpacity key={e.id} onPress={() => addItem(e)} style={styles.eqRow} testID={`bk-add-eq-${e.sku}`}>
-                  <View style={{ flex: 1 }}><Text style={typo.body}>{e.name}</Text><Mono style={{ fontSize: 11, color: colors.inkMuted }}>{equipmentIdentifier(e)}{availability[e.id] ? ` · ${availability[e.id].available} available` : ""}</Mono></View>
-                  <Ionicons name="add-circle" size={26} color={colors.primary} />
-                </TouchableOpacity>
-              ))}
-          </View>
+          <Button title="Search or scan equipment…" onPress={() => setPickingEquipment(true)} variant="outline" style={{ marginBottom: spacing.md }} testID="bk-add-eq-open-picker" />
+          <EquipmentPicker
+            visible={pickingEquipment}
+            equipment={equipment as any}
+            filter={(item) => !(draft?.items || []).some((i: BookingLine) => i.equipment_id === item.id)}
+            onSelect={(item) => { setPickingEquipment(false); addItem(item as unknown as Eq); }}
+            onClose={() => setPickingEquipment(false)}
+            title="Add equipment to this booking"
+            testID="booking-equipment-picker"
+          />
 
           <Input label="Notes" value={draft?.notes || ""} onChangeText={(text) => setDraft({ ...draft, notes: text })} testID="bk-notes" />
           <RequiresOnline><Button title="Save Booking" onPress={save} testID="save-booking-btn" /></RequiresOnline>

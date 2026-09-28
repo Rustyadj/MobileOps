@@ -42,11 +42,12 @@ export default function ShopIndex() {
     { label: "Tasks", sub: `${openTasks ?? "—"} open tasks`, route: "/(app)/shop/tasks", icon: "checkbox-outline" as const, testID: "shop-tasks" },
     { label: "Prep", sub: `${staging ?? "—"} outbound jobs being prepared`, route: "/(app)/shop/staging", icon: "cube-outline" as const, testID: "shop-staging" },
     { label: "Repairs", sub: `${openRepairs ?? "—"} open repair tasks · ${pendingInspection ?? "—"} awaiting inspection`, route: "/(app)/shop/maintenance", icon: "build-outline" as const, testID: "shop-maintenance" },
+    { label: "Inspections", sub: `${pendingInspection ?? "—"} returned units awaiting inspection`, route: "/(app)/shop/inspections", icon: "search-outline" as const, testID: "shop-inspections" },
     { label: "Notes", sub: `${notes ?? "—"} shop notes`, route: "/(app)/shop/notes", icon: "document-text-outline" as const, testID: "shop-notes" },
   ];
 
   return (
-    <Screen title="Shop" subtitle="Tasks · Prep · Repairs · Notes" onRefresh={load} testID="shop-index-screen">
+    <Screen title="Shop" subtitle="Tasks · Prep / Staging · Repairs · Inspections · Notes" onRefresh={load} testID="shop-index-screen">
       {loadError ? <ErrorState message="Couldn't load shop counts." onRetry={load} testID="shop-index-error" /> : null}
       {items.map((it) => (
         <TouchableOpacity key={it.route} onPress={() => router.push(it.route as any)} activeOpacity={0.6} testID={it.testID}>

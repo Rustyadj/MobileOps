@@ -39,3 +39,6 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
+
+# Parser test build output (yarn test:parser)
+.test-build/

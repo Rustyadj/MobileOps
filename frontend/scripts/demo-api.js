@@ -4,6 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { Buffer } = require("node:buffer");
 
 const PORT = Number(process.env.MOBILEOPS_DEMO_API_PORT || 8001);
 const backendRoot = path.resolve(__dirname, "..", "..", "backend");
@@ -143,6 +144,52 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+// Demo attachment store. Uploaded bytes live in memory for the life of the
+// process so a pasted screenshot actually renders back in the feed instead of
+// silently disappearing — matching the real API's behaviour closely enough to
+// exercise the UI offline.
+const attachmentBlobs = new Map();
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+/** Minimal multipart/form-data reader — enough for the attachment upload. */
+function parseMultipart(buffer, contentType) {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || "");
+  if (!boundary) return [];
+  const marker = Buffer.from(`--${(boundary[1] || boundary[2]).trim()}`);
+  const files = [];
+  let cursor = buffer.indexOf(marker);
+  while (cursor !== -1) {
+    const start = cursor + marker.length;
+    const next = buffer.indexOf(marker, start);
+    if (next === -1) break;
+    const part = buffer.subarray(start, next);
+    const split = part.indexOf("\r\n\r\n");
+    if (split !== -1) {
+      const headers = part.subarray(0, split).toString("utf8");
+      const filename = /filename="([^"]*)"/i.exec(headers);
+      if (filename && filename[1]) {
+        const type = /Content-Type:\s*([^\r\n]+)/i.exec(headers);
+        // Trailing CRLF belongs to the boundary, not the payload.
+        files.push({
+          filename: filename[1],
+          content_type: type ? type[1].trim() : "application/octet-stream",
+          data: part.subarray(split + 4, part.length - 2),
+        });
+      }
+    }
+    cursor = next;
+  }
+  return files;
 }
 
 function capacityRows() {
@@ -526,7 +573,26 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && whiteboardAttachments) {
       const message = whiteboardMessages.find((entry) => entry.id === decodeURIComponent(whiteboardAttachments[1]));
       if (!message) return send(res, 404, { detail: "Message not found" });
-      return send(res, 200, message);
+      const raw = await readRawBody(req);
+      const created = parseMultipart(raw, req.headers["content-type"]).slice(0, 5).map((file, index) => {
+        const id = `demo-att-${Date.now()}-${index}`;
+        attachmentBlobs.set(id, { data: file.data, content_type: file.content_type });
+        return { id, filename: file.filename, content_type: file.content_type, size: file.data.length };
+      });
+      message.attachments = [...(message.attachments || []), ...created];
+      persistState();
+      return send(res, 201, created);
+    }
+    const whiteboardAttachment = route.match(/^\/api\/whiteboard\/attachments\/([^/]+)$/);
+    if (req.method === "GET" && whiteboardAttachment) {
+      const blob = attachmentBlobs.get(decodeURIComponent(whiteboardAttachment[1]));
+      if (!blob) return send(res, 404, { detail: "Attachment not found" });
+      res.writeHead(200, {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": blob.content_type,
+        "Content-Disposition": `${blob.content_type.startsWith("image/") ? "inline" : "attachment"}; filename="attachment"`,
+      });
+      return res.end(blob.data);
     }
     const whiteboardPin = route.match(/^\/api\/whiteboard\/messages\/([^/]+)\/pin$/);
     if (req.method === "PATCH" && whiteboardPin) {

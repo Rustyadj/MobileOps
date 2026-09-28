@@ -11,7 +11,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test:parser": "tsc src/utils/rental-shorthand.ts --outDir .test-build --module es2022 --target es2022 --moduleResolution bundler && node --test src/utils/__tests__/rental-shorthand.test.mjs"
   },
   "dependencies": {
     "@expo/metro-runtime": "6.1.2",
@@ -28,6 +29,7 @@
     "dayjs": "1.11.13",
     "expo": "~54.0.35",
     "expo-blur": "~15.0.8",
+    "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.23",
