@@ -765,6 +765,121 @@ class MobileOpsMCP:
                 operation=operation,
             )
 
+        # Nathan2's proactive rental-coordinator reads. These deliberately
+        # return focused, structured domain results instead of dumping raw
+        # collections into model context.
+        @mcp.tool(name="get_inventory_availability", description="Get authoritative current inventory buckets for one equipment id.", annotations=READ_ONLY)
+        async def get_inventory_availability(equipment_id: str) -> dict[str, Any]:
+            return await self.invoke(
+                tool="get_inventory_availability", parameters={"equipment_id": equipment_id},
+                required_scope="inventory:read", action="read",
+                operation=lambda _p, _k: self.backend.equipment_breakdown(equipment_id, self._domain_user()),
+            )
+
+        @mcp.tool(name="get_inventory_forecast", description="Build a deterministic, chronological availability forecast for requested equipment on an outbound date.", annotations=READ_ONLY)
+        async def get_inventory_forecast(
+            requested_date: datetime,
+            requested_lines: list[dict[str, Any]],
+            customer_id: str | None = None,
+            customer_name: str = "",
+            exclude_booking_id: str | None = None,
+            exclude_dispatch_id: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "requested_date": requested_date, "requested_lines": requested_lines,
+                "customer_id": customer_id, "customer_name": customer_name,
+                "exclude_booking_id": exclude_booking_id, "exclude_dispatch_id": exclude_dispatch_id,
+            }
+            return await self.invoke(
+                tool="get_inventory_forecast", parameters=params,
+                required_scope="inventory:read", action="read",
+                operation=lambda _p, _k: self.backend.build_availability_forecast(
+                    self.backend.AvailabilityForecastRequest(**params)
+                ),
+            )
+
+        @mcp.tool(name="get_inventory_timeline", description="Get the dated, auditable inventory movements behind a requested outbound forecast.", annotations=READ_ONLY)
+        async def get_inventory_timeline(
+            requested_date: datetime,
+            requested_lines: list[dict[str, Any]],
+            customer_id: str | None = None,
+            customer_name: str = "",
+        ) -> dict[str, Any]:
+            params = {"requested_date": requested_date, "requested_lines": requested_lines, "customer_id": customer_id, "customer_name": customer_name}
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                forecast = await self.backend.build_availability_forecast(self.backend.AvailabilityForecastRequest(**params))
+                return {"requested_date": forecast["requested_date"], "risk": forecast["risk"], "lines": [{"equipment_id": line["equipment_id"], "name": line.get("name"), "timeline": line.get("timeline", []), "explanation": line.get("explanation", {})} for line in forecast["lines"]]}
+            return await self.invoke(tool="get_inventory_timeline", parameters=params, required_scope="inventory:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_customer_preferences", description="Get persisted preferred, acceptable-alternate, avoid, and required equipment rules for a customer.", annotations=READ_ONLY)
+        async def get_customer_preferences(customer_id: str) -> dict[str, Any]:
+            return await self.invoke(
+                tool="get_customer_preferences", parameters={"customer_id": customer_id},
+                required_scope="operations:read", action="read",
+                operation=lambda _p, _k: self.backend.get_customer_preferences(customer_id, self._domain_user()),
+            )
+
+        @mcp.tool(name="get_active_rentals", description="Get active and partially returned rentals with current outstanding line quantities.", annotations=READ_ONLY)
+        async def get_active_rentals() -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_rentals(self._domain_user()))
+                rows = [row for row in rows if row.get("status") in ("active", "partially_returned")]
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="get_active_rentals", parameters={}, required_scope="rentals:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_scheduled_returns", description="Get dated inbound dispatches that can affect future inventory.", annotations=READ_ONLY)
+        async def get_scheduled_returns() -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = await self.backend.list_dispatches(direction="inbound", status=None, rental_id=None, booking_id=None, _=self._domain_user())
+                data = [item for item in jsonable_encoder(rows) if item.get("status") not in ("completed", "cancelled")]
+                rentals = jsonable_encoder(await self.backend.list_rentals(self._domain_user()))
+                covered = {item.get("rental_id") for item in data}
+                for rental in rentals:
+                    if rental.get("status") in ("active", "partially_returned") and rental.get("due_date") and rental.get("id") not in covered:
+                        data.append({"source": "rental_due_date", "rental_id": rental.get("id"), "scheduled_date": rental.get("due_date"), "customer_name": rental.get("customer_name"), "lines": rental.get("lines", [])})
+                return {"items": data, "count": len(data)}
+            return await self.invoke(tool="get_scheduled_returns", parameters={}, required_scope="dispatch:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_scheduled_outbounds", description="Get dated outbound commitments and their equipment lines.", annotations=READ_ONLY)
+        async def get_scheduled_outbounds() -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = await self.backend.list_dispatches(direction="outbound", status=None, rental_id=None, booking_id=None, _=self._domain_user())
+                data = [item for item in jsonable_encoder(rows) if item.get("status") not in ("completed", "cancelled")]
+                return {"items": data, "count": len(data)}
+            return await self.invoke(tool="get_scheduled_outbounds", parameters={}, required_scope="dispatch:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_rental_detail", description="Get one rental and its partial-return state by id.", annotations=READ_ONLY)
+        async def get_rental_detail(rental_id: str) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_rentals(self._domain_user()))
+                match = next((row for row in rows if row.get("id") == rental_id), None)
+                if match is None:
+                    raise ValueError("Rental not found")
+                return match
+            return await self.invoke(tool="get_rental_detail", parameters={"rental_id": rental_id}, required_scope="rentals:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_equipment_status", description="Get equipment status, location breakdown, and unavailable buckets.", annotations=READ_ONLY)
+        async def get_equipment_status(equipment_id: str) -> dict[str, Any]:
+            return await self.invoke(tool="get_equipment_status", parameters={"equipment_id": equipment_id}, required_scope="equipment:read", action="read", operation=lambda _p, _k: self.backend.equipment_breakdown(equipment_id, self._domain_user()))
+
+        @mcp.tool(name="get_repair_pipeline", description="Get the repair pipeline, optionally filtered to one equipment id.", annotations=READ_ONLY)
+        async def get_repair_pipeline(equipment_id: str | None = None) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_maintenance(self._domain_user()))
+                if equipment_id:
+                    rows = [row for row in rows if row.get("equipment_id") == equipment_id]
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="get_repair_pipeline", parameters={"equipment_id": equipment_id}, required_scope="maintenance:read", action="read", operation=operation)
+
+        @mcp.tool(name="get_inventory_conflicts", description="Get proactive outbound shortage, return-dependency, and preference conflicts in the requested horizon.", annotations=READ_ONLY)
+        async def get_inventory_conflicts(days: int = 30) -> dict[str, Any]:
+            bounded = max(1, min(days, 365))
+            return await self.invoke(tool="get_inventory_conflicts", parameters={"days": bounded}, required_scope="operations:read", action="read", operation=lambda _p, _k: self.backend.dashboard_outbound_risks(bounded, self._domain_user()))
+
+        @mcp.tool(name="get_outbound_risk", description="Get the explainable deterministic risk forecast for one existing outbound dispatch.", annotations=READ_ONLY)
+        async def get_outbound_risk(dispatch_id: str) -> dict[str, Any]:
+            return await self.invoke(tool="get_outbound_risk", parameters={"dispatch_id": dispatch_id}, required_scope="dispatch:read", action="read", operation=lambda _p, _k: self.backend.get_outbound_risk(dispatch_id, self._domain_user()))
+
         @mcp.tool(
             name="equipment_checkout",
             description="Check out equipment to a project/foreman. Requires explicit confirmation.",
@@ -1539,6 +1654,35 @@ class MobileOpsMCP:
                 operation=operation,
                 confirmation_token=confirmation_token,
                 confirmation_summary=f"Set shop task {task_id} status to {status}.",
+            )
+
+        @mcp.tool(
+            name="shop_task_add_update",
+            description="Append a timestamped update to a repair task without overwriting earlier updates. Requires explicit confirmation.",
+            annotations=MUTATING,
+        )
+        async def shop_task_add_update(
+            task_id: str,
+            update: str,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {"task_id": task_id, "update": update}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                return await self.backend.append_shop_task_update(
+                    task_id,
+                    self.backend.ShopTaskUpdateCreate(body=update),
+                    self._domain_user(),
+                )
+
+            return await self.invoke(
+                tool="shop_task_add_update",
+                parameters=params,
+                required_scope="shop_tasks:write",
+                action="write",
+                operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Add this update to repair task {task_id}: {update}",
             )
 
 

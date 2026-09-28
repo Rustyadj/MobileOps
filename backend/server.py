@@ -31,9 +31,17 @@ from pymongo.errors import DuplicateKeyError
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
-from whiteboard_service import HermesNathanGateway, build_nathan_prompt, mentioned_handles, normalize_handle
+from whiteboard_service import (
+    HermesNathanGateway, build_nathan_prompt, build_rental_review_prompt,
+    deterministic_review_state, mentioned_handles, normalize_handle, parse_rental_review,
+)
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
+
+try:
+    from .rental_availability import forecast_availability
+except ImportError:  # uvicorn server:app when backend/ is the working directory
+    from rental_availability import forecast_availability
 
 # ----------------------------- Config & DB --------------------------------
 ROOT_DIR = Path(__file__).parent
@@ -389,6 +397,7 @@ class Equipment(BaseModel):
     sku: str
     qr_code: Optional[str] = None
     model: str = ""
+    equipment_family: str = ""
     serial_number: str = ""
     name: str
     category: str
@@ -403,7 +412,14 @@ class Equipment(BaseModel):
     outbound: int = 0  # loaded and left the yard, not yet delivered
     on_rental: int = 0
     checked_out: int = 0  # internal tool checkout, separate from customer rentals
-    checked_out_to: str = ""  # project foreman / project assignment label
+    # Tool custody. Who has it, with which crew, on which job, since when, and
+    # when it's due back. The full custody log is the equipment's ledger
+    # (GET /equipment/{id}/ledger) — these fields are the current state only.
+    checked_out_to: str = ""  # project foreman / person accountable
+    checked_out_crew: str = ""
+    checked_out_job: str = ""
+    checked_out_at: Optional[datetime] = None
+    expected_return_at: Optional[datetime] = None
     inbound: int = 0  # picked up from the job, en route back, not yet checked in
     in_transit: int = 0  # yard-to-yard Transfers only — see BUCKET_FIELDS note above
     pending_inspection: int = 0  # returned, awaiting inspection before going back to available
@@ -420,6 +436,7 @@ class EquipmentCreate(BaseModel):
     sku: str = ""
     qr_code: Optional[str] = None
     model: str = ""
+    equipment_family: str = ""
     serial_number: str = ""
     name: str
     category: str
@@ -584,10 +601,16 @@ class ReconcileBody(BaseModel):
 class ToolCheckoutBody(BaseModel):
     checked_out_to: str
     qty: int = 1
+    crew: str = ""
+    job: str = ""
+    expected_return_at: Optional[datetime] = None
+    note: str = ""
 
 
 class ToolCheckinBody(BaseModel):
     qty: int = 1
+    condition: str = ""  # good, fair, poor, broken — blank leaves it unchanged
+    note: str = ""
 
 
 class Transfer(BaseModel):
@@ -698,6 +721,10 @@ class Dispatch(BaseModel):
     trailer: str = ""
     crew: str = ""
     lines: List[DispatchLine] = Field(default_factory=list)
+    # hard = units already occupy the ledger's reserved bucket; forecast = a
+    # dated commitment accepted by the timeline but not yet physically
+    # allocatable (typically dependent on an inbound return).
+    reservation_state: str = "hard"
     # Planning-only reminder imports belong on the Dispatch calendar but are
     # deliberately not inventory movements. Their free-form requirements can
     # contain tentative sizes/quantities that must be confirmed before stock
@@ -735,6 +762,13 @@ class DispatchCreate(BaseModel):
     crew: str = ""
     lines: List[DispatchLine] = []
     notes: str = ""
+    # Shorthand rental entry. `raw_text` is the operator's typed order line,
+    # kept verbatim; `notes` stays separate and is never read as inventory.
+    raw_text: str = ""
+    source_date_text: str = ""
+    date_confirmed: Optional[bool] = None
+    requirements: List[str] = []
+    planning_only: bool = False
 
 
 class DispatchStatusUpdate(BaseModel):
@@ -910,6 +944,77 @@ class BookingStatusUpdate(BaseModel):
     status: str  # tentative, confirmed, cancelled — see BookingStatus
 
 
+class AvailabilityRequestLine(BaseModel):
+    equipment_id: str
+    qty: int = Field(gt=0)
+
+
+class AvailabilityForecastRequest(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str = ""
+    requested_date: datetime
+    requested_lines: List[AvailabilityRequestLine]
+    exclude_booking_id: Optional[str] = None
+    exclude_dispatch_id: Optional[str] = None
+
+
+class ShorthandReviewRequest(BaseModel):
+    """One shorthand rental being reviewed before it is saved.
+
+    ``order_text`` and ``notes`` stay strictly separate: only the order line
+    produces inventory requirements, and notes are context Nathan2 may reason
+    about but must never read as requested stock.
+    """
+    order_text: str = ""
+    notes: str = ""
+    customer_name: str = ""
+    requested_date: datetime
+    date_confirmed: bool = True
+    requested_lines: List[AvailabilityRequestLine] = []
+
+
+# Repair lifecycle. Ordered — index in this list is the ticket's progress.
+# "ready" means the fix is done and inspected-pending; "returned_to_inventory"
+# is the step that actually hands the units back to the available bucket.
+REPAIR_STATUSES = [
+    "reported", "diagnosing", "waiting_parts", "repairing",
+    "ready_for_inspection", "ready", "returned_to_inventory",
+]
+REPAIR_TERMINAL_STATUS = "returned_to_inventory"
+
+# Tickets written before the lifecycle existed carry open/in_progress/resolved.
+LEGACY_REPAIR_STATUS = {
+    "open": "reported",
+    "in_progress": "repairing",
+    "resolved": "ready",
+}
+
+
+def normalize_repair_status(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = LEGACY_REPAIR_STATUS.get(value, value)
+    if value not in REPAIR_STATUSES:
+        raise HTTPException(400, f"status must be one of {', '.join(REPAIR_STATUSES)}")
+    return value
+
+
+class RepairPart(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    label: str
+    ordered: bool = False
+    ordered_at: Optional[datetime] = None
+    received: bool = False
+
+
+class RepairEvent(BaseModel):
+    """One entry of the ticket's full repair history."""
+    id: str = Field(default_factory=gen_id)
+    kind: str  # created, status, note, photo, part, assign
+    detail: str
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class Maintenance(BaseModel):
     id: str = Field(default_factory=gen_id)
     equipment_id: str
@@ -918,7 +1023,16 @@ class Maintenance(BaseModel):
     action_taken: str = ""
     cost: float = 0.0
     qty: int = 1  # how many units of this equipment the ticket takes out of service
-    status: str = "open"  # open, in_progress, resolved
+    status: str = "reported"  # one of REPAIR_STATUSES
+    assigned_to: str = ""
+    location: str = ""
+    parts: List[RepairPart] = Field(default_factory=list)
+    photos: List[str] = Field(default_factory=list)  # asset URLs / data refs
+    history: List[RepairEvent] = Field(default_factory=list)
+    reported_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    estimated_ready_at: Optional[datetime] = None
     serviced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -929,13 +1043,54 @@ class MaintenanceCreate(BaseModel):
     action_taken: str = ""
     cost: float = 0.0
     qty: int = 1
-    status: str = "open"
+    status: str = "reported"
+    assigned_to: str = ""
+    location: str = ""
+    estimated_ready_at: Optional[datetime] = None
     serviced_at: Optional[datetime] = None
+
+
+class RepairStatusBody(BaseModel):
+    status: str
+    note: str = ""
+
+
+class RepairNoteBody(BaseModel):
+    body: str
+
+
+class RepairPartBody(BaseModel):
+    label: str
+    ordered: bool = False
+
+
+class RepairAssignBody(BaseModel):
+    assigned_to: str
+
+
+class RepairEstimateBody(BaseModel):
+    estimated_ready_at: Optional[datetime] = None
+
+
+class RepairPhotoBody(BaseModel):
+    url: str
+    caption: str = ""
 
 
 class ChecklistItem(BaseModel):
     text: str
     done: bool = False
+
+
+class ShopTaskUpdate(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    body: str
+    created_by: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class ShopTaskUpdateCreate(BaseModel):
+    body: str
 
 
 SHOP_TASK_STATUSES = ["to_do", "in_progress", "blocked", "done"]
@@ -952,6 +1107,7 @@ class ShopTask(BaseModel):
     assignee: str = ""
     due_date: Optional[datetime] = None
     notes: str = ""
+    updates: List[ShopTaskUpdate] = []
     checklist: List[ChecklistItem] = []
     qty: int = 0  # units of equipment this task represents (repair/staging tasks)
     related_rental_id: Optional[str] = None
@@ -1079,6 +1235,7 @@ class Vendor(BaseModel):
     freight_terms: str = ""
     truck_capacity: str = ""  # ft of block per truck
     lead_time_days: int = 0
+    preferred_equipment: List[dict] = Field(default_factory=list)
     notes: str = ""
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -1093,7 +1250,27 @@ class VendorCreate(BaseModel):
     freight_terms: str = ""
     truck_capacity: str = ""
     lead_time_days: int = 0
+    preferred_equipment: List[dict] = Field(default_factory=list)
     notes: str = ""
+
+
+class EquipmentPreference(BaseModel):
+    category: str = ""
+    equipment_family: str = ""
+    equipment_id: Optional[str] = None
+    priority: int = Field(default=1, ge=1)
+    preference_type: str = "preferred"  # preferred, acceptable_alternate, avoid, required
+
+    @field_validator("preference_type")
+    @classmethod
+    def valid_preference_type(cls, value: str) -> str:
+        if value not in ("preferred", "acceptable_alternate", "avoid", "required"):
+            raise ValueError("preference_type must be preferred, acceptable_alternate, avoid, or required")
+        return value
+
+
+class CustomerPreferenceUpdate(BaseModel):
+    preferred_equipment: List[EquipmentPreference] = Field(default_factory=list)
 
 
 class Contact(BaseModel):
@@ -1110,6 +1287,7 @@ class Contact(BaseModel):
     current_job_lat: Optional[float] = None
     current_job_lng: Optional[float] = None
     current_rental_id: Optional[str] = None
+    preferred_equipment: List[EquipmentPreference] = Field(default_factory=list)
     notes: str = ""
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -1122,6 +1300,7 @@ class ContactCreate(BaseModel):
     business_address: str = ""
     is_homeowner: bool = False
     follows_current_job: bool = False
+    preferred_equipment: List[EquipmentPreference] = Field(default_factory=list)
     notes: str = ""
 
 
@@ -1702,6 +1881,8 @@ async def update_equipment(eq_id: str, body: EquipmentCreate, _: UserPublic = De
     if not doc:
         raise HTTPException(404, "Equipment not found")
     upd = body.model_dump()
+    if "equipment_family" not in body.model_fields_set:
+        upd.pop("equipment_family", None)
     upd["qr_code"] = (body.qr_code or "").strip() or None
     upd["model"] = body.model.strip()
     upd["serial_number"] = body.serial_number.strip()
@@ -1843,8 +2024,21 @@ async def checkout_tool(
             raise HTTPException(400, "Project foreman is required")
         if body.qty <= 0 or body.qty > eq.get("available", 0):
             raise HTTPException(400, "qty exceeds available tools")
-        await apply_ledger_entry(eq_id, body.qty, "available", "checked_out", "tool_checkout", note=f"Checked out to {assignee}", created_by=user.name)
-        await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": assignee, "location": ""}})
+        detail = ", ".join(filter(None, [
+            f"Checked out to {assignee}",
+            f"crew {body.crew.strip()}" if body.crew.strip() else "",
+            f"job {body.job.strip()}" if body.job.strip() else "",
+            body.note.strip(),
+        ]))
+        await apply_ledger_entry(eq_id, body.qty, "available", "checked_out", "tool_checkout", note=detail, created_by=user.name)
+        await db.equipment.update_one({"id": eq_id}, {"$set": {
+            "checked_out_to": assignee,
+            "checked_out_crew": body.crew.strip(),
+            "checked_out_job": body.job.strip(),
+            "checked_out_at": now_utc(),
+            "expected_return_at": body.expected_return_at,
+            "location": "",
+        }})
         return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
 
     return await idempotent(idempotency_key, "checkout_tool", _run)
@@ -1861,9 +2055,22 @@ async def checkin_tool(
             raise HTTPException(404, "Equipment not found")
         if body.qty <= 0 or body.qty > eq.get("checked_out", 0):
             raise HTTPException(400, "qty exceeds checked-out tools")
-        await apply_ledger_entry(eq_id, body.qty, "checked_out", "available", "tool_checkin", location="Yard", note=f"Checked in from {eq.get('checked_out_to') or 'field'}", created_by=user.name)
+        note = f"Checked in from {eq.get('checked_out_to') or 'field'}"
+        if body.note.strip():
+            note = f"{note} — {body.note.strip()}"
+        await apply_ledger_entry(eq_id, body.qty, "checked_out", "available", "tool_checkin", location="Yard", note=note, created_by=user.name)
         remaining = eq.get("checked_out", 0) - body.qty
-        await db.equipment.update_one({"id": eq_id}, {"$set": {"checked_out_to": eq.get("checked_out_to", "") if remaining else "", "location": "Yard" if remaining == 0 else ""}})
+        upd: dict = {
+            "checked_out_to": eq.get("checked_out_to", "") if remaining else "",
+            "location": "Yard" if remaining == 0 else "",
+        }
+        if remaining == 0:
+            upd.update({"checked_out_crew": "", "checked_out_job": "", "checked_out_at": None, "expected_return_at": None})
+        if body.condition.strip():
+            if body.condition.strip() not in ("good", "fair", "poor", "broken"):
+                raise HTTPException(400, "condition must be good, fair, poor or broken")
+            upd["condition"] = body.condition.strip()
+        await db.equipment.update_one({"id": eq_id}, {"$set": upd})
         return Equipment(**await db.equipment.find_one({"id": eq_id}, {"_id": 0}))
 
     return await idempotent(idempotency_key, "checkin_tool", _run)
@@ -2355,7 +2562,9 @@ async def _set_dispatch_status(doc: dict, new_status: str, user: UserPublic) -> 
             raise HTTPException(400, "Check every picked-up product before completing the pickup ticket")
     old_bucket = dispatch_bucket_for_status(direction, current)
     if new_status == DispatchStatus.CANCELLED:
-        if direction == "outbound" and not doc.get("booking_id"):
+        if direction == "outbound" and not doc.get("booking_id") and doc.get("reservation_state", "hard") == "forecast":
+            new_bucket = old_bucket
+        elif direction == "outbound" and not doc.get("booking_id"):
             # This dispatch made its own available -> reserved reservation on
             # create (no booking backing it) — cancelling must release it all
             # the way back to available, not leave it stuck in reserved.
@@ -2502,16 +2711,26 @@ async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(requi
             if qty > outstanding_by_eq.get(eq_id, 0):
                 raise HTTPException(400, f"Pickup qty for {eq_id} exceeds what's still outstanding on that rental")
 
+    # An unconfirmed shorthand date ("9.18.26?") is carried explicitly; a
+    # dispatch created any other way is confirmed iff it has a date at all.
     dispatch = Dispatch(
-        **body.model_dump(),
-        date_confirmed=body.scheduled_date is not None,
+        **body.model_dump(exclude={"date_confirmed"}),
+        date_confirmed=body.date_confirmed if body.date_confirmed is not None else body.scheduled_date is not None,
         created_by=user.name,
     )
     if dispatch.customer_type == "homeowner" and dispatch.job_site.strip():
         dispatch.customer_name = dispatch.job_site.strip()
     starting_bucket = dispatch_bucket_for_status(dispatch.direction, dispatch.status)
+    provisionally_inserted = False
 
-    if dispatch.direction == "outbound" and not dispatch.booking_id:
+    if dispatch.planning_only:
+        # Tentative demand: on the calendar and in the forecast (see
+        # rental_availability.forecast_availability), but deliberately not an
+        # inventory movement. Nothing is reserved until it is confirmed.
+        if not dispatch.scheduled_date:
+            raise HTTPException(400, "A planning-only rental needs a date")
+        dispatch.reservation_state = "forecast"
+    elif dispatch.direction == "outbound" and not dispatch.booking_id:
         # No booking behind this dispatch to have already reserved the units
         # — reserve them from available right now, so the dispatch's own
         # bucket (starting_bucket == "reserved") is actually backed by stock.
@@ -2520,17 +2739,46 @@ async def create_dispatch(body: DispatchCreate, user: UserPublic = Depends(requi
         needed: dict = {}
         for line in dispatch.lines:
             needed[line.equipment_id] = needed.get(line.equipment_id, 0) + line.qty
+        enough_now = True
         for eq_id, qty in needed.items():
             eq = await db.equipment.find_one({"id": eq_id}, {"_id": 0})
-            if not eq or eq.get("available", 0) < qty:
-                raise HTTPException(400, f"Not enough available {eq.get('name', eq_id) if eq else eq_id} to schedule this dispatch")
-        for line in dispatch.lines:
-            await apply_ledger_entry(
-                line.equipment_id, line.qty, "available", starting_bucket, "dispatch_scheduled",
-                location=dispatch.job_site, booking_id=dispatch.booking_id, created_by=user.name,
-            )
+            if not eq:
+                raise HTTPException(404, f"Equipment {eq_id} not found")
+            enough_now = enough_now and eq.get("available", 0) >= qty
+        if enough_now:
+            for line in dispatch.lines:
+                await apply_ledger_entry(
+                    line.equipment_id, line.qty, "available", starting_bucket, "dispatch_scheduled",
+                    location=dispatch.job_site, booking_id=dispatch.booking_id, created_by=user.name,
+                )
+            dispatch.reservation_state = "hard"
+        else:
+            if not dispatch.scheduled_date:
+                raise HTTPException(409, "A return-dependent outbound needs a scheduled date")
+            dispatch.reservation_state = "forecast"
+            # Insert the dated commitment before validating it. Concurrent
+            # requests will therefore see one another; at worst both reject
+            # conservatively, but they cannot both succeed and double-book.
+            await db.dispatches.insert_one(dispatch.model_dump())
+            provisionally_inserted = True
+            try:
+                forecast = await build_availability_forecast(AvailabilityForecastRequest(
+                    customer_name=dispatch.customer_name,
+                    requested_date=dispatch.scheduled_date,
+                    requested_lines=[AvailabilityRequestLine(equipment_id=line.equipment_id, qty=line.qty) for line in dispatch.lines],
+                    exclude_dispatch_id=dispatch.id,
+                ))
+            except Exception:
+                await db.dispatches.delete_one({"id": dispatch.id})
+                raise
+            shortages = [line for line in forecast["lines"] if line["projected_shortage"] > 0]
+            if shortages:
+                await db.dispatches.delete_one({"id": dispatch.id})
+                detail = ", ".join(f"{line['projected_shortage']} {line['name']}" for line in shortages)
+                raise HTTPException(409, f"Projected inventory shortage: {detail}")
 
-    await db.dispatches.insert_one(dispatch.model_dump())
+    if not provisionally_inserted:
+        await db.dispatches.insert_one(dispatch.model_dump())
     return dispatch
 
 
@@ -2546,6 +2794,16 @@ async def assign_dispatch(d_id: str, body: DispatchAssignUpdate, _: UserPublic =
         upd["scheduled_date"] = body.scheduled_date
         if body.date_confirmed is None:
             upd["date_confirmed"] = body.scheduled_date is not None
+        if doc.get("direction") == "outbound" and body.scheduled_date and doc.get("lines") and doc.get("status") not in DispatchStatus.TERMINAL:
+            forecast = await build_availability_forecast(AvailabilityForecastRequest(
+                customer_name=doc.get("customer_name", ""), requested_date=body.scheduled_date,
+                requested_lines=[AvailabilityRequestLine(equipment_id=line["equipment_id"], qty=line["qty"]) for line in doc["lines"]],
+                exclude_dispatch_id=d_id, exclude_booking_id=doc.get("booking_id"),
+            ))
+            shortages = [line for line in forecast["lines"] if line["projected_shortage"] > 0]
+            if shortages:
+                detail = ", ".join(f"{line['projected_shortage']} {line['name']}" for line in shortages)
+                raise HTTPException(409, f"New date creates a projected inventory shortage: {detail}")
     if body.status_note is not None:
         upd["status_note"] = body.status_note.strip()
     if upd:
@@ -2598,6 +2856,24 @@ async def update_dispatch_status(
             new_idx = flow.index(new_status)
             if new_idx != cur_idx + 1:
                 raise HTTPException(400, f"Cannot jump from '{current}' to '{new_status}' — next step is '{flow[cur_idx + 1]}'")
+
+        # A return-dependent commitment becomes a hard ledger reservation at
+        # the last responsible moment before units move into staged stock.
+        if (
+            doc["direction"] == "outbound"
+            and doc.get("reservation_state") == "forecast"
+            and new_status == DispatchStatus.READY
+        ):
+            async def _reserve(session):
+                for line in doc["lines"]:
+                    await apply_ledger_entry(
+                        line["equipment_id"], line["qty"], "available", "reserved",
+                        "forecast_reservation_hardened", location=doc.get("job_site", ""),
+                        booking_id=doc.get("booking_id"), created_by=user.name, session=session,
+                    )
+            await run_in_transaction(_reserve)
+            doc["reservation_state"] = "hard"
+            await db.dispatches.update_one({"id": d_id}, {"$set": {"reservation_state": "hard"}})
 
         updated = await _set_dispatch_status(doc, new_status, user)
         return Dispatch(**updated)
@@ -3314,88 +3590,211 @@ async def dispatch_booking(bk_id: str, user: UserPublic = Depends(require_role(R
     return Dispatch(**dispatch_doc)
 
 
+async def build_availability_forecast(body: AvailabilityForecastRequest) -> dict:
+    """Load current operational snapshots and delegate all math to the
+    deterministic timeline engine. This is shared by the REST API, dashboard,
+    capacity screen, and Nathan2 MCP tools so they cannot disagree."""
+    equipment, rentals, bookings, dispatches, maintenance = await asyncio.gather(
+        db.equipment.find({}, {"_id": 0}).to_list(2000),
+        db.rentals.find({"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}).to_list(2000),
+        db.bookings.find({"status": {"$in": list(BookingStatus.OPEN)}}, {"_id": 0}).to_list(2000),
+        db.dispatches.find({"status": {"$nin": list(DispatchStatus.TERMINAL)}}, {"_id": 0}).to_list(4000),
+        db.maintenance.find({}, {"_id": 0}).to_list(2000),
+    )
+    customer = None
+    if body.customer_id:
+        customer = await db.vendors.find_one({"id": body.customer_id}, {"_id": 0})
+    elif body.customer_name.strip():
+        name = re.escape(body.customer_name.strip())
+        customer = await db.vendors.find_one(
+            {"$or": [
+                {"company": {"$regex": f"^{name}$", "$options": "i"}},
+                {"name": {"$regex": f"^{name}$", "$options": "i"}},
+            ]},
+            {"_id": 0},
+        )
+    return forecast_availability(
+        requested_date=body.requested_date,
+        requested_lines=[line.model_dump() for line in body.requested_lines],
+        equipment=equipment,
+        bookings=bookings,
+        rentals=rentals,
+        dispatches=dispatches,
+        maintenance=maintenance,
+        customer_preferences=(customer or {}).get("preferred_equipment", []),
+        customer_id=(customer or {}).get("id") or body.customer_id,
+        customer_name=(customer or {}).get("company") or (customer or {}).get("name") or body.customer_name,
+        exclude_booking_id=body.exclude_booking_id,
+        exclude_dispatch_id=body.exclude_dispatch_id,
+    )
+
+
+@api.post("/availability/forecast")
+async def get_inventory_forecast(body: AvailabilityForecastRequest, _: UserPublic = Depends(get_current_user)):
+    return await build_availability_forecast(body)
+
+
+@api.post("/rentals/shorthand/review")
+async def review_shorthand_rental(body: ShorthandReviewRequest, _: UserPublic = Depends(get_current_user)):
+    """Deterministic availability first, Nathan2's operational reading second.
+
+    The forecast is computed here and returned verbatim. Nathan2 receives it
+    read-only and contributes a state and a sentence of reasoning; it cannot
+    alter a quantity, and its state is clamped so it can never downgrade a
+    shortage the arithmetic found. If the gateway is unconfigured or fails,
+    the numbers and the deterministic state are still returned.
+    """
+    forecast = await build_availability_forecast(AvailabilityForecastRequest(
+        customer_name=body.customer_name,
+        requested_date=body.requested_date,
+        requested_lines=body.requested_lines,
+    ))
+    floor = deterministic_review_state(forecast)
+    review = {"state": floor, "reasoning": "", "floor_state": floor, "source": "deterministic"}
+
+    if body.requested_lines and nathan_gateway.configured:
+        try:
+            result = await nathan_gateway.invoke(
+                title=f"Rental review: {body.customer_name or 'Outbound'}",
+                prompt=build_rental_review_prompt(
+                    order_text=body.order_text, notes=body.notes,
+                    requested_date=body.requested_date.date().isoformat(),
+                    date_confirmed=body.date_confirmed, forecast=forecast,
+                ),
+            )
+            review = {**parse_rental_review(result.text, forecast), "source": "nathan2"}
+        except Exception as exc:  # noqa: BLE001 - never block entry on the agent
+            logger.warning("Nathan2 rental review unavailable: %s", type(exc).__name__)
+            review["unavailable_reason"] = "Nathan2 could not be reached; showing the calculated numbers only."
+    elif not nathan_gateway.configured:
+        review["unavailable_reason"] = "Nathan2 gateway is not configured; showing the calculated numbers only."
+
+    return {"forecast": forecast, "review": review}
+
+
+@api.get("/dispatches/{d_id}/forecast")
+async def get_outbound_risk(d_id: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.dispatches.find_one({"id": d_id, "direction": "outbound"}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Outbound dispatch not found")
+    if not doc.get("scheduled_date") or not doc.get("lines"):
+        raise HTTPException(400, "Outbound dispatch needs a date and equipment lines")
+    customer = await db.vendors.find_one(
+        {"$or": [
+            {"company": {"$regex": f"^{re.escape(doc.get('customer_name', ''))}$", "$options": "i"}},
+            {"name": {"$regex": f"^{re.escape(doc.get('customer_name', ''))}$", "$options": "i"}},
+        ]},
+        {"_id": 0, "id": 1},
+    )
+    return await build_availability_forecast(AvailabilityForecastRequest(
+        customer_id=(customer or {}).get("id"), customer_name=doc.get("customer_name", ""),
+        requested_date=doc["scheduled_date"],
+        requested_lines=[AvailabilityRequestLine(equipment_id=line["equipment_id"], qty=line["qty"]) for line in doc["lines"]],
+        exclude_dispatch_id=d_id,
+        exclude_booking_id=doc.get("booking_id"),
+    ))
+
+
 @api.get("/bookings/capacity")
 async def capacity_check(target_date: str, _: UserPublic = Depends(get_current_user)):
-    """Return per-equipment availability for a given date."""
+    """Compatibility view backed by the same chronological forecast engine."""
     try:
         d = datetime.fromisoformat(target_date)
     except Exception:
         raise HTTPException(400, "target_date must be ISO")
     equipment = await db.equipment.find({}, {"_id": 0}).to_list(2000)
-    rentals = await db.rentals.find({"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}).to_list(1000)
-    bookings = await db.bookings.find({"status": {"$in": list(BookingStatus.OPEN)}}, {"_id": 0}).to_list(1000)
-    usage: dict[str, int] = {}
-    # Active rentals commit inventory until returned (no due_date used).
-    # returned_qty already counts every physically-returned unit, damaged or
-    # not — damaged_qty is a subset marker, not an additional deduction.
-    for r in rentals:
-        for line in r.get("lines", []):
-            delivered = line.get("delivered_qty") or line["qty"]
-            rem = delivered - line.get("returned_qty", 0)
-            if rem > 0:
-                usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
-    for b in bookings:
-        sd, ed = b["start_date"], b["end_date"]
-        if isinstance(sd, str): sd = datetime.fromisoformat(sd.replace("Z","+00:00"))
-        if isinstance(ed, str): ed = datetime.fromisoformat(ed.replace("Z","+00:00"))
-        if sd.date() <= d.date() <= ed.date():
-            for line in b.get("items", []):
-                usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + line["qty"]
-    out = []
-    for e in equipment:
-        committed = usage.get(e["id"], 0)
-        out.append({
-            "equipment_id": e["id"], "sku": e["sku"], "qr_code": e.get("qr_code"), "name": e["name"],
-            "category": e["category"], "quantity": e["quantity"],
-            "committed": committed, "available": max(e["quantity"] - committed, 0),
-        })
+    forecast = await build_availability_forecast(AvailabilityForecastRequest(
+        requested_date=d,
+        requested_lines=[AvailabilityRequestLine(equipment_id=e["id"], qty=1) for e in equipment],
+    ))
+    by_id = {line["equipment_id"]: line for line in forecast["lines"]}
+    out = [{
+        "equipment_id": e["id"], "sku": e["sku"], "qr_code": e.get("qr_code"), "name": e["name"],
+        "category": e["category"], "quantity": e["quantity"],
+        "committed": max(0, e["quantity"] - by_id[e["id"]]["projected_available"]),
+        "available": by_id[e["id"]]["projected_available"],
+    } for e in equipment]
     return {"date": d.date().isoformat(), "rows": out}
 
 
 async def compute_equipment_shortage_forecast(days: int) -> List[dict]:
-    """Scan the next `days` days for dates where committed demand (active
-    rentals + tentative/confirmed bookings) exceeds owned quantity for any
-    SKU, and name the jobs driving that demand. Pure computation, no auth —
-    callers (the `/dashboard/shortages` endpoint and the merged `/shortages`
-    endpoint) each apply their own `Depends(get_current_user)`."""
-    equipment = await db.equipment.find({}, {"_id": 0}).to_list(2000)
-    eq_by_id = {e["id"]: e for e in equipment}
-    rentals = await db.rentals.find({"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}).to_list(1000)
-    bookings = await db.bookings.find({"status": {"$in": list(BookingStatus.OPEN)}}, {"_id": 0}).to_list(1000)
-
-    today = now_utc().date()
+    risks = await compute_outbound_risks(days)
     shortages = []
-    for offset in range(max(days, 0)):
-        d = today + timedelta(days=offset)
-        usage: dict[str, int] = {}
-        jobs: dict[str, List[str]] = {}
-        for r in rentals:
-            for line in r.get("lines", []):
-                delivered = line.get("delivered_qty") or line["qty"]
-                rem = delivered - line.get("returned_qty", 0)
-                if rem > 0:
-                    usage[line["equipment_id"]] = usage.get(line["equipment_id"], 0) + rem
-                    jobs.setdefault(line["equipment_id"], []).append(r.get("job_site") or r["customer_name"])
-        for b in bookings:
-            sd, ed = b["start_date"], b["end_date"]
-            if isinstance(sd, str): sd = datetime.fromisoformat(sd.replace("Z", "+00:00"))
-            if isinstance(ed, str): ed = datetime.fromisoformat(ed.replace("Z", "+00:00"))
-            if sd.date() <= d <= ed.date():
-                for item in b.get("items", []):
-                    usage[item["equipment_id"]] = usage.get(item["equipment_id"], 0) + item["qty"]
-                    jobs.setdefault(item["equipment_id"], []).append(b.get("job_site") or b["customer_name"])
-        for eq_id, used in usage.items():
-            eq = eq_by_id.get(eq_id)
-            if not eq:
+    for risk in risks:
+        for line in risk["lines"]:
+            if line["projected_shortage"] <= 0:
                 continue
-            short = used - eq["quantity"]
-            if short > 0:
-                shortages.append({
-                    "date": d.isoformat(), "equipment_id": eq_id, "sku": eq["sku"], "qr_code": eq.get("qr_code"), "name": eq["name"],
-                    "shortage": short, "demand": used, "owned": eq["quantity"],
-                    "jobs": sorted(set(jobs.get(eq_id, []))),
-                })
+            shortages.append({
+                "date": risk["requested_date"], "equipment_id": line["equipment_id"],
+                "sku": line.get("sku"), "name": line.get("name"),
+                "shortage": line["projected_shortage"], "demand": line["requested_qty"],
+                "owned": line["projected_available"],
+                "jobs": [risk.get("job_site") or risk.get("customer_name")],
+                "outbound_id": risk["outbound_id"], "outbound_type": risk["outbound_type"],
+            })
     return shortages
+
+
+async def compute_outbound_risks(days: int = 30) -> List[dict]:
+    """Forecast only affected dated outbounds; no stored AI conclusions."""
+    equipment, rentals, bookings, dispatches, maintenance, customers = await asyncio.gather(
+        db.equipment.find({}, {"_id": 0}).to_list(2000),
+        db.rentals.find({"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}).to_list(2000),
+        db.bookings.find({"status": {"$in": list(BookingStatus.OPEN)}}, {"_id": 0}).to_list(2000),
+        db.dispatches.find({"status": {"$nin": list(DispatchStatus.TERMINAL)}}, {"_id": 0}).to_list(4000),
+        db.maintenance.find({}, {"_id": 0}).to_list(2000),
+        db.vendors.find({}, {"_id": 0}).to_list(2000),
+    )
+    customer_by_name = {}
+    for customer in customers:
+        for name in (customer.get("company"), customer.get("name")):
+            if name:
+                customer_by_name[str(name).strip().lower()] = customer
+    now = now_utc()
+    horizon = now + timedelta(days=max(0, min(days, 365)))
+    orders: list[tuple[str, dict]] = [("booking", item) for item in bookings]
+    orders.extend(("dispatch", item) for item in dispatches if item.get("direction") == "outbound" and not item.get("booking_id") and not item.get("planning_only"))
+    results = []
+    for order_type, order in orders:
+        requested_at = order.get("start_date") if order_type == "booking" else order.get("scheduled_date")
+        if not isinstance(requested_at, datetime):
+            try:
+                requested_at = datetime.fromisoformat(str(requested_at).replace("Z", "+00:00")) if requested_at else None
+            except ValueError:
+                requested_at = None
+        if not requested_at:
+            continue
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=timezone.utc)
+        if not (now.date() <= requested_at.date() <= horizon.date()):
+            continue
+        lines = order.get("items") if order_type == "booking" else order.get("lines")
+        customer = customer_by_name.get(str(order.get("customer_name") or "").strip().lower(), {})
+        forecast = forecast_availability(
+            requested_date=requested_at,
+            requested_lines=lines or [], equipment=equipment, bookings=bookings,
+            rentals=rentals, dispatches=dispatches, maintenance=maintenance,
+            customer_preferences=customer.get("preferred_equipment", []),
+            customer_id=customer.get("id"), customer_name=order.get("customer_name", ""),
+            exclude_booking_id=order.get("id") if order_type == "booking" else None,
+            exclude_dispatch_id=order.get("id") if order_type == "dispatch" else None,
+            now=now,
+        )
+        if forecast["risk"] == "green" and all(line.get("preferred_equipment_match") or not customer.get("preferred_equipment") for line in forecast["lines"]):
+            continue
+        forecast.update({
+            "outbound_id": order["id"], "outbound_type": order_type,
+            "job_site": order.get("job_site", ""),
+            "route": f"/(app)/operations/{'bookings' if order_type == 'booking' else 'outbound'}?open={order['id']}",
+        })
+        results.append(forecast)
+    risk_order = {"critical": 0, "red": 1, "yellow": 2, "green": 3}
+    return sorted(results, key=lambda item: (risk_order[item["risk"]], item["requested_date"]))
+
+
+@api.get("/dashboard/outbound-risks")
+async def dashboard_outbound_risks(days: int = 30, _: UserPublic = Depends(get_current_user)):
+    return {"rows": await compute_outbound_risks(days)}
 
 
 @api.get("/dashboard/shortages")
@@ -3623,31 +4022,188 @@ async def get_job(job_id: str, _: UserPublic = Depends(get_current_user)):
     raise HTTPException(404, "Job not found")
 
 
-# ----------------------------- Maintenance --------------------------------
+# ----------------------------- Maintenance / Repairs -----------------------
+def _repair_doc(doc: dict) -> dict:
+    """Normalize a stored ticket onto the current lifecycle before validating."""
+    doc = dict(doc)
+    raw = (doc.get("status") or "").strip().lower()
+    doc["status"] = LEGACY_REPAIR_STATUS.get(raw, raw if raw in REPAIR_STATUSES else "reported")
+    doc.setdefault("reported_at", doc.get("created_at"))
+    return doc
+
+
+async def _load_repair(m_id: str) -> dict:
+    doc = await db.maintenance.find_one({"id": m_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    return _repair_doc(doc)
+
+
+async def _push_repair_event(m_id: str, kind: str, detail: str, user: UserPublic) -> None:
+    event = RepairEvent(kind=kind, detail=detail, created_by=user.name)
+    await db.maintenance.update_one({"id": m_id}, {"$push": {"history": event.model_dump()}})
+
+
+async def _return_repaired_units(doc: dict, user: UserPublic) -> None:
+    """in_maintenance -> available, clamped to what's really in the bucket.
+
+    This is the ONLY place a repair changes inventory availability, and it
+    goes through apply_ledger_entry so the ledger stays the single authority.
+    """
+    eq = await db.equipment.find_one({"id": doc["equipment_id"]}, {"_id": 0})
+    movable = min(int(doc.get("qty", 1) or 0), eq.get("in_maintenance", 0)) if eq else 0
+    if movable > 0:
+        await apply_ledger_entry(
+            doc["equipment_id"], movable, "in_maintenance", "available", "maintenance_resolved",
+            note=f"Repair ticket {doc['id'][:8]}: {doc.get('issue', '')}", created_by=user.name,
+        )
+
+
 @api.get("/maintenance", response_model=List[Maintenance])
 async def list_maintenance(user: UserPublic = Depends(get_current_user)):
     docs = await db.maintenance.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [Maintenance(**redact_money_for_crew(d, user.role.value)) for d in docs]
+    return [Maintenance(**_repair_doc(redact_money_for_crew(d, user.role.value))) for d in docs]
+
+
+@api.get("/maintenance/{m_id}", response_model=Maintenance)
+async def get_maintenance(m_id: str, user: UserPublic = Depends(get_current_user)):
+    doc = await _load_repair(m_id)
+    return Maintenance(**redact_money_for_crew(doc, user.role.value))
 
 
 @api.post("/maintenance", response_model=Maintenance, status_code=201)
-async def create_maintenance(body: MaintenanceCreate, _: UserPublic = Depends(require_role(Role.foreman))):
+async def create_maintenance(body: MaintenanceCreate, user: UserPublic = Depends(require_role(Role.foreman))):
     eq = await db.equipment.find_one({"id": body.equipment_id}, {"_id": 0})
-    name = eq["name"] if eq else ""
-    m = Maintenance(**body.model_dump(), equipment_name=name)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    payload = body.model_dump()
+    payload["status"] = normalize_repair_status(payload.get("status") or "reported")
+    payload["location"] = payload.get("location") or eq.get("location", "")
+    m = Maintenance(
+        **payload,
+        equipment_name=eq["name"],
+        reported_at=now_utc(),
+        history=[RepairEvent(kind="created", detail=f"Reported: {body.issue}", created_by=user.name)],
+    )
     await db.maintenance.insert_one(m.model_dump())
     return m
 
 
 @api.put("/maintenance/{m_id}", response_model=Maintenance)
-async def update_maintenance(m_id: str, body: MaintenanceCreate, _: UserPublic = Depends(require_role(Role.foreman))):
-    doc = await db.maintenance.find_one({"id": m_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Not found")
+async def update_maintenance(m_id: str, body: MaintenanceCreate, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await _load_repair(m_id)
     upd = body.model_dump()
+    upd["status"] = normalize_repair_status(upd.get("status") or doc["status"])
+    # A status change routed through PUT still has to honour the lifecycle
+    # side effects, so hand it to the same helper the status endpoint uses.
+    if upd["status"] != doc["status"]:
+        await _apply_repair_status(doc, upd["status"], "", user)
+        upd.pop("status")
     await db.maintenance.update_one({"id": m_id}, {"$set": upd})
-    new_doc = await db.maintenance.find_one({"id": m_id}, {"_id": 0})
-    return Maintenance(**new_doc)
+    return Maintenance(**await _load_repair(m_id))
+
+
+@api.put("/maintenance/{m_id}/estimate", response_model=Maintenance)
+async def update_repair_estimate(
+    m_id: str, body: RepairEstimateBody, user: UserPublic = Depends(require_role(Role.foreman))
+):
+    await _load_repair(m_id)
+    await db.maintenance.update_one({"id": m_id}, {"$set": {"estimated_ready_at": body.estimated_ready_at}})
+    detail = f"Estimated ready {body.estimated_ready_at.date().isoformat()}" if body.estimated_ready_at else "Cleared estimated ready date"
+    await _push_repair_event(m_id, "estimate", detail, user)
+    return Maintenance(**await _load_repair(m_id))
+
+
+async def _apply_repair_status(doc: dict, status: str, note: str, user: UserPublic) -> None:
+    previous = doc["status"]
+    if status == previous:
+        return
+    upd: dict = {"status": status}
+    if status in ("diagnosing", "repairing") and not doc.get("started_at"):
+        upd["started_at"] = now_utc()
+    if status in ("ready", "returned_to_inventory") and not doc.get("completed_at"):
+        upd["completed_at"] = now_utc()
+        upd["serviced_at"] = now_utc()
+    if status == REPAIR_TERMINAL_STATUS and previous != REPAIR_TERMINAL_STATUS:
+        await _return_repaired_units(doc, user)
+    await db.maintenance.update_one({"id": doc["id"]}, {"$set": upd})
+    detail = f"{previous.replace('_', ' ')} -> {status.replace('_', ' ')}"
+    await _push_repair_event(doc["id"], "status", f"{detail}{f' — {note}' if note else ''}", user)
+
+
+@api.post("/maintenance/{m_id}/status", response_model=Maintenance)
+async def set_maintenance_status(
+    m_id: str, body: RepairStatusBody, user: UserPublic = Depends(require_role(Role.foreman)),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await _load_repair(m_id)
+        await _apply_repair_status(doc, normalize_repair_status(body.status), body.note.strip(), user)
+        return Maintenance(**await _load_repair(m_id))
+
+    return await idempotent(idempotency_key, "set_maintenance_status", _run)
+
+
+@api.post("/maintenance/{m_id}/notes", response_model=Maintenance, status_code=201)
+async def add_maintenance_note(m_id: str, body: RepairNoteBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await _load_repair(m_id)
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(400, "Note cannot be empty")
+    await _push_repair_event(doc["id"], "note", text, user)
+    return Maintenance(**await _load_repair(m_id))
+
+
+@api.post("/maintenance/{m_id}/photos", response_model=Maintenance, status_code=201)
+async def add_maintenance_photo(m_id: str, body: RepairPhotoBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await _load_repair(m_id)
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(400, "Photo url required")
+    await db.maintenance.update_one({"id": doc["id"]}, {"$push": {"photos": url}})
+    await _push_repair_event(doc["id"], "photo", body.caption.strip() or "Photo added", user)
+    return Maintenance(**await _load_repair(m_id))
+
+
+@api.post("/maintenance/{m_id}/parts", response_model=Maintenance, status_code=201)
+async def add_maintenance_part(m_id: str, body: RepairPartBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await _load_repair(m_id)
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "Part label required")
+    part = RepairPart(label=label, ordered=body.ordered, ordered_at=now_utc() if body.ordered else None)
+    await db.maintenance.update_one({"id": doc["id"]}, {"$push": {"parts": part.model_dump()}})
+    await _push_repair_event(doc["id"], "part", f"{'Ordered' if body.ordered else 'Needs'} {label}", user)
+    return Maintenance(**await _load_repair(m_id))
+
+
+@api.put("/maintenance/{m_id}/parts/{part_id}", response_model=Maintenance)
+async def update_maintenance_part(
+    m_id: str, part_id: str, body: RepairPartBody, user: UserPublic = Depends(require_role(Role.foreman)),
+):
+    doc = await _load_repair(m_id)
+    parts = doc.get("parts", [])
+    target = next((p for p in parts if p.get("id") == part_id), None)
+    if not target:
+        raise HTTPException(404, "Part not found")
+    became_ordered = body.ordered and not target.get("ordered")
+    target["label"] = body.label.strip() or target["label"]
+    target["ordered"] = body.ordered
+    if became_ordered:
+        target["ordered_at"] = now_utc()
+    await db.maintenance.update_one({"id": doc["id"]}, {"$set": {"parts": parts}})
+    if became_ordered:
+        await _push_repair_event(doc["id"], "part", f"Ordered {target['label']}", user)
+    return Maintenance(**await _load_repair(m_id))
+
+
+@api.post("/maintenance/{m_id}/assign", response_model=Maintenance)
+async def assign_maintenance(m_id: str, body: RepairAssignBody, user: UserPublic = Depends(require_role(Role.foreman))):
+    doc = await _load_repair(m_id)
+    who = body.assigned_to.strip()
+    await db.maintenance.update_one({"id": doc["id"]}, {"$set": {"assigned_to": who}})
+    await _push_repair_event(doc["id"], "assign", f"Assigned to {who}" if who else "Unassigned", user)
+    return Maintenance(**await _load_repair(m_id))
 
 
 @api.delete("/maintenance/{m_id}")
@@ -3735,6 +4291,28 @@ async def update_shop_task_status(
     return await idempotent(idempotency_key, "update_shop_task_status", _run)
 
 
+@api.post("/shop-tasks/{task_id}/updates", response_model=ShopTask, status_code=201)
+async def append_shop_task_update(
+    task_id: str,
+    body: ShopTaskUpdateCreate,
+    user: UserPublic = Depends(require_role(Role.foreman)),
+):
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(400, "Update is required")
+    update = ShopTaskUpdate(body=text, created_by=user.name)
+    result = await db.shop_tasks.update_one(
+        {"id": task_id, "task_type": "repair"},
+        {"$push": {"updates": update.model_dump()}},
+    )
+    if result.matched_count == 0:
+        if not await db.shop_tasks.find_one({"id": task_id}, {"_id": 0, "id": 1}):
+            raise HTTPException(404, "Task not found")
+        raise HTTPException(400, "Updates can only be added to repair tasks")
+    new_doc = await db.shop_tasks.find_one({"id": task_id}, {"_id": 0})
+    return ShopTask(**new_doc)
+
+
 @api.delete("/shop-tasks/{task_id}")
 async def delete_shop_task(task_id: str, _: UserPublic = Depends(require_role(Role.admin))):
     res = await db.shop_tasks.delete_one({"id": task_id})
@@ -3795,6 +4373,7 @@ def _contact_from_doc(doc: dict, rentals: list[dict]) -> Contact:
         current_job_lat=rental.get("lat") if rental else None,
         current_job_lng=rental.get("lng") if rental else None,
         current_rental_id=rental.get("id") if rental else None,
+        preferred_equipment=doc.get("preferred_equipment", []),
         notes=doc.get("notes", ""),
         created_at=doc.get("created_at", now_utc()),
     )
@@ -3895,6 +4474,8 @@ async def update_contact(contact_id: str, body: ContactCreate, _: UserPublic = D
         "contact_name": body.contact,
         "address": body.business_address,
     }
+    if "preferred_equipment" not in body.model_fields_set:
+        update.pop("preferred_equipment", None)
     result = await db.vendors.update_one({"id": contact_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(404, "Contact not found")
@@ -3903,6 +4484,29 @@ async def update_contact(contact_id: str, body: ContactCreate, _: UserPublic = D
         {"status": {"$in": list(RentalStatus.OPEN)}}, {"_id": 0}
     ).sort("start_date", -1).to_list(2000)
     return _contact_from_doc(doc, rentals)
+
+
+@api.get("/customers/{customer_id}/equipment-preferences", response_model=CustomerPreferenceUpdate)
+async def get_customer_preferences(customer_id: str, _: UserPublic = Depends(get_current_user)):
+    doc = await db.vendors.find_one({"id": customer_id}, {"_id": 0, "preferred_equipment": 1})
+    if not doc:
+        raise HTTPException(404, "Customer not found")
+    return CustomerPreferenceUpdate(preferred_equipment=doc.get("preferred_equipment", []))
+
+
+@api.put("/customers/{customer_id}/equipment-preferences", response_model=CustomerPreferenceUpdate)
+async def update_customer_preferences(
+    customer_id: str,
+    body: CustomerPreferenceUpdate,
+    _: UserPublic = Depends(require_role(Role.foreman)),
+):
+    result = await db.vendors.update_one(
+        {"id": customer_id},
+        {"$set": {"preferred_equipment": [item.model_dump() for item in body.preferred_equipment]}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Customer not found")
+    return body
 
 
 @api.delete("/contacts/{contact_id}")
@@ -3932,6 +4536,8 @@ async def create_vendor(body: VendorCreate, _: UserPublic = Depends(require_role
 @api.put("/vendors/{v_id}", response_model=Vendor)
 async def update_vendor(v_id: str, body: VendorCreate, _: UserPublic = Depends(require_role(Role.foreman))):
     upd = body.model_dump()
+    if "preferred_equipment" not in body.model_fields_set:
+        upd.pop("preferred_equipment", None)
     await db.vendors.update_one({"id": v_id}, {"$set": upd})
     doc = await db.vendors.find_one({"id": v_id}, {"_id": 0})
     if not doc:
@@ -4342,7 +4948,14 @@ async def download_whiteboard_attachment(attachment_id: str, _: UserPublic = Dep
     blob = await db.whiteboard_attachment_blobs.find_one({"id": attachment_id}, {"_id": 0})
     if not meta or not blob:
         raise HTTPException(404, "Attachment not found")
-    return Response(content=bytes(blob["data"]), media_type=meta["content_type"], headers={"Content-Disposition": f'attachment; filename="{meta["filename"].replace(chr(34), "")}"'})
+    # Images are served inline so a pasted screenshot renders in the feed;
+    # everything else still downloads.
+    safe_name = meta["filename"].replace(chr(34), "")
+    disposition = "inline" if str(meta["content_type"]).startswith("image/") else "attachment"
+    return Response(
+        content=bytes(blob["data"]), media_type=meta["content_type"],
+        headers={"Content-Disposition": f'{disposition}; filename="{safe_name}"'},
+    )
 
 
 @api.post("/whiteboard/read")
@@ -4812,13 +5425,17 @@ async def on_startup():
     # status — without a full collection scan.
     await db.rentals.create_index("booking_id")
     await db.rentals.create_index("status")
+    await db.rentals.create_index([("status", 1), ("due_date", 1), ("lines.equipment_id", 1)])
     await db.bookings.create_index("status")
+    await db.bookings.create_index([("status", 1), ("start_date", 1), ("items.equipment_id", 1)])
     await db.dispatches.create_index("booking_id")
     await db.dispatches.create_index("rental_id")
     await db.dispatches.create_index([("direction", 1), ("status", 1)])
+    await db.dispatches.create_index([("direction", 1), ("status", 1), ("scheduled_date", 1), ("lines.equipment_id", 1)])
     await db.vendors.create_index("company")
     await db.vendors.create_index("email")
     await db.vendors.create_index("phone")
+    await db.vendors.create_index("preferred_equipment.equipment_family")
     await db.ledger_entries.create_index("booking_id")
     await db.ledger_entries.create_index("rental_id")
     await db.mcp_agents.create_index("id", unique=True)

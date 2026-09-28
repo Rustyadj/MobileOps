@@ -216,3 +216,92 @@ def build_nathan_prompt(
         "relevant_operations_context": operations_context,
     }
     return "MobileOps Whiteboard invocation:\n" + json.dumps(envelope, default=str, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------
+# Nathan2 rental availability review
+# --------------------------------------------------------------------------
+# Nathan2 sits *above* the deterministic forecast in rental_availability.py.
+# The numbers are already decided before this code runs; Nathan2 only judges
+# whether the situation those numbers describe is an operational problem.
+
+REVIEW_STATES = ("green", "amber", "red")
+
+
+def deterministic_review_state(forecast: dict[str, Any]) -> str:
+    """The floor Nathan2 may never undercut, derived from the numbers alone."""
+    lines = forecast.get("lines") or []
+    if any(int(line.get("projected_shortage") or 0) > 0 for line in lines):
+        return "red"
+    if any(
+        line.get("risky_returns")
+        or int(line.get("requested_qty") or 0) > int(line.get("available_now") or 0)
+        for line in lines
+    ):
+        return "amber"
+    return "green"
+
+
+def build_rental_review_prompt(
+    *,
+    order_text: str,
+    notes: str,
+    requested_date: str,
+    date_confirmed: bool,
+    forecast: dict[str, Any],
+) -> str:
+    """Bounded envelope. The forecast is supplied whole so Nathan2 never has to
+    compute — or guess at — a quantity."""
+    envelope = {
+        "instruction": (
+            "You are Nathan, the MobileOps operations agent, reviewing one outbound rental. "
+            "The deterministic inventory forecast below is authoritative and already correct. "
+            "Never restate a different number, never invent an expected return, and never "
+            "assume inventory that is not in the forecast. Decide only whether the situation "
+            "is a real operational problem. Reply as JSON: "
+            '{"state": "green"|"amber"|"red", "reasoning": "one or two sentences"}. '
+            "green = projected inventory covers the request. "
+            "amber = it covers the request only if an uncertain, overdue, or unconfirmed "
+            "dependency holds, or if turnaround between a return and this outbound is tight. "
+            "red = projected inventory is short."
+        ),
+        "rental": {
+            "order_text": order_text,
+            "notes": notes,
+            "requested_date": requested_date,
+            "date_confirmed": date_confirmed,
+            "date_note": (
+                "Confirmed date." if date_confirmed
+                else "Unconfirmed date (typed with '?') — tentative demand, not a firm commitment."
+            ),
+        },
+        "deterministic_forecast": forecast,
+        "floor_state": deterministic_review_state(forecast),
+    }
+    return "MobileOps rental availability review:\n" + json.dumps(envelope, default=str, ensure_ascii=False)
+
+
+def parse_rental_review(text: str, forecast: dict[str, Any]) -> dict[str, Any]:
+    """Read Nathan2's verdict, then clamp it to what the numbers allow.
+
+    A model may only ever make the picture *worse* than the arithmetic does —
+    it can raise green to amber on an uncertain dependency, but it can never
+    talk a shortage down into an all-clear.
+    """
+    floor = deterministic_review_state(forecast)
+    state, reasoning = floor, ""
+    match = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if match:
+        try:
+            payload = json.loads(match.group(0))
+            candidate = str(payload.get("state") or "").strip().lower()
+            if candidate in REVIEW_STATES:
+                state = candidate
+            reasoning = str(payload.get("reasoning") or "").strip()
+        except (ValueError, AttributeError):
+            reasoning = ""
+    if not reasoning:
+        reasoning = (text or "").strip()[:400]
+    if REVIEW_STATES.index(state) < REVIEW_STATES.index(floor):
+        state = floor
+    return {"state": state, "reasoning": reasoning, "floor_state": floor}

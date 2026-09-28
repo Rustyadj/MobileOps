@@ -711,6 +711,9 @@ class TestMaintenance:
         assert r.status_code == 201, r.text
         m = r.json()
         assert m["equipment_name"] == eq["name"]
+        # Legacy status vocabulary is accepted on input and normalized onto the
+        # repair lifecycle (open -> reported).
+        assert m["status"] == "reported"
         mid = m["id"]
 
         r2 = api_client.put(
@@ -719,7 +722,43 @@ class TestMaintenance:
                   "action_taken": "replaced", "cost": 50},
         )
         assert r2.status_code == 200
-        assert r2.json()["status"] == "resolved"
+        assert r2.json()["status"] == "ready"
+
+        # Lifecycle endpoints: status change, note, part, assign.
+        r4 = api_client.post(
+            f"{BASE_URL}/api/maintenance/{mid}/status", headers=auth_headers,
+            json={"status": "waiting_parts", "note": "seal on order"},
+        )
+        assert r4.status_code == 200, r4.text
+        assert r4.json()["status"] == "waiting_parts"
+
+        r5 = api_client.post(
+            f"{BASE_URL}/api/maintenance/{mid}/parts", headers=auth_headers,
+            json={"label": "TEST_hydraulic seal", "ordered": True},
+        )
+        assert r5.status_code == 201, r5.text
+        assert r5.json()["parts"][0]["label"] == "TEST_hydraulic seal"
+
+        r6 = api_client.post(
+            f"{BASE_URL}/api/maintenance/{mid}/assign", headers=auth_headers,
+            json={"assigned_to": "TEST_Beto"},
+        )
+        assert r6.status_code == 200
+        assert r6.json()["assigned_to"] == "TEST_Beto"
+
+        r7 = api_client.post(
+            f"{BASE_URL}/api/maintenance/{mid}/notes", headers=auth_headers,
+            json={"body": "TEST_seal replaced"},
+        )
+        assert r7.status_code == 201
+        kinds = [e["kind"] for e in r7.json()["history"]]
+        assert "created" in kinds and "status" in kinds and "note" in kinds
+
+        r8 = api_client.post(
+            f"{BASE_URL}/api/maintenance/{mid}/status", headers=auth_headers,
+            json={"status": "bogus"},
+        )
+        assert r8.status_code == 400
 
         r3 = api_client.delete(f"{BASE_URL}/api/maintenance/{mid}", headers=auth_headers)
         assert r3.status_code == 200

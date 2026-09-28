@@ -114,6 +114,7 @@ class FakeBackend:
     MaintenanceCreate = Payload
     ShopTaskCreate = Payload
     ShopTaskStatusUpdate = Payload
+    ShopTaskUpdateCreate = Payload
 
     def __init__(self):
         self.db = FakeDB()
@@ -184,7 +185,20 @@ async def test_registry_covers_requested_domains_and_marks_mutations_destructive
         "maintenance_create",
         "shop_tasks_list",
         "shop_task_set_status",
+        "shop_task_add_update",
         "operational_status",
+        "get_inventory_availability",
+        "get_inventory_forecast",
+        "get_inventory_timeline",
+        "get_customer_preferences",
+        "get_active_rentals",
+        "get_scheduled_returns",
+        "get_scheduled_outbounds",
+        "get_rental_detail",
+        "get_equipment_status",
+        "get_repair_pipeline",
+        "get_inventory_conflicts",
+        "get_outbound_risk",
     }.issubset(tools)
     assert tools["inventory_search"].annotations.readOnlyHint is True
     assert tools["equipment_checkout"].annotations.destructiveHint is True

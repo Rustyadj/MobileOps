@@ -1,7 +1,7 @@
 ---
 name: nathan-field-operations
 description: Use for ICF field planning, bracing and equipment readiness, job-site coordination, pour preparation, or proactive MobileOps operational assistance.
-version: 1.2.0
+version: 1.3.0
 author: MobileOps
 metadata:
   hermes:
@@ -42,19 +42,29 @@ manufacturer instructions, a competent person, or required safety procedures.
 
 Choose the smallest useful set of read-only MobileOps calls:
 
-1. `operational_status` for the overall exception picture.
-2. `inventory_capacity` or `inventory_search` for required quantities and
-   location availability.
-3. `bookings_list`, `rentals_list`, and `inventory_transfers_list` for upcoming
+1. `get_inventory_conflicts` for upcoming shortage, return-dependency, and
+   customer-preference exceptions; use it proactively rather than waiting for
+   a chat question.
+2. `get_inventory_forecast` for the exact customer, requested date, and line
+   quantities. Treat its deterministic values and `explanation` as authoritative.
+3. `get_inventory_timeline` or `get_inventory_availability` when the user needs
+   the dated calculation or current bucket evidence.
+4. `operational_status` for the broader exception picture.
+5. `inventory_capacity` or `inventory_search` for additional location context.
+6. `bookings_list`, `get_active_rentals`, and `inventory_transfers_list` for upcoming
    commitments, outstanding material, and movement between locations.
-4. `dispatches_list` for unassigned, late, or incomplete deliveries and pickups.
-5. `maintenance_list` and `shop_tasks_list` for assets that are not field-ready.
-6. `equipment_get` when condition or identity of a specific asset matters.
-7. `rental_contact_actions` when checking delivery confirmations, delivery
+7. `get_scheduled_returns` and `get_scheduled_outbounds` for dated dependencies.
+8. `get_repair_pipeline` and `shop_tasks_list` for assets that are not field-ready.
+9. `get_equipment_status` when condition or identity of a specific asset matters.
+10. `rental_contact_actions` when checking delivery confirmations, delivery
    updates, pickup confirmations, or overdue-return follow-ups.
 
 Do not query every dataset by habit. Scope calls to the job, date, location, or
 equipment involved. State the “as of” time when presenting changing status.
+
+Never recalculate inventory from remembered conversations. Do not add all future
+returns to current stock. Use the forecast timeline, which accounts for intervening
+outbounds and reservations, and distinguish guaranteed supply from repair estimates.
 
 ## Exception Priorities
 
@@ -143,7 +153,8 @@ Keep routine green items compressed. Focus attention on exceptions and actions.
 MobileOps MCP writes include equipment checkout/checkin/inspection, transfers
 and receipts, rental creation/return/pickup/communication logging, booking
 creation/status/dispatch, dispatch creation/assignment/status/ticket completion,
-maintenance creation/update, and shop-task creation/status. Other MobileOps web
+maintenance creation/update, shop-task creation/status, and append-only repair
+updates. Other MobileOps web
 workflows are not automatically MCP-accessible; check the current tool list and
 never claim access from product knowledge alone.
 

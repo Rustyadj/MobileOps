@@ -47,7 +47,9 @@ inbound Dispatch, and inspection state. Its lifecycle is:
 `planned -> reserved -> staging -> outbound -> on_job -> pickup_requested -> inbound -> inspection -> closed`
 
 - Booking states: tentative, confirmed, cancelled, dispatched. Tentative and
-  confirmed bookings reserve capacity.
+  confirmed bookings reserve capacity. Standalone future outbounds may carry a
+  forecast reservation until inbound-dependent stock can be hardened into the
+  ledger reservation bucket.
 - Outbound Dispatch flow: scheduled, staging, ready, loaded, dispatched,
   arrived, completed. Completion creates/activates the rental state.
 - Rental states: active, partially_returned, returned. Partial return is a
@@ -66,7 +68,9 @@ inbound Dispatch, and inspection state. Its lifecycle is:
   dispatch, returns, movement history, rental customer communications, and map.
 - Shop: tasks, staging, inspections, maintenance, and notes. Shop-task types are
   general, repair, staging, and inspection; states are to-do, in-progress,
-  blocked, and done. Maintenance states are open, in-progress, and resolved.
+  blocked, and done. Repair states progress from reported and diagnosing through
+  parts/repair/inspection readiness to returned-to-inventory; an estimated ready
+  date is advisory until the ledger release occurs.
 - Shortages combine computed near-term capacity gaps with manual needs. Manual
   shortage states are open, ordered, and resolved.
 - Contacts are job-aware customer/field contacts. Vendor routes remain for
@@ -79,7 +83,10 @@ inbound Dispatch, and inspection state. Its lifecycle is:
 Always inspect the live tool list when exact access matters. The dedicated MCP
 normally exposes reads for operational status, equipment/inventory/capacity,
 transfers, rentals and contact actions, bookings, dispatches, maintenance, and
-shop tasks. Confirmed writes cover their sanctioned lifecycle operations.
+shop tasks. Focused rental-coordinator reads include inventory forecasts and
+timelines, customer preferences, scheduled returns/outbounds, repair pipeline,
+inventory conflicts, and per-outbound risk. Confirmed writes cover their
+sanctioned lifecycle operations.
 
 The web app has additional domains that may not be exposed as MCP tools,
 including sellable block/consumable edits, inventory counts/reconciliation,
@@ -96,6 +103,8 @@ calls.
   wait for explicit human approval, repeat identical parameters with the one-time
   token, then verify with a read.
 - No delete tool is exposed to Nathan.
+- Repair progress belongs in append-only task updates via
+  `mcp_mobileops_shop_task_add_update`; never replace an earlier update.
 - Engineered drawings, specifications, manufacturer requirements, competent
   person direction, and applicable safety rules control ICF and temporary works.
 - If data is missing, stale, contradictory, or outside MCP coverage, say so.

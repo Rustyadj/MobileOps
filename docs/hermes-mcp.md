@@ -23,8 +23,10 @@ one implementation.
 - DNS-rebinding protection validates the public host and any configured origins.
 - No delete tool is exposed to Hermes.
 
-The additive Mongo collections are `mcp_agents`, `mcp_audit_log`, and
-`mcp_confirmations`. Existing collections and API response models are unchanged.
+The MCP security collections are `mcp_agents`, `mcp_audit_log`, and
+`mcp_confirmations`. Rental forecasting adds optional fields to existing domain
+documents; see [Nathan2 rental availability](nathan2-rental-availability.md) for
+the backward-compatible schema details.
 
 ## Deployment configuration
 
@@ -131,8 +133,16 @@ tokens, and replayed tokens are rejected and audited.
 | Bookings | `bookings_list` | `booking_create`, `booking_set_status`, `booking_dispatch` | `bookings:read/write` |
 | Dispatch | `dispatches_list` | `dispatch_create`, `dispatch_assign`, `dispatch_set_status` | `dispatch:read/write` |
 | Maintenance | `maintenance_list` | `maintenance_create`, `maintenance_update` | `maintenance:read/write` |
-| Shop | `shop_tasks_list` | `shop_task_create`, `shop_task_set_status` | `shop_tasks:read/write` |
+| Shop | `shop_tasks_list` | `shop_task_create`, `shop_task_set_status`, `shop_task_add_update` | `shop_tasks:read/write` |
 | Operations | `operational_status` | — | `operations:read` |
+
+Nathan2 also has focused proactive rental reads: `get_inventory_availability`,
+`get_inventory_forecast`, `get_inventory_timeline`, `get_customer_preferences`, `get_active_rentals`,
+`get_scheduled_returns`, `get_scheduled_outbounds`, `get_rental_detail`,
+`get_equipment_status`, `get_repair_pipeline`, `get_inventory_conflicts`, and
+`get_outbound_risk`. Their deterministic forecast contract, reservation
+behavior, and approval boundaries are documented in
+[Nathan2 rental availability](nathan2-rental-availability.md).
 
 ## Verification
 
