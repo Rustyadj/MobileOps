@@ -191,6 +191,14 @@ def redact_money_for_crew(doc: dict, role: str) -> dict:
                 line["daily_rate"] = 0.0
     return doc
 
+# Free text (e.g. Nathan's whiteboard replies) can't be role-filtered per
+# viewer, so dollar amounts are masked outright.
+MONEY_TEXT_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?")
+
+
+def redact_money_text(text: str) -> str:
+    return MONEY_TEXT_RE.sub("$[redacted]", text or "")
+
 EQUIPMENT_CATEGORIES = [
     "tool",
     "strongback",
@@ -4787,15 +4795,29 @@ async def post_nathan_response(source_message_id: str) -> None:
             {"thread_id": source["thread_id"], "created_at": {"$lte": source["created_at"]}}, {"_id": 0},
         ).sort("created_at", -1).limit(12).to_list(12)
         history.reverse()
+        # Admins get a short-lived grant so Nathan can carry out their request
+        # without a second approval round-trip; everyone else keeps the
+        # per-call confirmation flow.
+        author = await db.users.find_one({"id": source.get("author_id")}, {"_id": 0})
+        author_role = str(author.get("role") or "") if author else ""
+        admin_grant = None
+        if author_role == Role.admin.value and not user_is_suspended(author):
+            admin_grant = await issue_admin_grant(
+                db, admin_id=author["id"], admin_name=author.get("name") or source["author_name"],
+                source_message_id=source_message_id,
+            )
         prompt = build_nathan_prompt(
             message=source["body"], author=source["author_name"], timestamp=source["created_at"].isoformat(),
             thread_history=history, operations_context=await whiteboard_operations_context(source),
+            author_role=author_role or None, admin_grant=admin_grant,
         )
         result = await nathan_gateway.invoke(title=f"MobileOps: {source['author_name']}", prompt=prompt)
+        # The whiteboard is crew-visible: never let a grant or a dollar figure through.
+        reply = redact_money_text(redact_admin_grants(result.text))
         created_at = now_utc()
         response_doc = {
             "id": gen_id(), "thread_id": source["thread_id"], "parent_id": source.get("parent_id") or source["id"],
-            "body": result.text, "body_original": result.text,
+            "body": reply, "body_original": reply,
             "author_type": "agent", "author_id": "nathan2", "author_name": "Nathan", "author_avatar": "N2",
             "agent_label": "AI Agent", "created_at": created_at, "edited_at": None,
             "is_deleted": False, "deleted_at": None, "deleted_by": None,
@@ -5473,6 +5495,8 @@ async def on_startup():
     await db.mcp_audit_log.create_index([("tool", 1), ("timestamp", -1)])
     await db.mcp_confirmations.create_index("jti", unique=True)
     await db.mcp_confirmations.create_index("expires_at", expireAfterSeconds=0)
+    await db.mcp_admin_grants.create_index("token_hash", unique=True)
+    await db.mcp_admin_grants.create_index("expires_at", expireAfterSeconds=0)
     await seed()
     await backfill_rental_booking_ids()
     await sync_contacts_from_existing_rentals()
@@ -5495,9 +5519,9 @@ app.include_router(api)
 # The MCP transport is an additive, independently-authenticated ASGI layer.
 # Existing mobile API routes keep their paths and dependency chain unchanged.
 try:
-    from .mcp_server import create_mobileops_mcp, seed_hermes_agent
+    from .mcp_server import create_mobileops_mcp, issue_admin_grant, redact_admin_grants, seed_hermes_agent
 except ImportError:  # uvicorn server:app when backend/ is the working directory
-    from mcp_server import create_mobileops_mcp, seed_hermes_agent
+    from mcp_server import create_mobileops_mcp, issue_admin_grant, redact_admin_grants, seed_hermes_agent
 
 mobileops_mcp = create_mobileops_mcp(sys.modules[__name__])
 app.mount("/api/mcp", mobileops_mcp.asgi_app, name="mobileops-mcp")

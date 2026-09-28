@@ -87,3 +87,6 @@ credentials.json
 .env.*
 *.env
 !.env.production.example
+
+# Claude Code personal settings
+.claude/settings.local.json

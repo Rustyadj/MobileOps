@@ -15,8 +15,9 @@ import re
 import secrets
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlparse
@@ -35,6 +36,8 @@ HERMES_AGENT_ID = "hermes-agent"
 HERMES_AGENT_NAME = "Hermes Agent"
 HERMES_AGENT_EMAIL = "hermes-agent@icfops.srv1427612.hstgr.cloud"
 CONFIRMATION_TTL_SECONDS = 300
+ADMIN_GRANT_PREFIX = "admin-grant:"
+ADMIN_GRANT_TTL = timedelta(minutes=15)
 AUDIT_RESULT_LIMIT_BYTES = 512_000
 DEFAULT_TOKEN_HASH_FILE = Path(__file__).with_name("hermes-agent-token.sha256")
 
@@ -54,6 +57,19 @@ DEFAULT_HERMES_SCOPES = (
     "shop_tasks:read",
     "shop_tasks:write",
     "operations:read",
+    "operations:write",
+    "contacts:read",
+    "contacts:write",
+    "vendors:read",
+    "vendors:write",
+)
+
+# Mutable EquipmentCreate fields; equipment_update merges these onto the
+# stored record so a partial MCP call never blanks fields it didn't mention.
+EQUIPMENT_EDITABLE_FIELDS = (
+    "sku", "qr_code", "model", "equipment_family", "serial_number", "name",
+    "category", "condition", "location", "daily_rate", "quantity", "available",
+    "tracking_type", "notes",
 )
 
 READ_ONLY = ToolAnnotations(
@@ -163,6 +179,58 @@ class AgentPrincipal:
     scopes: frozenset[str]
 
 
+@dataclass(frozen=True)
+class AdminGrant:
+    """A verified, unexpired admin authorization carried by one MCP call."""
+
+    grant_id: str
+    admin_id: str
+    admin_name: str
+    source_message_id: str | None
+
+
+# Set only while a grant-authorized operation runs, so _domain_user() can act
+# as the approving admin without widening any other call's privileges.
+_active_admin_grant: ContextVar[AdminGrant | None] = ContextVar(
+    "mobileops_active_admin_grant", default=None
+)
+
+
+def _aware(value: datetime) -> datetime:
+    # Motor returns naive datetimes that are UTC by convention.
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+async def issue_admin_grant(
+    database: Any, *, admin_id: str, admin_name: str, source_message_id: str | None
+) -> str:
+    """Mint a short-lived bearer grant for Nathan acting on an admin's request.
+
+    Only the hash is stored; the raw token lives in Nathan's prompt and must be
+    redacted from anything shown to people.
+    """
+    raw = ADMIN_GRANT_PREFIX + secrets.token_urlsafe(32)
+    now = utc_now()
+    await database.mcp_admin_grants.insert_one(
+        {
+            "id": str(uuid.uuid4()),
+            "token_hash": token_digest(raw),
+            "admin_id": admin_id,
+            "admin_name": admin_name,
+            "source_message_id": source_message_id,
+            "created_at": now,
+            "expires_at": now + ADMIN_GRANT_TTL,
+        }
+    )
+    return raw
+
+
+def redact_admin_grants(text: str) -> str:
+    return re.sub(
+        re.escape(ADMIN_GRANT_PREFIX) + r"[A-Za-z0-9_\-]*", "[redacted]", text or ""
+    )
+
+
 class MongoHermesTokenVerifier(TokenVerifier):
     """Verify opaque bearer tokens against the dedicated MCP agent store."""
 
@@ -261,7 +329,12 @@ class MobileOpsMCP:
                 "Secure operational access to MobileOps for the hermes-agent identity. "
                 "Read tools are immediately executable. Every mutating tool first returns "
                 "confirmation_required; show its summary to the human and only repeat the "
-                "same call with the returned confirmation_token after explicit approval."
+                "same call with the returned confirmation_token after explicit approval. "
+                "Exception: when MobileOps hands you an admin grant (a token starting with "
+                "'admin-grant:') for an administrator's request, pass it as "
+                "confirmation_token to execute that admin's request directly, with no "
+                "second approval. Never echo, quote, or reveal the grant token. Tools "
+                "marked admin-only work exclusively with an admin grant."
             ),
             token_verifier=MongoHermesTokenVerifier(self.db),
             auth=AuthSettings(
@@ -307,6 +380,14 @@ class MobileOpsMCP:
     def _domain_user(self) -> Any:
         # Existing handlers accept this same UserPublic contract. Tool scopes
         # provide the narrower authorization boundary before it reaches them.
+        grant = _active_admin_grant.get()
+        if grant is not None:
+            return self.backend.UserPublic(
+                id=HERMES_AGENT_ID,
+                email=HERMES_AGENT_EMAIL,
+                name=f"Nathan (for {grant.admin_name})",
+                role=self.backend.Role.admin,
+            )
         return self.backend.UserPublic(
             id=HERMES_AGENT_ID,
             email=HERMES_AGENT_EMAIL,
@@ -376,6 +457,30 @@ class MobileOpsMCP:
         except Exception as exc:
             raise PermissionError("Invalid or expired confirmation token") from exc
 
+    async def _verify_admin_grant(self, token: str) -> AdminGrant:
+        """Resolve an admin grant; reusable until expiry, unlike confirmations."""
+        doc = await self.db.mcp_admin_grants.find_one(
+            {"token_hash": token_digest(token)}, {"_id": 0}
+        )
+        expires_at = doc.get("expires_at") if doc else None
+        if not isinstance(expires_at, datetime) or _aware(expires_at) <= utc_now():
+            raise PermissionError("Invalid or expired admin grant")
+        # The grant carries the admin's authority, so it dies with it.
+        admin = await self.db.users.find_one({"id": doc["admin_id"]}, {"_id": 0})
+        is_suspended = getattr(self.backend, "user_is_suspended", None)
+        if (
+            not admin
+            or admin.get("role") != "admin"
+            or (is_suspended is not None and is_suspended(admin))
+        ):
+            raise PermissionError("Admin grant is no longer backed by an active admin")
+        return AdminGrant(
+            grant_id=doc["id"],
+            admin_id=doc["admin_id"],
+            admin_name=doc.get("admin_name") or admin.get("name") or "admin",
+            source_message_id=doc.get("source_message_id"),
+        )
+
     async def invoke(
         self,
         *,
@@ -386,8 +491,14 @@ class MobileOpsMCP:
         operation: Callable[[AgentPrincipal, str | None], Awaitable[Any]],
         confirmation_token: str | None = None,
         confirmation_summary: str | None = None,
+        admin_only: bool = False,
     ) -> dict[str, Any]:
-        """Authorize, audit, confirm if needed, and invoke one domain handler."""
+        """Authorize, audit, confirm if needed, and invoke one domain handler.
+
+        Writes need either a one-time confirmation token (human approved the
+        exact call) or an admin grant (an admin asked Nathan for it directly).
+        admin_only tools accept only the latter.
+        """
         started = time.perf_counter()
         principal = self._principal()
         audit_id = str(uuid.uuid4())
@@ -424,8 +535,39 @@ class MobileOpsMCP:
             if required_scope not in principal.scopes:
                 raise PermissionError(f"Missing required scope: {required_scope}")
 
+            grant: AdminGrant | None = None
+            if confirmation_token and confirmation_token.startswith(ADMIN_GRANT_PREFIX):
+                grant = await self._verify_admin_grant(confirmation_token)
+                await self.db.mcp_audit_log.update_one(
+                    {"id": audit_id},
+                    {
+                        "$set": {
+                            "authorized_by": {
+                                "type": "admin_grant",
+                                "grant_id": grant.grant_id,
+                                "admin_id": grant.admin_id,
+                                "admin_name": grant.admin_name,
+                                "source_message_id": grant.source_message_id,
+                            }
+                        }
+                    },
+                )
+            elif admin_only:
+                raise PermissionError(
+                    f"{tool} is admin-only and requires an admin grant"
+                )
+
             idempotency_key: str | None = None
-            if action == "write":
+            if grant is not None:
+                if action == "write":
+                    idempotency_key = hashlib.sha256(
+                        grant.grant_id.encode("utf-8")
+                        + b"\0"
+                        + tool.encode("utf-8")
+                        + b"\0"
+                        + _canonical_json(parameters)
+                    ).hexdigest()
+            elif action == "write":
                 if not confirmation_token:
                     token = self._issue_confirmation(
                         tool, parameters, principal.identity
@@ -447,7 +589,11 @@ class MobileOpsMCP:
                     confirmation_token, tool, parameters, principal.identity
                 )
 
-            value = await operation(principal, idempotency_key)
+            grant_context = _active_admin_grant.set(grant)
+            try:
+                value = await operation(principal, idempotency_key)
+            finally:
+                _active_admin_grant.reset(grant_context)
             result = {"ok": True, "data": jsonable_encoder(value)}
             await finish("succeeded", result)
             return result
@@ -1683,6 +1829,434 @@ class MobileOpsMCP:
                 operation=operation,
                 confirmation_token=confirmation_token,
                 confirmation_summary=f"Add this update to repair task {task_id}: {update}",
+            )
+
+        # ---- Operations catalog: bracing, sellable stock, shortages,
+        # contacts/vendors, dashboard items. Handlers are called directly, so
+        # FastAPI's require_role never runs: admin-only handlers are gated by
+        # invoke(admin_only=True) and everything else runs as foreman or, under
+        # an admin grant, as admin.
+        @mcp.tool(name="bracing_calculate", description="Calculate strongbacks and braces for ICF wall runs. Each run: {name, corners, linear_ft, wall_height}.", annotations=READ_ONLY)
+        async def bracing_calculate(runs: list[dict[str, Any]]) -> dict[str, Any]:
+            return await self.invoke(
+                tool="bracing_calculate", parameters={"runs": runs},
+                required_scope="operations:read", action="read",
+                operation=lambda _p, _k: self.backend.bracing_calc(
+                    self.backend.BracingRequest(runs=[self.backend.WallRun(**run) for run in runs]),
+                    self._domain_user(),
+                ),
+            )
+
+        @mcp.tool(name="sellable_items_list", description="List sellable stock (consumables and block), optionally filtered by kind.", annotations=READ_ONLY)
+        async def sellable_items_list(kind: str | None = None) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_sellable_items(kind, self._domain_user()))
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="sellable_items_list", parameters={"kind": kind}, required_scope="inventory:read", action="read", operation=operation)
+
+        @mcp.tool(name="shortages_list", description="List the merged shortages list: auto-forecasted equipment shortfalls plus manually entered needs.", annotations=READ_ONLY)
+        async def shortages_list(status: str | None = None) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder((await self.backend.list_shortages(self._domain_user()))["rows"])
+                if status:
+                    rows = [row for row in rows if row.get("status") == status]
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="shortages_list", parameters={"status": status}, required_scope="operations:read", action="read", operation=operation)
+
+        @mcp.tool(name="contacts_list", description="List customer/job-site contacts, optionally filtered by a search string.", annotations=READ_ONLY)
+        async def contacts_list(query: str = "") -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_contacts(self._domain_user()))
+                needle = query.strip().lower()
+                if needle:
+                    rows = [row for row in rows if needle in " ".join(str(row.get(k, "")) for k in ("company", "contact", "phone", "email", "business_address")).lower()]
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="contacts_list", parameters={"query": query}, required_scope="contacts:read", action="read", operation=operation)
+
+        @mcp.tool(name="vendors_list", description="List vendors/suppliers, optionally filtered by a search string.", annotations=READ_ONLY)
+        async def vendors_list(query: str = "") -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_vendors(self._domain_user()))
+                needle = query.strip().lower()
+                if needle:
+                    rows = [row for row in rows if needle in " ".join(str(row.get(k, "")) for k in ("name", "contact_name", "phone", "email", "notes")).lower() or needle in " ".join(row.get("categories") or []).lower()]
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="vendors_list", parameters={"query": query}, required_scope="vendors:read", action="read", operation=operation)
+
+        @mcp.tool(name="dashboard_items_list", description="List open dashboard items (deliveries, important notes, orders).", annotations=READ_ONLY)
+        async def dashboard_items_list() -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_dashboard_items(self._domain_user()))
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="dashboard_items_list", parameters={}, required_scope="operations:read", action="read", operation=operation)
+
+        @mcp.tool(name="equipment_create", description="Add a new tool/equipment record with initial stock. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def equipment_create(
+            name: str,
+            category: str,
+            quantity: int = 1,
+            location: str = "",
+            condition: str = "good",
+            qr_code: str | None = None,
+            model: str = "",
+            equipment_family: str = "",
+            serial_number: str = "",
+            sku: str = "",
+            daily_rate: float = 0.0,
+            available: int | None = None,
+            tracking_type: str = "bulk",
+            notes: str = "",
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "name": name, "category": category, "quantity": quantity, "location": location,
+                "condition": condition, "qr_code": qr_code, "model": model,
+                "equipment_family": equipment_family, "serial_number": serial_number, "sku": sku,
+                "daily_rate": daily_rate, "available": available, "tracking_type": tracking_type,
+                "notes": notes,
+            }
+            return await self.invoke(
+                tool="equipment_create", parameters=params,
+                required_scope="equipment:write", action="write",
+                operation=lambda _p, _k: self.backend.create_equipment(self.backend.EquipmentCreate(**params), self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Add {quantity} x {name} ({category}) to inventory.",
+            )
+
+        @mcp.tool(name="equipment_update", description="Update fields on an equipment record; omitted fields keep their current values. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def equipment_update(
+            equipment_id: str,
+            name: str | None = None,
+            category: str | None = None,
+            quantity: int | None = None,
+            available: int | None = None,
+            location: str | None = None,
+            condition: str | None = None,
+            qr_code: str | None = None,
+            model: str | None = None,
+            equipment_family: str | None = None,
+            serial_number: str | None = None,
+            sku: str | None = None,
+            daily_rate: float | None = None,
+            tracking_type: str | None = None,
+            notes: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            changes = {
+                "name": name, "category": category, "quantity": quantity, "available": available,
+                "location": location, "condition": condition, "qr_code": qr_code, "model": model,
+                "equipment_family": equipment_family, "serial_number": serial_number, "sku": sku,
+                "daily_rate": daily_rate, "tracking_type": tracking_type, "notes": notes,
+            }
+            changes = {k: v for k, v in changes.items() if v is not None}
+            params = {"equipment_id": equipment_id, **changes}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                existing = await self.db.equipment.find_one({"id": equipment_id}, {"_id": 0})
+                if not existing:
+                    raise ValueError("Equipment not found")
+                merged = {k: existing[k] for k in EQUIPMENT_EDITABLE_FIELDS if k in existing}
+                # update_equipment keeps the stored available count when None.
+                merged["available"] = None
+                merged.update(changes)
+                return await self.backend.update_equipment(
+                    equipment_id, self.backend.EquipmentCreate(**merged), self._domain_user()
+                )
+
+            return await self.invoke(
+                tool="equipment_update", parameters=params,
+                required_scope="equipment:write", action="write", operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Update {', '.join(sorted(changes)) or 'nothing'} on equipment {equipment_id}.",
+            )
+
+        @mcp.tool(name="equipment_delete", description="Delete an equipment record. Admin-only: requires an admin grant.", annotations=MUTATING)
+        async def equipment_delete(equipment_id: str, confirmation_token: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="equipment_delete", parameters={"equipment_id": equipment_id},
+                required_scope="equipment:write", action="write", admin_only=True,
+                operation=lambda _p, _k: self.backend.delete_equipment(equipment_id, self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Delete equipment {equipment_id}.",
+            )
+
+        @mcp.tool(name="sellable_item_create", description="Add a sellable stock item (kind: consumable or block). Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def sellable_item_create(
+            kind: str,
+            product: str,
+            quantity_on_hand: int = 0,
+            manufacturer: str = "",
+            sku: str = "",
+            unit: str = "",
+            core_size: str = "",
+            form_type: str = "",
+            reorder_point: int | None = None,
+            cost: float | None = None,
+            price: float | None = None,
+            notes: str = "",
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "kind": kind, "product": product, "quantity_on_hand": quantity_on_hand,
+                "manufacturer": manufacturer, "sku": sku, "unit": unit, "core_size": core_size,
+                "form_type": form_type, "reorder_point": reorder_point, "cost": cost,
+                "price": price, "notes": notes,
+            }
+            return await self.invoke(
+                tool="sellable_item_create", parameters=params,
+                required_scope="inventory:write", action="write",
+                operation=lambda _p, key: self.backend.create_sellable_item(self.backend.SellableItemCreate(**params), self._domain_user(), key),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Add {quantity_on_hand} x {product} ({kind}) to sellable stock.",
+            )
+
+        @mcp.tool(name="sellable_item_update", description="Update fields on a sellable stock item; omitted fields are unchanged. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def sellable_item_update(
+            item_id: str,
+            product: str | None = None,
+            quantity_on_hand: int | None = None,
+            quantity_reserved: int | None = None,
+            manufacturer: str | None = None,
+            sku: str | None = None,
+            unit: str | None = None,
+            core_size: str | None = None,
+            form_type: str | None = None,
+            reorder_point: int | None = None,
+            cost: float | None = None,
+            price: float | None = None,
+            notes: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            changes = {
+                "product": product, "quantity_on_hand": quantity_on_hand,
+                "quantity_reserved": quantity_reserved, "manufacturer": manufacturer, "sku": sku,
+                "unit": unit, "core_size": core_size, "form_type": form_type,
+                "reorder_point": reorder_point, "cost": cost, "price": price, "notes": notes,
+            }
+            changes = {k: v for k, v in changes.items() if v is not None}
+            return await self.invoke(
+                tool="sellable_item_update", parameters={"item_id": item_id, **changes},
+                required_scope="inventory:write", action="write",
+                operation=lambda _p, key: self.backend.update_sellable_item(item_id, self.backend.SellableItemUpdate(**changes), self._domain_user(), key),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Update {', '.join(sorted(changes)) or 'nothing'} on sellable item {item_id}.",
+            )
+
+        @mcp.tool(name="sellable_item_delete", description="Delete a sellable stock item. Admin-only: requires an admin grant.", annotations=MUTATING)
+        async def sellable_item_delete(item_id: str, confirmation_token: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="sellable_item_delete", parameters={"item_id": item_id},
+                required_scope="inventory:write", action="write", admin_only=True,
+                operation=lambda _p, _k: self.backend.delete_sellable_item(item_id, self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Delete sellable item {item_id}.",
+            )
+
+        @mcp.tool(name="shortage_create", description="Record a manual shortage (something the operation needs more of). Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def shortage_create(
+            item_name: str,
+            qty_needed: int,
+            notes: str = "",
+            priority: str | None = None,
+            equipment_id: str | None = None,
+            context_type: str | None = None,
+            context_id: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "item_name": item_name, "qty_needed": qty_needed, "notes": notes,
+                "priority": priority, "equipment_id": equipment_id,
+                "context_type": context_type, "context_id": context_id,
+            }
+            return await self.invoke(
+                tool="shortage_create", parameters=params,
+                required_scope="operations:write", action="write",
+                operation=lambda _p, key: self.backend.create_shortage(self.backend.ShortageCreate(**params), self._domain_user(), key),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Record a shortage: need {qty_needed} x {item_name}.",
+            )
+
+        @mcp.tool(name="shortage_set_status", description="Set a manual shortage status (open, ordered, resolved). Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def shortage_set_status(shortage_id: str, status: str, confirmation_token: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="shortage_set_status", parameters={"shortage_id": shortage_id, "status": status},
+                required_scope="operations:write", action="write",
+                operation=lambda _p, key: self.backend.update_shortage_status(shortage_id, self.backend.ShortageStatusUpdate(status=status), self._domain_user(), key),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Set shortage {shortage_id} to {status}.",
+            )
+
+        @mcp.tool(name="contact_create", description="Create a customer/job-site contact. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def contact_create(
+            company: str,
+            contact: str = "",
+            phone: str = "",
+            email: str = "",
+            business_address: str = "",
+            is_homeowner: bool = False,
+            follows_current_job: bool = False,
+            notes: str = "",
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "company": company, "contact": contact, "phone": phone, "email": email,
+                "business_address": business_address, "is_homeowner": is_homeowner,
+                "follows_current_job": follows_current_job, "notes": notes,
+            }
+            return await self.invoke(
+                tool="contact_create", parameters=params,
+                required_scope="contacts:write", action="write",
+                operation=lambda _p, _k: self.backend.create_contact(self.backend.ContactCreate(**params), self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Create contact {company}.",
+            )
+
+        @mcp.tool(name="contact_update", description="Update fields on a contact; omitted fields keep their current values. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def contact_update(
+            contact_id: str,
+            company: str | None = None,
+            contact: str | None = None,
+            phone: str | None = None,
+            email: str | None = None,
+            business_address: str | None = None,
+            is_homeowner: bool | None = None,
+            follows_current_job: bool | None = None,
+            notes: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            changes = {
+                "company": company, "contact": contact, "phone": phone, "email": email,
+                "business_address": business_address, "is_homeowner": is_homeowner,
+                "follows_current_job": follows_current_job, "notes": notes,
+            }
+            changes = {k: v for k, v in changes.items() if v is not None}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                existing = await self.db.vendors.find_one({"id": contact_id}, {"_id": 0})
+                if not existing:
+                    raise ValueError("Contact not found")
+                merged = {
+                    "company": existing.get("company") or existing.get("name") or "",
+                    "contact": existing.get("contact") or existing.get("contact_name") or "",
+                    "phone": existing.get("phone", ""),
+                    "email": existing.get("email", ""),
+                    "business_address": existing.get("business_address") or existing.get("address") or "",
+                    "is_homeowner": bool(existing.get("is_homeowner", False)),
+                    "follows_current_job": bool(existing.get("follows_current_job", False)),
+                    "notes": existing.get("notes", ""),
+                    **changes,
+                }
+                # preferred_equipment is omitted so update_contact preserves it.
+                return await self.backend.update_contact(contact_id, self.backend.ContactCreate(**merged), self._domain_user())
+
+            return await self.invoke(
+                tool="contact_update", parameters={"contact_id": contact_id, **changes},
+                required_scope="contacts:write", action="write", operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Update {', '.join(sorted(changes)) or 'nothing'} on contact {contact_id}.",
+            )
+
+        @mcp.tool(name="vendor_create", description="Create a vendor/supplier. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def vendor_create(
+            name: str,
+            contact_name: str = "",
+            phone: str = "",
+            email: str = "",
+            address: str = "",
+            categories: list[str] | None = None,
+            freight_terms: str = "",
+            truck_capacity: str = "",
+            lead_time_days: int = 0,
+            notes: str = "",
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "name": name, "contact_name": contact_name, "phone": phone, "email": email,
+                "address": address, "categories": categories or [], "freight_terms": freight_terms,
+                "truck_capacity": truck_capacity, "lead_time_days": lead_time_days, "notes": notes,
+            }
+            return await self.invoke(
+                tool="vendor_create", parameters=params,
+                required_scope="vendors:write", action="write",
+                operation=lambda _p, _k: self.backend.create_vendor(self.backend.VendorCreate(**params), self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Create vendor {name}.",
+            )
+
+        @mcp.tool(name="vendor_update", description="Update fields on a vendor; omitted fields keep their current values. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def vendor_update(
+            vendor_id: str,
+            name: str | None = None,
+            contact_name: str | None = None,
+            phone: str | None = None,
+            email: str | None = None,
+            address: str | None = None,
+            categories: list[str] | None = None,
+            freight_terms: str | None = None,
+            truck_capacity: str | None = None,
+            lead_time_days: int | None = None,
+            notes: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            changes = {
+                "name": name, "contact_name": contact_name, "phone": phone, "email": email,
+                "address": address, "categories": categories, "freight_terms": freight_terms,
+                "truck_capacity": truck_capacity, "lead_time_days": lead_time_days, "notes": notes,
+            }
+            changes = {k: v for k, v in changes.items() if v is not None}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                existing = await self.db.vendors.find_one({"id": vendor_id}, {"_id": 0})
+                if not existing:
+                    raise ValueError("Vendor not found")
+                fields = ("name", "contact_name", "phone", "email", "address", "categories", "freight_terms", "truck_capacity", "lead_time_days", "notes")
+                merged = {k: existing[k] for k in fields if k in existing}
+                merged.update(changes)
+                # preferred_equipment is omitted so update_vendor preserves it.
+                return await self.backend.update_vendor(vendor_id, self.backend.VendorCreate(**merged), self._domain_user())
+
+            return await self.invoke(
+                tool="vendor_update", parameters={"vendor_id": vendor_id, **changes},
+                required_scope="vendors:write", action="write", operation=operation,
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Update {', '.join(sorted(changes)) or 'nothing'} on vendor {vendor_id}.",
+            )
+
+        @mcp.tool(name="vendor_delete", description="Delete a vendor. Admin-only: requires an admin grant.", annotations=MUTATING)
+        async def vendor_delete(vendor_id: str, confirmation_token: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="vendor_delete", parameters={"vendor_id": vendor_id},
+                required_scope="vendors:write", action="write", admin_only=True,
+                operation=lambda _p, _k: self.backend.delete_vendor(vendor_id, self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Delete vendor {vendor_id}.",
+            )
+
+        @mcp.tool(name="dashboard_item_create", description="Post a dashboard item (kind: delivery, important, order, note). Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def dashboard_item_create(
+            title: str,
+            kind: str = "important",
+            details: str = "",
+            due_date: datetime | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {"title": title, "kind": kind, "details": details, "due_date": due_date}
+            return await self.invoke(
+                tool="dashboard_item_create", parameters=params,
+                required_scope="operations:write", action="write",
+                operation=lambda _p, _k: self.backend.create_dashboard_item(self.backend.DashboardItemCreate(**params), self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Post {kind} dashboard item: {title}",
+            )
+
+        @mcp.tool(name="dashboard_item_set_status", description="Mark a dashboard item open or done. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def dashboard_item_set_status(item_id: str, status: str, confirmation_token: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="dashboard_item_set_status", parameters={"item_id": item_id, "status": status},
+                required_scope="operations:write", action="write",
+                operation=lambda _p, _k: self.backend.update_dashboard_item_status(item_id, self.backend.DashboardItemStatusUpdate(status=status), self._domain_user()),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Set dashboard item {item_id} to {status}.",
             )
 
 

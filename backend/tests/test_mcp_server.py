@@ -1,5 +1,5 @@
 import copy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -9,12 +9,15 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pymongo.errors import DuplicateKeyError
 
 from backend.mcp_server import (
+    ADMIN_GRANT_PREFIX,
     AgentPrincipal,
     DEFAULT_HERMES_SCOPES,
     HERMES_AGENT_ID,
     MongoHermesTokenVerifier,
     configured_token_digest,
     create_mobileops_mcp,
+    issue_admin_grant,
+    redact_admin_grants,
     seed_hermes_agent,
     token_digest,
 )
@@ -87,6 +90,10 @@ class FakeDB:
         self.mcp_agents = FakeCollection(unique_key="id")
         self.mcp_audit_log = FakeCollection(unique_key="id")
         self.mcp_confirmations = FakeCollection(unique_key="jti")
+        self.mcp_admin_grants = FakeCollection(unique_key="token_hash")
+        self.users = FakeCollection(unique_key="id")
+        self.equipment = FakeCollection(unique_key="id")
+        self.vendors = FakeCollection(unique_key="id")
 
 
 class Payload:
@@ -99,8 +106,19 @@ class Payload:
 
 class FakeBackend:
     JWT_SECRET = "unit-test-confirmation-secret"
-    Role = SimpleNamespace(foreman="foreman")
+    Role = SimpleNamespace(foreman="foreman", admin="admin")
     UserPublic = Payload
+    EquipmentCreate = Payload
+    SellableItemCreate = Payload
+    SellableItemUpdate = Payload
+    ShortageCreate = Payload
+    ShortageStatusUpdate = Payload
+    ContactCreate = Payload
+    VendorCreate = Payload
+    DashboardItemCreate = Payload
+    DashboardItemStatusUpdate = Payload
+    BracingRequest = Payload
+    WallRun = Payload
     ToolCheckoutBody = Payload
     ToolCheckinBody = Payload
     RentalCreate = Payload
@@ -120,6 +138,8 @@ class FakeBackend:
         self.db = FakeDB()
         self.list_equipment_calls = 0
         self.checkout_calls = []
+        self.vendor_calls = []
+        self.equipment_updates = []
 
     async def list_equipment(self, user):
         self.list_equipment_calls += 1
@@ -199,9 +219,176 @@ async def test_registry_covers_requested_domains_and_marks_mutations_destructive
         "get_repair_pipeline",
         "get_inventory_conflicts",
         "get_outbound_risk",
+        "bracing_calculate",
+        "sellable_items_list",
+        "shortages_list",
+        "contacts_list",
+        "vendors_list",
+        "dashboard_items_list",
+        "equipment_create",
+        "equipment_update",
+        "equipment_delete",
+        "sellable_item_create",
+        "sellable_item_update",
+        "sellable_item_delete",
+        "shortage_create",
+        "shortage_set_status",
+        "contact_create",
+        "contact_update",
+        "vendor_create",
+        "vendor_update",
+        "vendor_delete",
+        "dashboard_item_create",
+        "dashboard_item_set_status",
     }.issubset(tools)
     assert tools["inventory_search"].annotations.readOnlyHint is True
     assert tools["equipment_checkout"].annotations.destructiveHint is True
+    assert tools["vendors_list"].annotations.readOnlyHint is True
+    assert tools["vendor_delete"].annotations.destructiveHint is True
+
+
+async def _grant(backend, *, role="admin", expires_in=timedelta(minutes=15)):
+    backend.db.users.docs.append({"id": "admin-1", "name": "Rusty", "role": role})
+    raw = await issue_admin_grant(
+        backend.db, admin_id="admin-1", admin_name="Rusty", source_message_id="msg-1"
+    )
+    backend.db.mcp_admin_grants.docs[-1]["expires_at"] = (
+        datetime.now(timezone.utc) + expires_in
+    ).replace(tzinfo=None)  # Motor hands back naive UTC datetimes.
+    return raw
+
+
+@pytest.mark.anyio
+async def test_admin_grant_executes_write_directly_as_admin_and_audits_approver():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+    grant = await _grant(backend)
+    assert grant.startswith(ADMIN_GRANT_PREFIX)
+    assert grant not in repr(backend.db.mcp_admin_grants.docs)
+
+    result = await integration.mcp._tool_manager.call_tool(
+        "vendor_create", {"name": "Acme Bracing", "confirmation_token": grant}
+    )
+
+    assert result["ok"] is True
+    user = backend.vendor_calls[0]["user"]
+    assert user.role == "admin"
+    assert user.name == "Nathan (for Rusty)"
+    audit = backend.db.mcp_audit_log.docs[0]
+    assert audit["status"] == "succeeded"
+    assert audit["parameters"]["confirmation_token"] == "<redacted>"
+    assert audit["authorized_by"]["admin_id"] == "admin-1"
+    assert audit["authorized_by"]["source_message_id"] == "msg-1"
+    # The grant stays usable for follow-up calls in the same request window.
+    again = await integration.mcp._tool_manager.call_tool(
+        "vendor_create", {"name": "Second Vendor", "confirmation_token": grant}
+    )
+    assert again["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_admin_grant_derives_idempotency_key_and_role_does_not_leak():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+    grant = await _grant(backend)
+    await integration.mcp._tool_manager.call_tool(
+        "equipment_checkout",
+        {"equipment_id": "eq-1", "checked_out_to": "Job A", "qty": 1, "confirmation_token": grant},
+    )
+    first_key = backend.checkout_calls[0]["idempotency_key"]
+    await integration.mcp._tool_manager.call_tool(
+        "equipment_checkout",
+        {"equipment_id": "eq-1", "checked_out_to": "Job A", "qty": 1, "confirmation_token": grant},
+    )
+    assert first_key and backend.checkout_calls[1]["idempotency_key"] == first_key
+    assert integration._domain_user().role == "foreman"
+
+
+@pytest.mark.anyio
+async def test_expired_admin_grant_is_refused():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+    grant = await _grant(backend, expires_in=timedelta(seconds=-1))
+
+    with pytest.raises(ToolError, match="Invalid or expired admin grant"):
+        await integration.mcp._tool_manager.call_tool(
+            "vendor_create", {"name": "Acme", "confirmation_token": grant}
+        )
+    assert backend.vendor_calls == []
+    assert backend.db.mcp_audit_log.docs[0]["status"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_forged_or_demoted_admin_grant_is_refused():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+    with pytest.raises(ToolError, match="Invalid or expired admin grant"):
+        await integration.mcp._tool_manager.call_tool(
+            "vendor_create", {"name": "Acme", "confirmation_token": "admin-grant:forged"}
+        )
+    grant = await _grant(backend, role="foreman")
+    with pytest.raises(ToolError, match="no longer backed"):
+        await integration.mcp._tool_manager.call_tool(
+            "vendor_create", {"name": "Acme", "confirmation_token": grant}
+        )
+    assert backend.vendor_calls == []
+
+
+@pytest.mark.anyio
+async def test_admin_only_tool_refuses_without_grant_even_with_confirmation():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+
+    with pytest.raises(ToolError, match="admin-only"):
+        await integration.mcp._tool_manager.call_tool("vendor_delete", {"vendor_id": "v-1"})
+    token = integration._issue_confirmation("vendor_delete", {"vendor_id": "v-1"}, HERMES_AGENT_ID)
+    with pytest.raises(ToolError, match="admin-only"):
+        await integration.mcp._tool_manager.call_tool(
+            "vendor_delete", {"vendor_id": "v-1", "confirmation_token": token}
+        )
+    assert backend.vendor_calls == []
+
+    grant = await _grant(backend)
+    result = await integration.mcp._tool_manager.call_tool(
+        "vendor_delete", {"vendor_id": "v-1", "confirmation_token": grant}
+    )
+    assert result["ok"] is True
+    assert backend.vendor_calls[0]["deleted"] == "v-1"
+
+
+@pytest.mark.anyio
+async def test_new_write_without_grant_still_requires_confirmation():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+
+    preview = await integration.mcp._tool_manager.call_tool("vendor_create", {"name": "Acme"})
+
+    assert preview["confirmation_required"] is True
+    assert backend.vendor_calls == []
+
+
+@pytest.mark.anyio
+async def test_equipment_update_merges_partial_changes_onto_stored_record():
+    backend = FakeBackend()
+    integration = make_integration(backend)
+    backend.db.equipment.docs.append(
+        {"id": "eq-1", "sku": "HAM-1", "name": "Claw Hammer", "category": "tool",
+         "location": "Yard", "quantity": 4, "available": 3, "notes": "old"}
+    )
+    grant = await _grant(backend)
+
+    await integration.mcp._tool_manager.call_tool(
+        "equipment_update", {"equipment_id": "eq-1", "quantity": 6, "confirmation_token": grant}
+    )
+
+    body = backend.equipment_updates[0]["body"]
+    assert body["quantity"] == 6
+    assert body["name"] == "Claw Hammer" and body["location"] == "Yard" and body["notes"] == "old"
+    assert body["available"] is None  # handler keeps the stored count
+
+
+def test_redact_admin_grants_scrubs_tokens_from_text():
+    assert redact_admin_grants("use admin-grant:Ab_c-12 now") == "use [redacted] now"
 
 
 @pytest.mark.anyio
