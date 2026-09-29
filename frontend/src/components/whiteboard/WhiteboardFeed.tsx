@@ -223,7 +223,7 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
           <Ionicons name="chatbubbles-outline" size={16} color={colors.primary} />
           <Text style={styles.title}>LIVE FEED</Text>
           <View style={[styles.liveDot, liveState === "live" && styles.liveDotOn, liveState === "error" && styles.liveDotError]} />
-          {!compact ? <Text style={styles.liveLabel}>{liveLabel}</Text> : null}
+          <Text style={styles.liveLabel}>{liveLabel}</Text>
           {board.unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{board.unread}</Text></View> : null}
         </View>
         {compact ? (

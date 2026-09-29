@@ -221,34 +221,38 @@ export default function Dashboard() {
         <KpiTile label="Needs attention" value={String(attention.length)} meta={`${stats.pending_requests ?? 0} requests · ${stats.shortage_count} shortages`} icon="warning-outline" tone="danger" onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-needs-attention" />
       </KpiStrip>
 
-      <View style={[styles.attentionRow, !isShellWide && styles.stackGrid]}>
-        <NeedsAttention
-          items={attention.slice(0, 3)}
-          total={attention.length}
-          onViewAll={() => router.push("/(app)/operations/capacity" as any)}
-          onPressItem={openAttention}
-        />
-        <Upcoming
-          dispatches={upcomingDispatches}
-          rentals={activeRentals}
-          bookings={upcomingBookings}
-          shopTasks={openShopTasks}
-          manualItems={manualNextItems}
-          canEdit={canEdit}
-          compact={!isShellWide}
-          limit={3}
-          onPressDispatch={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
-          onPressRental={(item) => router.push(`/(app)/operations/rentals?open=${item.id}` as any)}
-          onPressBooking={(item) => router.push(`/(app)/operations/bookings?open=${item.id}` as any)}
-          onPressTask={(item) => router.push(`/(app)/shop/tasks?open=${item.id}` as any)}
-          onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
-          onCreateManual={createManualNextItem}
-          onCompleteManual={completeManualNextItem}
-        />
+      <View style={[styles.priorityRow, !isShellWide && styles.stackGrid]}>
+        <View style={[styles.feedCell, !isShellWide && styles.feedCellMobile]}><WhiteboardFeed compact /></View>
+        <View style={[styles.attentionCell, !isShellWide && styles.attentionCellMobile]}>
+          <NeedsAttention
+            items={attention.slice(0, 3)}
+            total={attention.length}
+            onViewAll={() => router.push("/(app)/operations/capacity" as any)}
+            onPressItem={openAttention}
+          />
+        </View>
       </View>
 
       <View style={[styles.operationsRow, !isShellWide && styles.stackGrid]}>
-        <View style={[styles.feedCell, !isShellWide && styles.feedCellMobile]}><WhiteboardFeed compact /></View>
+        <View style={[styles.upcomingCell, !isShellWide && styles.upcomingCellMobile]}>
+          <Upcoming
+            dispatches={upcomingDispatches}
+            rentals={activeRentals}
+            bookings={upcomingBookings}
+            shopTasks={openShopTasks}
+            manualItems={manualNextItems}
+            canEdit={canEdit}
+            compact={!isShellWide}
+            limit={3}
+            onPressDispatch={(item) => router.push(`/(app)/operations/dispatch?open=${item.id}` as any)}
+            onPressRental={(item) => router.push(`/(app)/operations/rentals?open=${item.id}` as any)}
+            onPressBooking={(item) => router.push(`/(app)/operations/bookings?open=${item.id}` as any)}
+            onPressTask={(item) => router.push(`/(app)/shop/tasks?open=${item.id}` as any)}
+            onViewAll={() => router.push("/(app)/operations/dispatch" as any)}
+            onCreateManual={createManualNextItem}
+            onCompleteManual={completeManualNextItem}
+          />
+        </View>
         <View style={[styles.boardCell, !isShellWide && styles.boardCellMobile]}>
           <RentalsBoard
             rentals={rentals} dispatches={dispatches} compact={!isShellWide} limit={5}
@@ -332,12 +336,16 @@ const styles = StyleSheet.create({
   dateBlock: { flexDirection: "row", alignItems: "center", gap: 12 },
   dateText: { fontSize: 11.5, color: colors.inkSecondary, fontWeight: "600" },
   dateDivider: { width: 1, height: 18, backgroundColor: colors.border },
-  attentionRow: { flexDirection: "row", gap: 10, alignItems: "stretch", height: 182, marginBottom: 10 },
+  priorityRow: { flexDirection: "row", gap: 10, alignItems: "stretch", height: 320, marginBottom: 10 },
   operationsRow: { flexDirection: "row", gap: 10, height: 320, marginBottom: 10 },
   feedCell: { flex: 0.92, minWidth: 0 },
-  feedCellMobile: { flex: 0, height: 420 },
+  feedCellMobile: { flexGrow: 0, flexShrink: 0, flexBasis: 380, height: 380 },
+  attentionCell: { flex: 1.08, minWidth: 0 },
+  attentionCellMobile: { flexGrow: 0, flexShrink: 0, flexBasis: 182, height: 182 },
+  upcomingCell: { flex: 0.92, minWidth: 0 },
+  upcomingCellMobile: { flexGrow: 0, flexShrink: 0, flexBasis: 220, height: 220 },
   boardCell: { flex: 1.08, minWidth: 0 },
-  boardCellMobile: { flex: 0, height: 360 },
+  boardCellMobile: { flexGrow: 0, flexShrink: 0, flexBasis: 360, height: 360 },
   lowerRow: { flexDirection: "row", gap: 10, height: 236, marginBottom: 10 },
   requestsCell: { flex: 1.15, minWidth: 0 },
   requestsCellMobile: { flex: 0, height: 300 },
