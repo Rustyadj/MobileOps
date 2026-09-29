@@ -35,6 +35,7 @@ from whiteboard_service import (
     HermesNathanGateway, build_nathan_prompt, build_rental_review_prompt,
     deterministic_review_state, mentioned_handles, normalize_handle, parse_rental_review,
 )
+from request_parser import match_equipment, parse_supply_requests
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
@@ -1238,6 +1239,54 @@ class Shortage(BaseModel):
 
 class ShortageStatusUpdate(BaseModel):
     status: str
+
+
+# Supply requests: "Nick needs 6 more turnbuckles" — asks from the field that
+# wait for an admin's yes/no. Rows are created manually or detected
+# automatically from Live Feed posts (see request_parser.py and
+# create_whiteboard_message). pending -> approved|denied, approved -> fulfilled.
+SUPPLY_REQUEST_STATUSES = ["pending", "approved", "denied", "fulfilled"]
+SUPPLY_REQUEST_TRANSITIONS = {
+    "pending": {"approved", "denied"},
+    "approved": {"fulfilled", "denied"},
+    "denied": {"pending"},
+    "fulfilled": set(),
+}
+
+
+class SupplyRequestCreate(BaseModel):
+    item_name: str = Field(min_length=1, max_length=200)
+    qty: int = Field(default=1, gt=0, le=10000)
+    notes: str = Field(default="", max_length=2000)
+    job_site: str = Field(default="", max_length=200)
+    equipment_id: Optional[str] = None
+
+
+class SupplyRequest(BaseModel):
+    id: str = Field(default_factory=gen_id)
+    item_name: str
+    qty: int
+    notes: str = ""
+    job_site: str = ""
+    equipment_id: Optional[str] = None
+    equipment_name: Optional[str] = None
+    status: str = "pending"
+    source: str = "manual"  # manual | live_feed | nathan
+    source_message_id: Optional[str] = None
+    source_text: str = ""
+    requested_by: str = ""
+    requested_by_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=now_utc)
+    decided_by: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    decision_note: str = ""
+    fulfilled_by: Optional[str] = None
+    fulfilled_at: Optional[datetime] = None
+
+
+class SupplyRequestStatusUpdate(BaseModel):
+    status: str
+    note: str = Field(default="", max_length=1000)
 
 
 class WhiteboardMessageCreate(BaseModel):
@@ -3920,6 +3969,111 @@ async def update_shortage_status(
     return await idempotent(idempotency_key, "update_shortage_status", _run)
 
 
+# ----------------------------- Supply requests ----------------------------
+async def _supply_request_catalog() -> list[dict]:
+    return await db.equipment.find({}, {"_id": 0, "id": 1, "name": 1, "sku": 1, "category": 1}).to_list(5000)
+
+
+async def _insert_supply_request(request: SupplyRequest) -> SupplyRequest:
+    await db.supply_requests.insert_one(request.model_dump())
+    await whiteboard_hub.broadcast({"type": "supply_request.created", "request": jsonable_encoder(request)})
+    return request
+
+
+async def record_supply_requests_from_message(doc: dict, user: UserPublic) -> list[str]:
+    """Queue every explicit supply ask in a Live Feed post for approval.
+    Never raises — a parsing/catalog hiccup must not fail the post itself."""
+    try:
+        parsed = parse_supply_requests(doc.get("body", ""))
+        if not parsed:
+            return []
+        catalog = await _supply_request_catalog()
+        ids: list[str] = []
+        for row in parsed:
+            match = match_equipment(row.item_name, catalog)
+            request = SupplyRequest(
+                item_name=row.item_name, qty=row.qty,
+                equipment_id=match["id"] if match else None,
+                equipment_name=match.get("name") if match else None,
+                source="live_feed", source_message_id=doc["id"], source_text=doc.get("body", "")[:500],
+                requested_by=user.name, requested_by_id=user.id,
+            )
+            await _insert_supply_request(request)
+            ids.append(request.id)
+        return ids
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Supply request detection failed: %s", type(exc).__name__)
+        return []
+
+
+@api.get("/supply-requests", response_model=List[SupplyRequest])
+async def list_supply_requests(status: Optional[str] = None, limit: int = 200, _: UserPublic = Depends(get_current_user)):
+    query: dict[str, Any] = {}
+    if status:
+        query["status"] = {"$in": [item for item in status.split(",") if item]}
+    docs = await db.supply_requests.find(query, {"_id": 0}).sort("created_at", -1).limit(min(max(limit, 1), 500)).to_list(500)
+    return [SupplyRequest(**doc) for doc in docs]
+
+
+@api.post("/supply-requests", response_model=SupplyRequest, status_code=201)
+async def create_supply_request(
+    body: SupplyRequestCreate, user: UserPublic = Depends(get_current_user),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        equipment_name = None
+        if body.equipment_id:
+            eq = await db.equipment.find_one({"id": body.equipment_id}, {"_id": 0, "name": 1})
+            if not eq:
+                raise HTTPException(404, "Equipment not found")
+            equipment_name = eq.get("name")
+        else:
+            match = match_equipment(body.item_name, await _supply_request_catalog())
+            if match:
+                body.equipment_id, equipment_name = match["id"], match.get("name")
+        request = SupplyRequest(
+            **body.model_dump(), equipment_name=equipment_name,
+            source="manual", requested_by=user.name, requested_by_id=user.id,
+        )
+        return await _insert_supply_request(request)
+
+    return await idempotent(idempotency_key, "create_supply_request", _run)
+
+
+@api.patch("/supply-requests/{request_id}/status", response_model=SupplyRequest)
+async def update_supply_request_status(
+    request_id: str, body: SupplyRequestStatusUpdate, user: UserPublic = Depends(get_current_user),
+    idempotency_key: Optional[str] = Depends(idem_key),
+):
+    async def _run():
+        doc = await db.supply_requests.find_one({"id": request_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Request not found")
+        if body.status not in SUPPLY_REQUEST_STATUSES:
+            raise HTTPException(400, f"status must be one of {SUPPLY_REQUEST_STATUSES}")
+        current = doc.get("status", "pending")
+        if body.status not in SUPPLY_REQUEST_TRANSITIONS.get(current, set()):
+            raise HTTPException(409, f"Can't move a {current} request to {body.status}")
+        # Approve/deny is an admin decision; marking an approved request
+        # fulfilled (it showed up on site) is fine for a foreman too.
+        needed = Role.foreman if body.status == "fulfilled" else Role.admin
+        if ROLE_ORDER[user.role] < ROLE_ORDER[needed]:
+            raise HTTPException(403, "Insufficient privileges")
+        update: dict[str, Any] = {"status": body.status}
+        if body.status in ("approved", "denied", "pending"):
+            update.update({"decided_by": user.name if body.status != "pending" else None,
+                           "decided_at": now_utc() if body.status != "pending" else None,
+                           "decision_note": body.note.strip()})
+        if body.status == "fulfilled":
+            update.update({"fulfilled_by": user.name, "fulfilled_at": now_utc()})
+        await db.supply_requests.update_one({"id": request_id}, {"$set": update})
+        updated = SupplyRequest(**{**doc, **update})
+        await whiteboard_hub.broadcast({"type": "supply_request.updated", "request": jsonable_encoder(updated)})
+        return updated
+
+    return await idempotent(idempotency_key, "update_supply_request_status", _run)
+
+
 # ----------------------------- Jobs (composition seam, read-only) ----------
 # Phase 1 of the Bookings/Rentals unification: a read-only endpoint that
 # composes the Job DTO (defined above, near derive_job_status) from the
@@ -4682,9 +4836,9 @@ async def update_dashboard_item_status(
 
 
 # ----------------------------- Whiteboard --------------------------------
-# User-facing name is "Dispatch" (MobileOps' internal comms tool, distinct
+# User-facing name is "Live Feed" (MobileOps' internal comms tool, distinct
 # from the Dispatch/dispatches movement model above). Collection, route, and
-# identifier names below stay "whiteboard_*" — only the frontend label changed.
+# identifier names below stay "whiteboard_*".
 WHITEBOARD_EDIT_WINDOW = timedelta(minutes=15)
 WHITEBOARD_ATTACHMENT_LIMIT = 8 * 1024 * 1024
 WHITEBOARD_NATHAN = {
@@ -4885,6 +5039,10 @@ async def create_whiteboard_message(body: WhiteboardMessageCreate, user: UserPub
         "context_type": body.context_type, "context_id": body.context_id,
     }
     await db.whiteboard_messages.insert_one(doc)
+    supply_request_ids = await record_supply_requests_from_message(doc, user)
+    if supply_request_ids:
+        doc["supply_request_ids"] = supply_request_ids
+        await db.whiteboard_messages.update_one({"id": doc["id"]}, {"$set": {"supply_request_ids": supply_request_ids}})
     if mentions:
         await db.whiteboard_mentions.insert_many([{
             "id": gen_id(), "message_id": doc["id"], "thread_id": doc["thread_id"],
@@ -5018,7 +5176,11 @@ async def mark_whiteboard_read(body: WhiteboardReadUpdate, user: UserPublic = De
 @api.get("/whiteboard/unread")
 async def whiteboard_unread(thread_id: str = "dashboard", user: UserPublic = Depends(get_current_user)):
     state = await db.whiteboard_read_states.find_one({"user_id": user.id, "thread_id": thread_id})
-    query: dict[str, Any] = {"thread_id": thread_id, "author_id": {"$ne": user.id}}
+    query: dict[str, Any] = {
+        "thread_id": thread_id,
+        "author_id": {"$ne": user.id},
+        "is_deleted": {"$ne": True},
+    }
     if state and state.get("last_read_at"):
         query["created_at"] = {"$gt": state["last_read_at"]}
     return {"count": await db.whiteboard_messages.count_documents(query)}
@@ -5082,6 +5244,7 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
     shortages_today = await dashboard_shortages(days=1, _=_)
     open_manual_shortages = await db.shortages.count_documents({"status": {"$ne": "resolved"}})
     shortage_count = len(shortages_today["rows"]) + open_manual_shortages
+    pending_requests = await db.supply_requests.count_documents({"status": "pending"})
 
     # recent activity (last 8 rentals + maintenance + shop tasks)
     recent_r = await db.rentals.find({}, {"_id": 0}).sort("created_at", -1).to_list(5)
@@ -5110,6 +5273,7 @@ async def dashboard_stats(_: UserPublic = Depends(get_current_user)):
         "open_maintenance": open_maintenance,
         "open_shop_tasks": open_shop_tasks,
         "shortage_count": shortage_count,
+        "pending_requests": pending_requests,
         "contacts_count": contacts_count,
         "vendors_count": contacts_count,  # legacy dashboard clients
         "activity": activity[:8],
@@ -5467,6 +5631,8 @@ async def on_startup():
     await db.whiteboard_audit.create_index([("message_id", 1), ("timestamp", -1)])
     await db.shortages.create_index("id", unique=True)
     await db.shortages.create_index([("status", 1), ("created_at", -1)])
+    await db.supply_requests.create_index("id", unique=True)
+    await db.supply_requests.create_index([("status", 1), ("created_at", -1)])
     await db.sellable_items.create_index("id", unique=True)
     await db.sellable_items.create_index([("kind", 1), ("product", 1)])
     # Phase 0 (Jobs composition seam): indexes the future /jobs endpoint's

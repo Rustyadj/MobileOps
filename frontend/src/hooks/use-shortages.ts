@@ -72,10 +72,14 @@ export function useShortages() {
   }, [load]);
 
   useRealtimeChannel(useCallback((event: any) => {
+    if (event.type === "ready") {
+      load();
+      return;
+    }
     if ((event.type === "shortage.created" || event.type === "shortage.updated") && event.shortage) {
       upsertManual({ ...event.shortage, source: "manual" });
     }
-  }, [upsertManual]));
+  }, [load, upsertManual]));
 
   const create = useCallback(async (input: ShortageInput) => {
     const created = await api<ShortageRow>("/shortages", {

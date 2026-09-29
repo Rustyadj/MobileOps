@@ -32,6 +32,8 @@ export type WhiteboardMessage = {
   mentions: WhiteboardMention[];
   attachments: WhiteboardAttachment[];
   reply_count: number;
+  /** Supply requests auto-queued for approval from this post's text. */
+  supply_request_ids?: string[];
 };
 
 export type Mentionable = {

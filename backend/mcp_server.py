@@ -1863,6 +1863,13 @@ class MobileOpsMCP:
                 return {"items": rows, "count": len(rows)}
             return await self.invoke(tool="shortages_list", parameters={"status": status}, required_scope="operations:read", action="read", operation=operation)
 
+        @mcp.tool(name="supply_requests_list", description="List crew supply requests awaiting or past admin approval (pending, approved, denied, fulfilled).", annotations=READ_ONLY)
+        async def supply_requests_list(status: str | None = None) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                rows = jsonable_encoder(await self.backend.list_supply_requests(status, 200, self._domain_user()))
+                return {"items": rows, "count": len(rows)}
+            return await self.invoke(tool="supply_requests_list", parameters={"status": status}, required_scope="operations:read", action="read", operation=operation)
+
         @mcp.tool(name="contacts_list", description="List customer/job-site contacts, optionally filtered by a search string.", annotations=READ_ONLY)
         async def contacts_list(query: str = "") -> dict[str, Any]:
             async def operation(_: AgentPrincipal, __: str | None) -> Any:
@@ -2084,6 +2091,24 @@ class MobileOpsMCP:
                 operation=lambda _p, key: self.backend.update_shortage_status(shortage_id, self.backend.ShortageStatusUpdate(status=status), self._domain_user(), key),
                 confirmation_token=confirmation_token,
                 confirmation_summary=f"Set shortage {shortage_id} to {status}.",
+            )
+
+        @mcp.tool(name="supply_request_create", description="Queue a crew supply request (e.g. 'Nick needs 6 more turnbuckles') for admin approval. Requires explicit confirmation or an admin grant.", annotations=MUTATING)
+        async def supply_request_create(
+            item_name: str,
+            qty: int = 1,
+            notes: str = "",
+            job_site: str = "",
+            equipment_id: str | None = None,
+            confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {"item_name": item_name, "qty": qty, "notes": notes, "job_site": job_site, "equipment_id": equipment_id}
+            return await self.invoke(
+                tool="supply_request_create", parameters=params,
+                required_scope="operations:write", action="write",
+                operation=lambda _p, key: self.backend.create_supply_request(self.backend.SupplyRequestCreate(**params), self._domain_user(), key),
+                confirmation_token=confirmation_token,
+                confirmation_summary=f"Queue a supply request for approval: {qty} x {item_name}.",
             )
 
         @mcp.tool(name="contact_create", description="Create a customer/job-site contact. Requires explicit confirmation or an admin grant.", annotations=MUTATING)

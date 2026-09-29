@@ -112,13 +112,13 @@ const styles = StyleSheet.create({
   panel: { flex: 1, minWidth: 0, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, overflow: "hidden" },
   // Only the compact (dashboard) rendering is height-capped — the full page
   // (app/(app)/shortages.tsx) fills its own tall container instead.
-  compactPanel: { maxHeight: 178 },
+  compactPanel: { maxHeight: 236 },
   header: { minHeight: 36, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderBottomColor: colors.border },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 7 },
   title: { fontSize: 13, fontWeight: "800", color: colors.ink, letterSpacing: -0.1 },
   viewAll: { fontSize: 11.5, color: colors.primary, fontWeight: "700" },
   list: { flex: 1 },
-  compactList: { maxHeight: 111 },
+  compactList: { maxHeight: 169 },
   listContent: { paddingHorizontal: 12, paddingVertical: 0 },
   empty: { paddingVertical: spacing.xl, textAlign: "center", color: colors.inkMuted, fontSize: 12 },
   error: { padding: spacing.md, color: colors.error, fontSize: 12 },

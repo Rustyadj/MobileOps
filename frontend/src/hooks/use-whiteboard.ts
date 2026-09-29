@@ -54,7 +54,11 @@ export function useWhiteboard(limit = 80, markRead = false) {
     return () => { alive.current = false; };
   }, [load]);
 
-  useRealtimeChannel(useCallback((event: any) => {
+  const realtimeStatus = useRealtimeChannel(useCallback((event: any) => {
+    if (event.type === "ready") {
+      load();
+      return;
+    }
     if ((event.type === "message.created" || event.type === "message.updated") && event.message) {
       upsert(event.message);
       if (!markRead && event.type === "message.created" && event.message.author_id !== user?.id) setUnread((count) => count + 1);
@@ -67,7 +71,7 @@ export function useWhiteboard(limit = 80, markRead = false) {
         ? { ...message, invocation_status: event.status }
         : message));
     }
-  }, [markRead, upsert, user?.id]));
+  }, [load, markRead, upsert, user?.id]));
 
   const send = useCallback(async (body: string, parentId?: string | null) => {
     const created = await api<WhiteboardMessage>("/whiteboard/messages", {
@@ -93,5 +97,5 @@ export function useWhiteboard(limit = 80, markRead = false) {
     upsert(updated);
   }, [upsert]);
 
-  return { messages, mentionables, unread, loading, error, reload: load, send, edit, remove, pin };
+  return { messages, mentionables, unread, loading, error, realtimeStatus, reload: load, send, edit, remove, pin };
 }

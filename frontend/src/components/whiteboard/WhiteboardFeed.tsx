@@ -207,7 +207,14 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
     setDraft("");
   };
 
-  const liveState = board.error ? "error" : board.loading ? "connecting" : "live";
+  const liveState = board.error ? "error" : board.loading ? "connecting" : board.realtimeStatus;
+  const liveLabel = liveState === "live"
+    ? "Live"
+    : liveState === "reconnecting"
+      ? "Reconnecting…"
+      : liveState === "error"
+        ? "Offline"
+        : "Connecting…";
 
   return (
     <View style={[styles.panel, compact && styles.compactPanel]} testID={compact ? "dashboard-whiteboard" : "whiteboard-feed"}>
@@ -216,7 +223,7 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
           <Ionicons name="chatbubbles-outline" size={16} color={colors.primary} />
           <Text style={styles.title}>LIVE FEED</Text>
           <View style={[styles.liveDot, liveState === "live" && styles.liveDotOn, liveState === "error" && styles.liveDotError]} />
-          {!compact ? <Text style={styles.liveLabel}>{liveState === "live" ? "Live" : liveState === "error" ? "Offline" : "Connecting…"}</Text> : null}
+          {!compact ? <Text style={styles.liveLabel}>{liveLabel}</Text> : null}
           {board.unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{board.unread}</Text></View> : null}
         </View>
         {compact ? (
@@ -297,6 +304,12 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
                         ? <AttachmentImage key={attachment.id} attachment={attachment} />
                         : <View key={attachment.id} style={styles.attachment}><Ionicons name="attach" size={13} color={colors.primary} /><Text style={styles.attachmentText} numberOfLines={1}>{attachment.filename}</Text></View>
                     ))}</View> : null}
+                    {message.supply_request_ids?.length && !message.is_deleted ? (
+                      <TouchableOpacity style={styles.requestChip} onPress={() => router.push("/(app)/requests" as any)} accessibilityRole="link" testID={`whiteboard-request-chip-${message.id}`}>
+                        <Ionicons name="clipboard-outline" size={12} color={colors.warning} />
+                        <Text style={styles.requestChipText}>{message.supply_request_ids.length === 1 ? "Request" : `${message.supply_request_ids.length} requests`} sent for approval</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     {message.invocation_status === "responding" || message.invocation_status === "pending" ? (
                       <View style={styles.respondingRow}><View style={styles.respondingDot} /><Text style={styles.responding}>Nathan is responding…</Text></View>
                     ) : null}
@@ -456,6 +469,8 @@ const styles = StyleSheet.create({
   replyQuoteText: { flex: 1, fontSize: 11, color: colors.inkMuted },
   replyQuoteAuthor: { fontWeight: "700", color: colors.inkSecondary },
   body: { marginTop: 3, fontSize: 12.5, lineHeight: 18, color: colors.ink },
+  requestChip: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5, paddingHorizontal: 7, paddingVertical: 3, borderRadius: radii.sm, backgroundColor: colors.accentSoft },
+  requestChipText: { fontSize: 10.5, fontWeight: "700", color: colors.warning },
   mention: { color: colors.primary, fontWeight: "800", backgroundColor: colors.primarySoft },
   respondingRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5 },
   respondingDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.accent },

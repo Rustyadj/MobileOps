@@ -16,6 +16,8 @@ import { NeedsAttention } from "@/src/components/dashboard/NeedsAttention";
 import { Upcoming, NextMovement, ManualNextInput, ManualNextItem } from "@/src/components/dashboard/WhatsNext";
 import { WhiteboardFeed } from "@/src/components/whiteboard/WhiteboardFeed";
 import { ShortagesCard } from "@/src/components/dashboard/ShortagesCard";
+import { SupplyRequestsCard } from "@/src/components/dashboard/SupplyRequestsCard";
+import { RentalsBoard, BoardRow, BoardTab, buildRentalsBoard } from "@/src/components/dashboard/RentalsBoard";
 import { OperationalTable, OpColumn } from "@/src/components/dashboard/OperationalTable";
 import { RecentActivity } from "@/src/components/dashboard/RecentActivity";
 import { DetailDrawer } from "@/src/components/overlays/DetailDrawer";
@@ -41,6 +43,7 @@ type Stats = {
   open_maintenance: number;
   open_shop_tasks: number;
   shortage_count: number;
+  pending_requests?: number;
   contacts_count: number;
   vendors_count: number;
   activity: { type: string; title: string; ts: string }[];
@@ -62,8 +65,6 @@ const EMPTY_STATS: Stats = {
   open_maintenance: 0, open_shop_tasks: 0, shortage_count: 0, contacts_count: 0, vendors_count: 0, activity: [],
 };
 
-const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const shortId = (id: string) => id.slice(0, 8).toUpperCase();
 const greetingFor = (date: Date) => date.getHours() < 12 ? "Good morning" : date.getHours() < 18 ? "Good afternoon" : "Good evening";
 const statsResponse = (value: unknown): Stats => (
   typeof value === "object" && value !== null
@@ -147,13 +148,24 @@ export default function Dashboard() {
       .sort((a, b) => (order[a.priority] ?? 1) - (order[b.priority] ?? 1) || +new Date(a.created_at) - +new Date(b.created_at));
   }, [shopTasks]);
   const upcomingDispatches = useMemo(() => {
-    const live = dispatches.filter((d) => isDispatchLive(d.status));
+    // Past-dated planning rows that never got closed out would otherwise pin
+    // themselves to the top of "Upcoming" forever — they show as "late" on
+    // the Rentals board instead.
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const live = dispatches.filter((d) => isDispatchLive(d.status) && (!d.scheduled_date || new Date(d.scheduled_date) >= today));
     return [...live].sort((a, b) => {
       const aTime = a.scheduled_date ? +new Date(a.scheduled_date) : Number.MAX_SAFE_INTEGER;
       const bTime = b.scheduled_date ? +new Date(b.scheduled_date) : Number.MAX_SAFE_INTEGER;
       return aTime - bTime;
     });
   }, [dispatches]);
+  const rentalsBoard = useMemo(() => buildRentalsBoard(rentals, dispatches), [rentals, dispatches]);
+  const openBoardRow = (row: BoardRow) => router.push((row.kind === "rental" ? `/(app)/operations/rentals?open=${row.id}` : `/(app)/operations/dispatch?open=${row.id}`) as any);
+  const BOARD_ROUTES: Record<BoardTab, string> = {
+    on_rent: "/(app)/operations/rentals", going_out: "/(app)/operations/outbound",
+    pickups: "/(app)/operations/inbound", verify: "/(app)/operations/inbound",
+  };
   const pins: Pin[] = useMemo(() => [
     shopPin(site),
     ...activeRentals.filter((r) => r.lat != null && r.lng != null).map((r) => ({ id: r.id, lat: r.lat!, lng: r.lng!, title: r.customer_type === "homeowner" ? r.job_site || r.customer_name : r.customer_name, subtitle: r.job_address || r.job_site, status: r.status })),
@@ -176,15 +188,6 @@ export default function Dashboard() {
     }
     router.push(item.route as never);
   };
-
-  const rentalColumns: OpColumn<Rental>[] = [
-    { key: "id", label: "Rental #", flex: 0.85, render: (r) => <Text style={styles.link} numberOfLines={1}>{shortId(r.id)}</Text> },
-    { key: "customer", label: "Customer / Job", flex: 1.25, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.customer_name || r.job_site || "—"}</Text> },
-    { key: "site", label: "Site", flex: 1.1, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.job_site || "—"}</Text> },
-    { key: "out", label: "Out", flex: 0.7, render: (r) => <Text style={styles.cell} numberOfLines={1}>{dateLabel(r.start_date)}</Text> },
-    { key: "due", label: "Due", flex: 0.7, render: (r) => <Text style={styles.cell} numberOfLines={1}>{r.due_date ? dateLabel(r.due_date) : "—"}</Text> },
-    { key: "status", label: "Status", flex: 0.9, render: (r) => <StatusBadge label={r.status.replace(/_/g, " ")} tone={r.due_date && new Date(r.due_date) < new Date() ? "error" : "success"} /> },
-  ];
 
   const shopTaskColumns: OpColumn<ShopTask>[] = [
     { key: "title", label: "Task", flex: 1.6, render: (t) => <Text style={styles.cell} numberOfLines={1}>{t.title}</Text> },
@@ -213,9 +216,9 @@ export default function Dashboard() {
       ) : null}
       <KpiStrip>
         <KpiTile label="Available inventory" value={String(stats.total_available)} meta={`of ${stats.total_quantity} owned`} icon="layers-outline" tone="success" onPress={() => router.push("/(app)/inventory/equipment" as any)} testID="stat-available-inventory" />
-        <KpiTile label="On rent" value={String(stats.total_on_rental)} meta={`${activeRentals.length} active rental${activeRentals.length === 1 ? "" : "s"}`} icon="cube-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-on-rental" />
+        <KpiTile label="On rent" value={String(stats.total_on_rental)} meta={`${rentalsBoard.on_rent.length} job site${rentalsBoard.on_rent.length === 1 ? "" : "s"} · ${rentalsBoard.going_out.length} going out`} icon="cube-outline" tone="primary" onPress={() => router.push("/(app)/operations/rentals" as any)} testID="stat-on-rental" />
         <KpiTile label="Due / returning" value={String(stats.returning_today)} meta={`${stats.total_reserved} reserved for upcoming jobs`} icon="calendar-outline" tone="warning" onPress={() => router.push("/(app)/operations/inbound" as any)} testID="stat-returning-today" />
-        <KpiTile label="Needs attention" value={String(attention.length)} meta={`${stats.open_shop_tasks} shop tasks · ${stats.shortage_count} shortages`} icon="warning-outline" tone="danger" onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-needs-attention" />
+        <KpiTile label="Needs attention" value={String(attention.length)} meta={`${stats.pending_requests ?? 0} requests · ${stats.shortage_count} shortages`} icon="warning-outline" tone="danger" onPress={() => router.push("/(app)/operations/capacity" as any)} testID="stat-needs-attention" />
       </KpiStrip>
 
       <View style={[styles.attentionRow, !isShellWide && styles.stackGrid]}>
@@ -246,31 +249,27 @@ export default function Dashboard() {
 
       <View style={[styles.operationsRow, !isShellWide && styles.stackGrid]}>
         <View style={[styles.feedCell, !isShellWide && styles.feedCellMobile]}><WhiteboardFeed compact /></View>
-        <OperationalTable
-          title="Active Rentals" icon="receipt-outline" columns={rentalColumns} rows={activeRentals.slice(0, 6)}
-          keyExtractor={(r) => r.id} onRowPress={(r) => router.push(`/(app)/operations/rentals?open=${r.id}` as any)}
-          emptyLabel="No active rentals." viewAllLabel="View all rentals" onViewAll={() => router.push("/(app)/operations/rentals" as any)}
-          testID="dashboard-active-rentals" compact
-        />
+        <View style={[styles.boardCell, !isShellWide && styles.boardCellMobile]}>
+          <RentalsBoard
+            rentals={rentals} dispatches={dispatches} compact={!isShellWide} limit={5}
+            onPressRow={openBoardRow} onViewAll={(tab) => router.push(BOARD_ROUTES[tab] as any)}
+          />
+        </View>
       </View>
 
       <View style={[styles.lowerRow, !isShellWide && styles.stackGrid]}>
+        <View style={[styles.requestsCell, !isShellWide && styles.requestsCellMobile]}><SupplyRequestsCard compact /></View>
+        <ShortagesCard compact />
         <OperationalTable
           title="Shop Tasks" icon="construct-outline" columns={shopTaskColumns} rows={openShopTasks.slice(0, 4)}
           keyExtractor={(t) => t.id} onRowPress={(t) => router.push(`/(app)/shop/tasks?open=${t.id}` as any)}
           emptyLabel="No open shop tasks." viewAllLabel="View all tasks" onViewAll={() => router.push("/(app)/shop/tasks" as any)}
           testID="dashboard-shop-tasks" compact
         />
-        <ShortagesCard compact />
-        <RecentActivity
-          rows={stats.activity}
-          onViewAll={onRefresh}
-          onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : row.type === "shop_task" ? "/(app)/shop/tasks" : "/(app)/shop/maintenance") as any)}
-          compact
-        />
       </View>
 
-      <View style={[styles.mapRow, !isShellWide && styles.mapRowMobile]}>
+      <View style={[styles.mapRow, !isShellWide && styles.stackGrid]}>
+        <View style={[styles.mapCell, !isShellWide && styles.mapRowMobile]}>
         <DashboardMap
           style={styles.mapFill}
           pins={pins}
@@ -280,6 +279,13 @@ export default function Dashboard() {
           onRefresh={onRefresh}
           lastUpdated={lastUpdated}
           shopAddress={site?.company_address || DEFAULT_SHOP.address}
+        />
+        </View>
+        <RecentActivity
+          rows={stats.activity}
+          onViewAll={onRefresh}
+          onRowPress={(row) => router.push((row.type === "rental" ? "/(app)/operations/rentals" : row.type === "shop_task" ? "/(app)/shop/tasks" : "/(app)/shop/maintenance") as any)}
+          compact
         />
       </View>
       <DetailDrawer
@@ -330,8 +336,13 @@ const styles = StyleSheet.create({
   operationsRow: { flexDirection: "row", gap: 10, height: 320, marginBottom: 10 },
   feedCell: { flex: 0.92, minWidth: 0 },
   feedCellMobile: { flex: 0, height: 420 },
-  lowerRow: { flexDirection: "row", gap: 10, height: 178, marginBottom: 10 },
-  mapRow: { height: 320, marginBottom: 10 },
+  boardCell: { flex: 1.08, minWidth: 0 },
+  boardCellMobile: { flex: 0, height: 360 },
+  lowerRow: { flexDirection: "row", gap: 10, height: 236, marginBottom: 10 },
+  requestsCell: { flex: 1.15, minWidth: 0 },
+  requestsCellMobile: { flex: 0, height: 300 },
+  mapRow: { flexDirection: "row", gap: 10, height: 320, marginBottom: 10 },
+  mapCell: { flex: 2, minWidth: 0 },
   mapRowMobile: { height: 300 },
   mapFill: { flex: 1 },
   stackGrid: { height: "auto", flexDirection: "column" },

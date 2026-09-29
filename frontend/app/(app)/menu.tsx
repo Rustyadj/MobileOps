@@ -12,6 +12,7 @@ import { colors, spacing, type as typo, radii } from "@/src/theme";
 
 const ITEMS: { label: string; sub: string; route: string; icon: any; testID: string }[] = [
   { label: "Live Feed", sub: "Yard notes, rental activity, mentions", route: "/(app)/whiteboard", icon: "chatbubbles-outline", testID: "more-live-feed" },
+  { label: "Requests", sub: "Crew supply asks waiting on approval", route: "/(app)/requests", icon: "clipboard-outline", testID: "more-requests" },
   { label: "Utilities", sub: "Delivery tickets, bracing, and calculators", route: "/(app)/tools", icon: "calculator-outline", testID: "more-tools" },
   { label: "Admin", sub: "Site settings, contacts, sync issues", route: "/(app)/site-admin", icon: "settings-outline", testID: "more-site-admin" },
 ];

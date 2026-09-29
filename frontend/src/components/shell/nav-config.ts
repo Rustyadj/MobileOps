@@ -38,6 +38,8 @@ export const ALL_NAV_ITEMS: NavItem[] = NAV_ITEMS;
 export type SubNavItem = { key: string; label: string; route: string; icon: IconName; section: string; testID: string };
 
 export const SUB_NAV_ITEMS: SubNavItem[] = [
+  { key: "requests", label: "Requests", route: "/(app)/requests", icon: "clipboard-outline", section: "dashboard", testID: "sub-requests" },
+  { key: "shortages", label: "Shortages", route: "/(app)/shortages", icon: "warning-outline", section: "dashboard", testID: "sub-shortages" },
   { key: "rentals-inbound", label: "Rentals · Inbound", route: "/(app)/operations/inbound", icon: "arrow-down-outline", section: "rentals", testID: "sub-rentals-inbound" },
   { key: "rentals-outbound", label: "Rentals · Outbound", route: "/(app)/operations/outbound", icon: "arrow-up-outline", section: "rentals", testID: "sub-rentals-outbound" },
   { key: "rentals-active", label: "Rentals · Active", route: "/(app)/operations/rentals", icon: "location-outline", section: "rentals", testID: "sub-rentals-active" },
