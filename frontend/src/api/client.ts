@@ -161,6 +161,36 @@ export async function apiMediaUrl(path: string): Promise<string> {
   });
 }
 
+/**
+ * Fetch a binary endpoint (exports, stored files, import review sheets) with auth and silent refresh.
+ * Returns the blob plus the filename the server chose and, when present, the stored-file id.
+ */
+export async function apiBlob(path: string): Promise<{ blob: Blob; filename: string; fileId: string | null }> {
+  const h: Record<string, string> = {};
+  if (accessToken) h["Authorization"] = `Bearer ${accessToken}`;
+  let resp = await doFetch(`${API}${path}`, { headers: h });
+  if (resp.status === 401) {
+    if (!refreshing) refreshing = doRefresh();
+    const newTok = await refreshing;
+    refreshing = null;
+    if (newTok) {
+      h["Authorization"] = `Bearer ${newTok}`;
+      resp = await doFetch(`${API}${path}`, { headers: h });
+    }
+  }
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json();
+      detail = body.detail || JSON.stringify(body);
+    } catch {}
+    throw new ApiHttpError(resp.status, detail);
+  }
+  const disposition = resp.headers.get("content-disposition") || "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  return { blob: await resp.blob(), filename: match?.[1] || "mobileops-file", fileId: resp.headers.get("x-file-id") };
+}
+
 export const releaseMediaUrl = (url: string | null) => {
   if (url && Platform.OS === "web" && url.startsWith("blob:")) URL.revokeObjectURL(url);
 };

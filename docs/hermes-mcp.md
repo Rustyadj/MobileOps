@@ -134,7 +134,25 @@ tokens, and replayed tokens are rejected and audited.
 | Dispatch | `dispatches_list` | `dispatch_create`, `dispatch_assign`, `dispatch_set_status` | `dispatch:read/write` |
 | Maintenance | `maintenance_list` | `maintenance_create`, `maintenance_update` | `maintenance:read/write` |
 | Shop | `shop_tasks_list` | `shop_task_create`, `shop_task_set_status`, `shop_task_add_update` | `shop_tasks:read/write` |
-| Operations | `operational_status` | — | `operations:read` |
+| Operations | `operational_status`, `operational_activity`, `export_report` | — | `operations:read` |
+
+`export_report(dataset, format, ...filters)` generates an Excel (`xlsx`), `pdf` or `csv`
+report, **stores it** (14 days, see [Documents](#documents-excel-pdf-and-imports)) and returns a
+10-minute signed `download_url`. Datasets: `equipment` (inventory), `tools`, `assignments`
+(tools checked out), `damaged`, `rentals`, `returns` (inbound), `outbound`, `dispatches`,
+`maintenance`, `shop_tasks`, `consumables`, `block`. Filters are equality only and an
+unsupported filter is an error: `status`, `category`, `condition`, `direction`, `location`,
+`assigned_to` (word-start, case-insensitive: "Nick" matches "Nick Smith", not "Dominick"), or a
+`filters` object for any field the dataset allows. Links are HMAC-signed with
+`MCP_CONFIRMATION_SECRET`, bind the Hermes role so crew-level money redaction still applies,
+and need no login, so treat one as a short-lived secret. Signed-in users get the same files
+from `GET /api/exports/{dataset}/{xlsx|pdf|csv}` and the app's **Admin > Files & Imports** tab.
+
+`operational_activity(limit?, since?)` is the compact live-context feed for
+MobileOps Admin. It returns app dashboard activity, successful typed MCP
+mutations, and the corresponding bot audit summaries. Mutable records must
+still be resolved through their typed read tools before a write; activity is a
+timeline, not a source of truth.
 
 Nathan2 also has focused proactive rental reads: `get_inventory_availability`,
 `get_inventory_forecast`, `get_inventory_timeline`, `get_customer_preferences`, `get_active_rentals`,
@@ -143,6 +161,75 @@ Nathan2 also has focused proactive rental reads: `get_inventory_availability`,
 `get_outbound_risk`. Their deterministic forecast contract, reservation
 behavior, and approval boundaries are documented in
 [Nathan2 rental availability](nathan2-rental-availability.md).
+
+## Documents: Excel, PDF and imports
+
+Implementation: `exports.py` (datasets, XLSX/PDF/CSV renderers), `pdf_documents.py`
+(rental agreement, dispatch tickets), `documents.py` (stored files, signed links, audit),
+`imports.py` (staged import pipeline). The UI is **Admin > Files & Imports**.
+
+| Tool | Effect | Scope | Confirmation |
+|---|---|---|---|
+| `export_report` | Excel/PDF/CSV report, stored, signed link | `operations:read` | none |
+| `rental_agreement_pdf(rental_id)` | Rental agreement / transaction record PDF | `rentals:read` | none |
+| `dispatch_ticket_pdf(dispatch_id)` | Outbound delivery or inbound/return pickup ticket | `dispatch:read` | none |
+| `import_create_upload(dataset, on_duplicate?, mapping?)` | Single-use 10-minute upload URL; uploading **stages a preview only** | `equipment:write` (equipment, tools) or `inventory:write` (consumables, block) | none |
+| `import_preview(dataset, filename, file_base64, ...)` | Same preview from a small (<=1 MB) inline file | as above | none |
+| `import_status(import_id, offset?, limit?, action?)` | Re-read a preview/result | `inventory:read` | none |
+| `import_plan_report(import_id)` | Every row of a preview as an Excel file | `inventory:read` | none |
+| `import_cancel(import_id)` | Discard a preview | `equipment:write` | none |
+| `import_commit(import_id, plan_hash, skip_invalid_rows?)` | Apply a reviewed plan | `equipment:write` (+ `inventory:write` for consumables/block) | **admin grant only** |
+
+Importable datasets: `equipment` (inventory), `tools`, `consumables`, `block`. Rentals,
+dispatches and returns are exported but deliberately **not importable**: they drive
+reservations and the inventory ledger, so a bulk import would corrupt stock.
+
+### Import flow and guarantees
+
+1. **Stage.** Parse the `.xlsx` (or a table-based `.pdf`), auto-map columns by header
+   (override with `mapping`), validate every row, detect duplicates (in the file and against
+   MobileOps), and persist a plan with a `plan_hash`. Staging writes only to `import_jobs` /
+   `import_files`; it never touches inventory.
+2. **Review.** The preview shows counts, per-row errors, the column mapping, ignored columns,
+   and old -> new values for any proposed update. `import_plan_report` exports all of it.
+3. **Commit.** Requires an admin grant and the exact `plan_hash` that was reviewed. The plan is
+   re-derived from live data first; if anything changed the commit is refused (`stale`) and
+   nothing is written.
+
+* **No silent overwrite.** Duplicates are skipped by default. `on_duplicate=update` proposes
+  field-level updates and still needs the admin commit. Updates never change stock buckets,
+  quantity, location, QR/SKU/serial or tracking type; those come from counts, transfers and
+  check-in/out, and any such differences are reported as "not applied".
+* **All-or-nothing.** Each write records an undo step; any failure rolls every applied write back
+  (MongoDB here has no multi-document transactions). A failed rollback sets the job to
+  `failed_needs_review` and is logged loudly.
+* **Hostile files.** Max 5 MB / 2,000 rows / 60 columns / 40 PDF pages; zip-bomb and macro
+  (`vbaProject.bin`) workbooks rejected; formula cells rejected per row (nothing is evaluated);
+  exported text beginning with `=` is stored as inert text. PDF import only accepts one
+  consistent table, only **adds** records (no updates), and refuses anything it can't extract
+  reliably.
+* **Initial stock** for created equipment goes through the ledger (`received`, note
+  "Initial stock (import ...)"), exactly like `POST /equipment`.
+* **Jobs expire** 2 hours after staging; staged jobs are kept 180 days and uploaded files 30 days
+  (TTL indexes) as evidence.
+
+### Files, access and audit
+
+Generated files are immutable snapshots in `generated_files` (14-day TTL, <= 12 MB).
+Signed-in users download their own files (`/api/files/{id}/download`); admins can download any;
+anyone else gets a 404. Signed links (`/api/files/shared/{token}`, `/api/imports/upload/{token}`)
+are purpose-bound HMACs, so an upload link can't download and vice versa; upload links are
+single use. Responses are `Cache-Control: private, no-store` with `nosniff`.
+
+Every export, PDF, import stage, commit, failure and refusal writes an `operational_activity`
+row (`source` = `export` | `import`), and MCP calls additionally write `mcp_audit_log` (with
+the approving admin). Inline import payloads are never stored in the audit log, only their
+SHA-256 and length. REST routes: `/api/exports/...`, `/api/rentals/{id}/agreement.pdf`,
+`/api/dispatches/{id}/ticket.pdf`, `/api/files...`, and admin-only `/api/imports...`.
+
+> New tools reach the Sentinel `mobileops-admin` bot only after MobileOps is deployed and the
+> MCP server is refreshed there; per-tool grants then need to be added (reads as `read`,
+> `import_commit` as `approval`).
 
 ## Verification
 

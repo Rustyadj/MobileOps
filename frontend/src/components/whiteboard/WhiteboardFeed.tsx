@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { apiMediaUrl, apiUpload, releaseMediaUrl } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { useWhiteboard } from "@/src/hooks/use-whiteboard";
@@ -71,11 +71,28 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
   const [nearBottom, setNearBottom] = useState(true);
   const [newBelow, setNewBelow] = useState(false);
 
+  // Deep link from a mention notification: /whiteboard?message=<id>
+  const params = useLocalSearchParams<{ message?: string }>();
+  const targetId = compact ? undefined : (Array.isArray(params.message) ? params.message[0] : params.message);
+  const handledTarget = useRef<string | null>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
+
   const scrollRef = useRef<ScrollView>(null);
   const composerRef = useRef<TextInput>(null);
   const assetsRef = useRef<PickedAsset[]>([]);
   assetsRef.current = assets;
   const nearBottomRef = useRef(true);
+  if (targetId && handledTarget.current !== targetId) nearBottomRef.current = false; // don't auto-scroll past the target
+
+  const revealTarget = (id: string, y: number) => {
+    if (id !== targetId || handledTarget.current === id) return;
+    handledTarget.current = id;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+      setFlashId(id);
+      setTimeout(() => setFlashId((current) => current === id ? null : current), 3000);
+    }, 150);
+  };
   const lastCountRef = useRef(0);
 
   const visible = compact ? board.messages.slice(-4) : board.messages;
@@ -278,10 +295,12 @@ export function WhiteboardFeed({ compact = false }: { compact?: boolean }) {
             const parent = message.parent_id ? messageById.get(message.parent_id) : null;
             const failed = message.invocation_status === "failed";
             return (
-              <View key={message.id}>
+              <View key={message.id} onLayout={(event) => {
+                revealTarget(message.id, event.nativeEvent.layout.y);
+              }}>
                 {showDivider ? <View style={styles.dayDivider}><View style={styles.dayLine} /><Text style={styles.dayLabel}>{dayLabel(message.created_at)}</Text><View style={styles.dayLine} /></View> : null}
                 <View
-                  style={[styles.message, message.parent_id && styles.reply, message.pinned && styles.pinned, failed && styles.failed]}
+                  style={[styles.message, message.parent_id && styles.reply, message.pinned && styles.pinned, failed && styles.failed, flashId === message.id && styles.flash]}
                   testID={`whiteboard-message-${message.id}`}
                 >
                   <View style={[styles.avatar, { backgroundColor: avatarColor(message) }]}><Text style={styles.avatarText}>{message.author_avatar || message.author_name.slice(0, 2).toUpperCase()}</Text></View>
@@ -456,6 +475,7 @@ const styles = StyleSheet.create({
   empty: { maxWidth: 260, textAlign: "center", color: colors.inkMuted, fontSize: 12, lineHeight: 17 },
   message: { flexDirection: "row", gap: 9, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.border },
   reply: { marginLeft: 24, paddingLeft: 8 },
+  flash: { backgroundColor: colors.primarySoft, marginHorizontal: -8, paddingHorizontal: 8, borderRadius: radii.sm },
   pinned: { backgroundColor: colors.warningSoft, marginHorizontal: -8, paddingHorizontal: 8, borderRadius: radii.sm },
   failed: { backgroundColor: colors.errorSoft, marginHorizontal: -8, paddingHorizontal: 8, borderRadius: radii.sm },
   avatar: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },

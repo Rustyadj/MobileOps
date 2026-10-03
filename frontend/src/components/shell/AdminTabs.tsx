@@ -4,7 +4,7 @@
 import React from "react";
 import { SectionTabs } from "@/src/components/layout/SectionTabs";
 
-export type AdminTabKey = "settings" | "contacts" | "sync";
+export type AdminTabKey = "settings" | "contacts" | "files" | "sync";
 
 export const AdminTabs: React.FC<{ active: AdminTabKey }> = ({ active }) => (
   <SectionTabs
@@ -13,6 +13,7 @@ export const AdminTabs: React.FC<{ active: AdminTabKey }> = ({ active }) => (
     tabs={[
       { key: "settings", label: "Site Settings", route: "/(app)/site-admin" },
       { key: "contacts", label: "Contacts", route: "/(app)/contacts" },
+      { key: "files", label: "Files & Imports", route: "/(app)/files" },
       { key: "sync", label: "Sync Issues", route: "/(app)/sync-issues" },
     ]}
   />

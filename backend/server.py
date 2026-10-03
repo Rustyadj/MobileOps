@@ -19,12 +19,12 @@ import uuid
 from datetime import datetime, timedelta, timezone, date
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 
 import httpx
 from bson import ObjectId  # noqa: F401  (kept for type hints)
 from dotenv import load_dotenv
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, UploadFile, File, Response, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import PlainTextResponse
 from pymongo.errors import DuplicateKeyError
@@ -36,6 +36,14 @@ from whiteboard_service import (
     deterministic_review_state, mentioned_handles, normalize_handle, parse_rental_review,
 )
 from request_parser import match_equipment, parse_supply_requests
+from mention_notifications import build_notification, plan_recipients
+import documents as docstore
+import imports as data_imports
+from pdf_documents import render_dispatch_pdf, render_rental_pdf
+from exports import (
+    EXPORT_FORMATS, EXPORT_TOKEN_TTL_SECONDS, ExportError, clean_filters, render_csv, render_pdf, render_xlsx, resolve_dataset,
+    sign_export_token, verify_export_token,
+)
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
@@ -1753,27 +1761,40 @@ class WhiteboardRealtimeHub:
 
     def __init__(self) -> None:
         self.connections: set[WebSocket] = set()
+        self.socket_users: dict[WebSocket, str] = {}
         self._lock = asyncio.Lock()
 
-    async def add(self, socket: WebSocket) -> None:
+    async def add(self, socket: WebSocket, user_id: Optional[str] = None) -> None:
         async with self._lock:
             self.connections.add(socket)
+            if user_id:
+                self.socket_users[socket] = user_id
 
     async def remove(self, socket: WebSocket) -> None:
         async with self._lock:
             self.connections.discard(socket)
+            self.socket_users.pop(socket, None)
 
-    async def broadcast(self, event: dict) -> None:
+    async def _send(self, sockets: Iterable[WebSocket], event: dict) -> None:
         stale: list[WebSocket] = []
-        for socket in tuple(self.connections):
+        payload = jsonable_encoder(event)
+        for socket in tuple(sockets):
             try:
-                await socket.send_json(jsonable_encoder(event))
+                await socket.send_json(payload)
             except Exception:
                 stale.append(socket)
         if stale:
             async with self._lock:
                 for socket in stale:
                     self.connections.discard(socket)
+                    self.socket_users.pop(socket, None)
+
+    async def broadcast(self, event: dict) -> None:
+        await self._send(self.connections, event)
+
+    async def send_to_user(self, user_id: str, event: dict) -> None:
+        """Deliver only to this user's own sockets (per-user events, e.g. notifications)."""
+        await self._send([s for s, uid in tuple(self.socket_users.items()) if uid == user_id], event)
 
 
 whiteboard_hub = WhiteboardRealtimeHub()
@@ -4857,6 +4878,20 @@ async def whiteboard_audit(action: str, actor: UserPublic | dict, message_id: st
     })
 
 
+def _user_handle_candidates(user: dict) -> list[str]:
+    candidates = [normalize_handle(user.get("name", "")), normalize_handle(user.get("email", "").split("@", 1)[0])]
+    return [c for c in dict.fromkeys(candidates) if c]
+
+
+def user_mention_handle(user: dict, owners: dict[str, set[str]]) -> str:
+    """Handle shown in autocomplete: the name if unique, else the (unique) email local part."""
+    candidates = _user_handle_candidates(user)
+    for candidate in candidates:
+        if len(owners.get(candidate, ())) == 1:
+            return candidate
+    return candidates[0] if candidates else ""
+
+
 async def resolve_whiteboard_mentions(body: str) -> list[dict]:
     handles = mentioned_handles(body)
     if not handles:
@@ -4870,17 +4905,62 @@ async def resolve_whiteboard_mentions(body: str) -> list[dict]:
             "display_name": "Everyone", "entity_type": "group", "label": "Team",
         },
     }
+    owners: dict[str, set[str]] = {}
     for user in users:
-        candidates = [normalize_handle(user.get("name", "")), normalize_handle(user.get("email", "").split("@", 1)[0])]
-        handle = next((candidate for candidate in candidates if candidate), "")
-        for candidate in candidates:
-            if candidate and candidate not in directory:
+        for candidate in _user_handle_candidates(user):
+            owners.setdefault(candidate, set()).add(user["id"])
+    for user in users:
+        handle = user_mention_handle(user, owners)
+        for candidate in _user_handle_candidates(user):
+            # A handle shared by several people is ambiguous: never guess, resolve to nobody.
+            if candidate not in directory and len(owners[candidate]) == 1:
                 directory[candidate] = {
                     "id": user["id"], "handle": handle, "normalized_handle": candidate,
                     "display_name": user.get("name") or user.get("email"),
                     "entity_type": "user", "label": "Employee",
                 }
     return [directory[handle] for handle in handles if handle in directory]
+
+
+async def notify_whiteboard_mentions(
+    doc: dict, mentions: list[dict], author: UserPublic, previously_mentioned: Iterable[str] = (),
+) -> int:
+    """Persist and push one `feed_mention` notification per newly mentioned user.
+
+    Runs after the post is saved and never raises: a failure here is logged and
+    must not fail (or roll back) the post itself. Idempotent per
+    (type, message_id, user_id) via a unique index plus upsert.
+    """
+    try:
+        users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(1000)
+        eligible = [u["id"] for u in users if not user_is_suspended(u)]
+        recipients = plan_recipients(
+            mentions, author_id=author.id, eligible_user_ids=eligible, previously_mentioned=previously_mentioned,
+        )
+        created = 0
+        for recipient_id in recipients:
+            note = build_notification(
+                notification_id=gen_id(), recipient_id=recipient_id, actor_id=author.id,
+                actor_name=author.name, message=doc, created_at=now_utc(),
+            )
+            result = await db.notifications.update_one(
+                {"type": note["type"], "message_id": note["message_id"], "user_id": recipient_id},
+                {"$setOnInsert": note}, upsert=True,
+            )
+            if not result.upserted_id:
+                continue
+            created += 1
+            try:
+                unread = await db.notifications.count_documents({"user_id": recipient_id, "read": False})
+                await whiteboard_hub.send_to_user(
+                    recipient_id, {"type": "notification.created", "notification": note, "unread_count": unread},
+                )
+            except Exception:
+                logger.warning("Realtime delivery failed for notification %s", note["id"], exc_info=True)
+        return created
+    except Exception:
+        logger.exception("Mention notification processing failed for message %s", doc.get("id"))
+        return 0
 
 
 async def hydrate_whiteboard_messages(docs: list[dict]) -> list[dict]:
@@ -4995,9 +5075,15 @@ async def post_nathan_response(source_message_id: str) -> None:
 async def list_whiteboard_mentionables(_: UserPublic = Depends(get_current_user)):
     users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1}).sort("name", 1).to_list(1000)
     entries = [WHITEBOARD_NATHAN, {"id": "everyone", "handle": "everyone", "display_name": "Everyone", "entity_type": "group", "label": "Team"}]
+    owners: dict[str, set[str]] = {}
     for user in users:
+        for candidate in _user_handle_candidates(user):
+            owners.setdefault(candidate, set()).add(user["id"])
+    for user in users:
+        if user_is_suspended(user):
+            continue
         entries.append({
-            "id": user["id"], "handle": normalize_handle(user.get("name") or user["email"].split("@", 1)[0]),
+            "id": user["id"], "handle": user_mention_handle(user, owners),
             "display_name": user.get("name") or user["email"], "entity_type": "user", "label": "Employee",
         })
     return entries
@@ -5050,6 +5136,7 @@ async def create_whiteboard_message(body: WhiteboardMessageCreate, user: UserPub
             "display_name": item["display_name"], "created_at": created_at,
         } for item in mentions])
     await whiteboard_audit("message_created", user, doc["id"], {"mentions": [item["id"] for item in mentions], "nathan_invoked": invokes_nathan})
+    await notify_whiteboard_mentions(doc, mentions, user)
     hydrated = (await hydrate_whiteboard_messages([doc]))[0]
     await whiteboard_hub.broadcast({"type": "message.created", "message": hydrated})
     if invokes_nathan:
@@ -5078,10 +5165,12 @@ async def edit_whiteboard_message(message_id: str, body: WhiteboardMessageEdit, 
     if invokes_nathan:
         message_update["invocation_status"] = "pending"
     await db.whiteboard_messages.update_one({"id": message_id}, {"$set": message_update, "$push": {"edit_history": {"body": doc["body"], "edited_at": now_utc(), "edited_by": user.id}}})
+    previous_mentions = await db.whiteboard_mentions.find({"message_id": message_id}, {"_id": 0, "entity_id": 1}).to_list(500)
     await db.whiteboard_mentions.delete_many({"message_id": message_id})
     if mentions:
         await db.whiteboard_mentions.insert_many([{"id": gen_id(), "message_id": message_id, "thread_id": doc["thread_id"], "entity_type": item["entity_type"], "entity_id": item["id"], "handle": item["handle"], "display_name": item["display_name"], "created_at": now_utc()} for item in mentions])
     await whiteboard_audit("message_edited", user, message_id, {"mentions": [item["id"] for item in mentions], "nathan_invoked": invokes_nathan})
+    await notify_whiteboard_mentions({**doc, "body": text}, mentions, user, [m["entity_id"] for m in previous_mentions])
     updated = await db.whiteboard_messages.find_one({"id": message_id}, {"_id": 0})
     hydrated = (await hydrate_whiteboard_messages([updated]))[0]
     await whiteboard_hub.broadcast({"type": "message.updated", "message": hydrated})
@@ -5186,6 +5275,343 @@ async def whiteboard_unread(thread_id: str = "dashboard", user: UserPublic = Dep
     return {"count": await db.whiteboard_messages.count_documents(query)}
 
 
+# ----------------------------- Exports ------------------------------------
+EXPORT_SECRET = os.environ.get("MCP_CONFIRMATION_SECRET", JWT_SECRET).encode("utf-8")
+
+
+def import_scope_for(dataset: str) -> str:
+    """MCP scope family an import needs: equipment/tools -> equipment, consumables/block -> inventory."""
+    try:
+        return "equipment" if data_imports.resolve_import_spec(dataset).collection == "equipment" else "inventory"
+    except data_imports.ImportFileError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+async def _site_settings() -> dict:
+    return await db.site.find_one({"_id": "settings"}) or SiteSettings().model_dump()
+
+
+async def render_export(dataset_name: str, fmt: str, filters: dict, role: str, actor_name: str) -> dict:
+    """Render a dataset the way the caller's role may see it (crew never gets money columns)."""
+    if fmt not in EXPORT_FORMATS:
+        raise HTTPException(400, f"Format must be one of: {', '.join(EXPORT_FORMATS)}")
+    try:
+        dataset = resolve_dataset(dataset_name)
+        cleaned = clean_filters(dataset, filters)
+    except ExportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    field, direction = dataset.sort
+    docs = await getattr(db, dataset.source).find(dataset.query(cleaned), {"_id": 0}).sort(field, direction).to_list(None)
+    docs = [redact_money_for_crew(d, role) for d in docs]
+    if dataset.name == "maintenance":
+        docs = [_repair_doc(d) for d in docs]
+    stamp = now_utc().strftime("%Y%m%d-%H%M")
+    filename = f"mobileops-{dataset.name}-{stamp}.{fmt}"
+    site = await _site_settings()
+    brand = site.get("brand_name") or SiteSettings().brand_name
+    try:
+        if fmt == "csv":
+            content = render_csv(dataset, docs, role).encode("utf-8-sig")
+        elif fmt == "xlsx":
+            content = render_xlsx(dataset, docs, role, brand=brand, generated_by=actor_name, filters=cleaned)
+        else:
+            content = render_pdf(dataset, docs, role, brand=brand, generated_by=actor_name, filters=cleaned)
+    except ExportError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"content": content, "media_type": docstore.MEDIA_TYPES[fmt], "filename": filename, "dataset": dataset.name,
+            "filters": cleaned, "record_count": len(docs)}
+
+
+async def build_export(dataset_name: str, fmt: str, filters: dict, role: str, actor_name: str) -> tuple[bytes, str, str]:
+    out = await render_export(dataset_name, fmt, filters, role, actor_name)
+    return out["content"], out["media_type"], out["filename"]
+
+
+async def store_and_audit_file(out: dict, *, kind: str, user_id: str, user_name: str, role: str, fmt: str, source_ref: Optional[str] = None,
+                               channel: str = "api") -> dict:
+    try:
+        meta = await docstore.store_generated_file(
+            db, kind=kind, filename=out["filename"], media_type=out["media_type"], content=out["content"],
+            created_by_id=user_id, created_by_name=user_name, role=role, dataset=out.get("dataset", ""), fmt=fmt,
+            filters=out.get("filters"), record_count=out.get("record_count", 0), source_ref=source_ref,
+        )
+    except docstore.DocumentError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    await docstore.record_activity(
+        db, source="export", event_type=f"{fmt}_export" if kind == "export" else f"{fmt}_{kind}", actor_id=user_id, actor_name=user_name,
+        parameters={"file_id": meta["id"], "dataset": meta["dataset"], "format": fmt, "filters": meta["filters"], "channel": channel, "source_ref": source_ref},
+        result={"records": meta["record_count"], "size_bytes": meta["size_bytes"], "sha256": meta["sha256"], "role_view": role},
+    )
+    return meta
+
+
+def file_response(content: bytes, media_type: str, filename: str, file_id: str = "") -> Response:
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+    if file_id:
+        headers["X-File-Id"] = file_id
+    return Response(content, media_type=media_type, headers=headers)
+
+
+_export_response = file_response  # kept for the signed-link route below
+
+
+async def generate_export_file(dataset_name: str, fmt: str, filters: dict, *, user_id: str, user_name: str, role: str, channel: str = "api") -> dict:
+    out = await render_export(dataset_name, fmt, filters, role, user_name)
+    return await store_and_audit_file(out, kind="export", user_id=user_id, user_name=user_name, role=role, fmt=fmt, channel=channel)
+
+
+async def generate_rental_document(rental_id: str, *, user_id: str, user_name: str, role: str, channel: str = "api") -> dict:
+    doc = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Rental not found")
+    doc = redact_money_for_crew(doc, role)
+    content = render_rental_pdf(doc, site=await _site_settings(), role=role, generated_by=user_name)
+    out = {"content": content, "media_type": docstore.MEDIA_TYPES["pdf"], "dataset": "rental_agreement",
+           "filename": f"mobileops-rental-{rental_id[:8]}-{now_utc().strftime('%Y%m%d-%H%M')}.pdf", "filters": {"rental_id": rental_id}, "record_count": 1}
+    return await store_and_audit_file(out, kind="rental_agreement", user_id=user_id, user_name=user_name, role=role, fmt="pdf", source_ref=rental_id, channel=channel)
+
+
+async def generate_dispatch_document(dispatch_id: str, *, user_id: str, user_name: str, role: str, channel: str = "api") -> dict:
+    doc = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Dispatch not found")
+    content = render_dispatch_pdf(doc, site=await _site_settings(), role=role, generated_by=user_name)
+    out = {"content": content, "media_type": docstore.MEDIA_TYPES["pdf"], "dataset": f"dispatch_{doc.get('direction', '')}",
+           "filename": f"mobileops-{doc.get('direction', 'dispatch')}-{dispatch_id[:8]}-{now_utc().strftime('%Y%m%d-%H%M')}.pdf",
+           "filters": {"dispatch_id": dispatch_id}, "record_count": 1}
+    return await store_and_audit_file(out, kind="dispatch_ticket", user_id=user_id, user_name=user_name, role=role, fmt="pdf", source_ref=dispatch_id, channel=channel)
+
+
+def signed_file_token(file_id: str, role: str) -> str:
+    return docstore.sign_token(EXPORT_SECRET, "file", {"fid": file_id, "role": role}, ttl=docstore.SIGNED_LINK_TTL_SECONDS)
+
+
+@api.get("/exports/shared/{token}")
+async def download_shared_export(token: str):
+    """Signed, 10-minute link minted for Hermes (see MCP `export_report`). Role is bound in the token."""
+    try:
+        payload = verify_export_token(EXPORT_SECRET, token)
+    except ExportError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    content, media_type, filename = await build_export(payload["ds"], payload["fmt"], payload["f"], payload["role"], payload["by"])
+    logger.info("export downloaded via signed link dataset=%s fmt=%s by=%s", payload["ds"], payload["fmt"], payload["by"])
+    return file_response(content, media_type, filename)
+
+
+@api.get("/exports/{dataset}/{fmt}")
+async def export_dataset(dataset: str, fmt: str, request: Request, user: UserPublic = Depends(get_current_user)):
+    filters = {k: v for k, v in request.query_params.items()}
+    meta = await generate_export_file(dataset, fmt, filters, user_id=user.id, user_name=user.name, role=user.role.value)
+    doc = await docstore.load_generated_file(db, meta["id"])
+    logger.info("export dataset=%s fmt=%s user=%s filters=%s", dataset, fmt, user.id, filters)
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+@api.get("/rentals/{rental_id}/agreement.pdf")
+async def rental_agreement_pdf(rental_id: str, user: UserPublic = Depends(get_current_user)):
+    meta = await generate_rental_document(rental_id, user_id=user.id, user_name=user.name, role=user.role.value)
+    doc = await docstore.load_generated_file(db, meta["id"])
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+@api.get("/dispatches/{d_id}/ticket.pdf")
+async def dispatch_ticket_pdf(d_id: str, user: UserPublic = Depends(get_current_user)):
+    meta = await generate_dispatch_document(d_id, user_id=user.id, user_name=user.name, role=user.role.value)
+    doc = await docstore.load_generated_file(db, meta["id"])
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+# ----------------------------- Stored files (UI downloads) -----------------
+@api.get("/files")
+async def list_files(limit: int = 50, user: UserPublic = Depends(get_current_user)):
+    return await docstore.list_generated_files(db, user_id=user.id, is_admin=user.role == Role.admin, limit=limit)
+
+
+@api.get("/files/shared/{token}")
+async def download_shared_file(token: str):
+    """Signed, 10-minute link to a stored file. The role view was fixed when the file was generated."""
+    try:
+        payload = docstore.verify_token(EXPORT_SECRET, "file", token)
+        doc = await docstore.load_generated_file(db, payload["fid"])
+    except docstore.DocumentError as exc:
+        raise HTTPException(403 if "link" in str(exc).lower() else 404, str(exc)) from exc
+    await docstore.mark_downloaded(db, doc["id"])
+    await docstore.record_activity(db, source="export", event_type="file_downloaded", actor_id=doc["created_by_id"], actor_name=doc["created_by_name"],
+                                   parameters={"file_id": doc["id"], "via": "signed_link"}, result={"filename": doc["filename"]})
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+@api.get("/files/{file_id}/download")
+async def download_file(file_id: str, user: UserPublic = Depends(get_current_user)):
+    try:
+        doc = await docstore.load_generated_file(db, file_id)
+    except docstore.DocumentError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if not docstore.can_access(doc, user_id=user.id, is_admin=user.role == Role.admin):
+        raise HTTPException(404, "File not found or expired")  # same answer as a missing file: no existence oracle
+    await docstore.mark_downloaded(db, file_id)
+    await docstore.record_activity(db, source="export", event_type="file_downloaded", actor_id=user.id, actor_name=user.name,
+                                   parameters={"file_id": file_id, "via": "session"}, result={"filename": doc["filename"]})
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+# ----------------------------- Imports (staged, admin-confirmed) -----------
+def _import_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, data_imports.ImportStateError):
+        return HTTPException(exc.status_code, str(exc))
+    if isinstance(exc, data_imports.ImportCommitError):
+        return HTTPException(500, str(exc))
+    return HTTPException(400, str(exc))
+
+
+async def stage_import_file(dataset: str, filename: str, content: bytes, *, actor_id: str, actor_name: str,
+                            mapping: Optional[dict] = None, on_duplicate: str = "skip", channel: str = "api") -> dict:
+    try:
+        return await data_imports.stage_import(db, dataset=dataset, filename=filename, content=content, actor_id=actor_id,
+                                               actor_name=actor_name, mapping=mapping, on_duplicate=on_duplicate, source=channel)
+    except (data_imports.ImportFileError, data_imports.ImportStateError) as exc:
+        raise _import_http_error(exc) from exc
+
+
+async def get_import_preview(import_id: str, offset: int = 0, limit: int = 25, action: Optional[str] = None) -> dict:
+    try:
+        job = await data_imports.load_job(db, import_id, require_live=False)
+    except data_imports.ImportStateError as exc:
+        raise _import_http_error(exc) from exc
+    if action and action not in ("create", "update", "unchanged", "skip_duplicate", "error"):
+        raise HTTPException(400, "action must be create, update, unchanged, skip_duplicate or error")
+    return data_imports.preview(job, offset=max(0, offset), limit=max(1, min(limit, 200)), action=action)
+
+
+async def commit_import_job(import_id: str, plan_hash: str, *, actor_id: str, actor_name: str, skip_invalid_rows: bool = False) -> dict:
+    try:
+        return await data_imports.commit_import(db, sys.modules[__name__], import_id=import_id, plan_hash=plan_hash, actor_id=actor_id,
+                                                actor_name=actor_name, skip_invalid_rows=skip_invalid_rows)
+    except (data_imports.ImportStateError, data_imports.ImportCommitError) as exc:
+        raise _import_http_error(exc) from exc
+
+
+async def cancel_import_job(import_id: str, *, actor_id: str, actor_name: str) -> dict:
+    try:
+        return await data_imports.cancel_import(db, import_id, actor_id=actor_id, actor_name=actor_name)
+    except data_imports.ImportStateError as exc:
+        raise _import_http_error(exc) from exc
+
+
+async def import_plan_report_file(import_id: str, *, user_id: str, user_name: str, role: str, channel: str = "api") -> dict:
+    try:
+        job = await data_imports.load_job(db, import_id, require_live=False)
+    except data_imports.ImportStateError as exc:
+        raise _import_http_error(exc) from exc
+    out = {"content": data_imports.render_plan_report(job), "media_type": docstore.MEDIA_TYPES["xlsx"], "dataset": job["dataset"],
+           "filename": f"mobileops-import-plan-{import_id[:8]}.xlsx", "filters": {"import_id": import_id}, "record_count": len(job["rows"])}
+    return await store_and_audit_file(out, kind="import_plan", user_id=user_id, user_name=user_name, role=role, fmt="xlsx", source_ref=import_id, channel=channel)
+
+
+def mint_import_upload_token(dataset: str, on_duplicate: str, mapping: Optional[dict], *, issued_by: str) -> str:
+    try:
+        data_imports.resolve_import_spec(dataset)
+    except data_imports.ImportFileError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return docstore.sign_token(EXPORT_SECRET, "import-upload", {"ds": dataset, "dup": on_duplicate, "map": mapping or {}, "by": issued_by},
+                               ttl=docstore.UPLOAD_LINK_TTL_SECONDS)
+
+
+class ImportCommitBody(BaseModel):
+    plan_hash: str
+    skip_invalid_rows: bool = False
+
+
+def _parse_mapping(raw: str) -> Optional[dict]:
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(400, "mapping must be a JSON object of {column header: field}") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(400, "mapping must be a JSON object of {column header: field}")
+    return value
+
+
+@api.post("/imports")
+async def create_import(
+    file: UploadFile = File(...), dataset: str = Form(...), on_duplicate: str = Form("skip"), mapping: str = Form(""),
+    user: UserPublic = Depends(require_role(Role.admin)),
+):
+    """Stage an XLSX/PDF import and return the dry-run preview. Nothing is written to inventory."""
+    content = await file.read(data_imports.MAX_FILE_BYTES + 1)
+    return await stage_import_file(dataset, file.filename or "upload", content, actor_id=user.id, actor_name=user.name,
+                                   mapping=_parse_mapping(mapping), on_duplicate=on_duplicate)
+
+
+@api.post("/imports/upload/{token}")
+async def upload_import_via_link(token: str, file: UploadFile = File(...)):
+    """Single-use signed upload link minted for Hermes (MCP `import_create_upload`). Stages only; never commits."""
+    try:
+        payload = docstore.verify_token(EXPORT_SECRET, "import-upload", token)
+        await docstore.consume_token_once(db, payload)
+    except docstore.DocumentError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    content = await file.read(data_imports.MAX_FILE_BYTES + 1)
+    return await stage_import_file(payload["ds"], file.filename or "upload", content, actor_id="hermes-agent", actor_name=payload.get("by") or "Hermes Agent",
+                                   mapping=payload.get("map") or None, on_duplicate=payload.get("dup") or "skip", channel="upload-link")
+
+
+@api.get("/imports/{import_id}")
+async def get_import(import_id: str, offset: int = 0, limit: int = 25, action: Optional[str] = None,
+                     _: UserPublic = Depends(require_role(Role.admin))):
+    return await get_import_preview(import_id, offset, limit, action)
+
+
+@api.get("/imports/{import_id}/report.xlsx")
+async def import_plan_report(import_id: str, user: UserPublic = Depends(require_role(Role.admin))):
+    meta = await import_plan_report_file(import_id, user_id=user.id, user_name=user.name, role=user.role.value)
+    doc = await docstore.load_generated_file(db, meta["id"])
+    return file_response(doc["content"], doc["media_type"], doc["filename"], doc["id"])
+
+
+@api.post("/imports/{import_id}/commit")
+async def commit_import_route(import_id: str, body: ImportCommitBody, user: UserPublic = Depends(require_role(Role.admin))):
+    """Apply a reviewed plan. Requires the plan_hash from the preview; all-or-nothing."""
+    return await commit_import_job(import_id, body.plan_hash, actor_id=user.id, actor_name=user.name, skip_invalid_rows=body.skip_invalid_rows)
+
+
+@api.post("/imports/{import_id}/cancel")
+async def cancel_import_route(import_id: str, user: UserPublic = Depends(require_role(Role.admin))):
+    return await cancel_import_job(import_id, actor_id=user.id, actor_name=user.name)
+
+
+@api.get("/notifications")
+async def list_notifications(unread_only: bool = False, limit: int = 50, user: UserPublic = Depends(get_current_user)):
+    query: dict[str, Any] = {"user_id": user.id}
+    if unread_only:
+        query["read"] = False
+    return await db.notifications.find(query, {"_id": 0}).sort("created_at", -1).limit(min(max(limit, 1), 200)).to_list(200)
+
+
+@api.get("/notifications/unread-count")
+async def notifications_unread_count(user: UserPublic = Depends(get_current_user)):
+    return {"count": await db.notifications.count_documents({"user_id": user.id, "read": False})}
+
+
+@api.post("/notifications/read-all")
+async def mark_all_notifications_read(user: UserPublic = Depends(get_current_user)):
+    result = await db.notifications.update_many({"user_id": user.id, "read": False}, {"$set": {"read": True, "read_at": now_utc()}})
+    return {"updated": result.modified_count, "count": 0}
+
+
+@api.post("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user: UserPublic = Depends(get_current_user)):
+    # Scoped to the caller: another user's notification id behaves as not found.
+    result = await db.notifications.update_one(
+        {"id": notification_id, "user_id": user.id}, {"$set": {"read": True, "read_at": now_utc()}},
+    )
+    if not result.matched_count:
+        raise HTTPException(404, "Notification not found")
+    return {"count": await db.notifications.count_documents({"user_id": user.id, "read": False})}
+
+
 @api.get("/whiteboard/audit")
 async def list_whiteboard_audit(limit: int = 100, _: UserPublic = Depends(require_role(Role.admin))):
     return await db.whiteboard_audit.find({}, {"_id": 0}).sort("timestamp", -1).limit(min(max(limit, 1), 500)).to_list(500)
@@ -5200,7 +5626,7 @@ async def whiteboard_websocket(socket: WebSocket):
             await socket.close(code=4401)
             return
         user = await user_from_access_token(str(auth["token"]))
-        await whiteboard_hub.add(socket)
+        await whiteboard_hub.add(socket, user.id)
         await socket.send_json({"type": "ready", "user_id": user.id})
         while True:
             event = await socket.receive_json()
@@ -5629,12 +6055,23 @@ async def on_startup():
     await db.whiteboard_attachment_blobs.create_index("id", unique=True)
     await db.whiteboard_read_states.create_index([("user_id", 1), ("thread_id", 1)], unique=True)
     await db.whiteboard_audit.create_index([("message_id", 1), ("timestamp", -1)])
+    await db.notifications.create_index([("type", 1), ("message_id", 1), ("user_id", 1)], unique=True)
+    await db.notifications.create_index([("user_id", 1), ("read", 1), ("created_at", -1)])
     await db.shortages.create_index("id", unique=True)
     await db.shortages.create_index([("status", 1), ("created_at", -1)])
     await db.supply_requests.create_index("id", unique=True)
     await db.supply_requests.create_index([("status", 1), ("created_at", -1)])
     await db.sellable_items.create_index("id", unique=True)
     await db.sellable_items.create_index([("kind", 1), ("product", 1)])
+    # Document storage + staged imports (retention enforced by TTL indexes).
+    await db.generated_files.create_index("id", unique=True)
+    await db.generated_files.create_index([("created_by_id", 1), ("created_at", -1)])
+    await db.generated_files.create_index("expires_at", expireAfterSeconds=0)
+    await db.import_jobs.create_index("id", unique=True)
+    await db.import_jobs.create_index("purge_after", expireAfterSeconds=0)
+    await db.import_files.create_index("id", unique=True)
+    await db.import_files.create_index("purge_after", expireAfterSeconds=0)
+    await db.document_token_uses.create_index("expires_at", expireAfterSeconds=0)
     # Phase 0 (Jobs composition seam): indexes the future /jobs endpoint's
     # cross-collection lookups need — join bookings/rentals/dispatches/
     # ledger_entries by booking_id/rental_id, and filter each by its own
@@ -5659,6 +6096,9 @@ async def on_startup():
     await db.mcp_audit_log.create_index("id", unique=True)
     await db.mcp_audit_log.create_index([("agent_identity", 1), ("timestamp", -1)])
     await db.mcp_audit_log.create_index([("tool", 1), ("timestamp", -1)])
+    await db.operational_activity.create_index("id", unique=True)
+    await db.operational_activity.create_index([("timestamp", -1)])
+    await db.operational_activity.create_index([("event_type", 1), ("timestamp", -1)])
     await db.mcp_confirmations.create_index("jti", unique=True)
     await db.mcp_confirmations.create_index("expires_at", expireAfterSeconds=0)
     await db.mcp_admin_grants.create_index("token_hash", unique=True)

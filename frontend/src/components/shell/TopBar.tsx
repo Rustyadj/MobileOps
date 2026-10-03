@@ -11,6 +11,7 @@ import { useCommandMenu } from "@/src/context/CommandMenuContext";
 import { useNeedsAttention } from "@/src/hooks/use-needs-attention";
 import { useSidebarCollapsed } from "@/src/hooks/use-sidebar-collapsed";
 import { breadcrumbForPath } from "./nav-config";
+import { MentionsInbox } from "./MentionsInbox";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 
 export const TOPBAR_HEIGHT = 50;
@@ -57,6 +58,8 @@ export const TopBar: React.FC = () => {
         <Ionicons name="add" size={15} color="#FFF" />
         <Text style={styles.newText}>New</Text>
       </TouchableOpacity>
+
+      <MentionsInbox />
 
       <TouchableOpacity
         onPress={() => router.push("/(app)" as any)}

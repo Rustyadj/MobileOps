@@ -308,6 +308,7 @@ class MobileOpsMCP:
         public_url = os.environ.get(
             "MCP_PUBLIC_URL", "https://icfops.srv1427612.hstgr.cloud"
         ).rstrip("/")
+        self._public_url = public_url
         issuer_url = os.environ.get("MCP_ISSUER_URL", public_url)
         public_origin = urlparse(public_url)
         default_hosts = [public_origin.netloc, "127.0.0.1:*", "localhost:*"]
@@ -394,6 +395,23 @@ class MobileOpsMCP:
             name=HERMES_AGENT_NAME,
             role=self.backend.Role.foreman,
         )
+
+    def _import_write_scope(self, dataset: str) -> str:
+        """equipment/tools imports need equipment:write; consumables/block need inventory:write."""
+        try:
+            return f"{self.backend.import_scope_for(dataset)}:write"
+        except Exception:
+            return "equipment:write"  # unknown dataset: the operation reports the real error after the audit row exists
+
+    def _file_result(self, meta: dict[str, Any], role: str) -> dict[str, Any]:
+        token = self.backend.signed_file_token(meta["id"], role)
+        return {
+            "download_url": f"{self._public_url}/api/files/shared/{token}", "file_id": meta["id"], "filename": meta["filename"],
+            "dataset": meta.get("dataset"), "format": meta.get("format"), "filters": meta.get("filters", {}),
+            "record_count": meta.get("record_count"), "size_bytes": meta.get("size_bytes"), "sha256": meta.get("sha256"),
+            "expires_in_seconds": 600, "stored_for_days": 14,
+            "also_available": "MobileOps app > Files (signed-in users can re-download until the file expires)",
+        }
 
     def _issue_confirmation(
         self, tool: str, parameters: dict[str, Any], identity: str
@@ -530,6 +548,26 @@ class MobileOpsMCP:
                     }
                 },
             )
+
+            # A compact, queryable activity projection keeps operational
+            # context inexpensive for agents.  The complete audit row remains
+            # the source of evidence; this row is deliberately summary-only.
+            if status == "succeeded" and action == "write":
+                await self.db.operational_activity.insert_one(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "timestamp": utc_now(),
+                        "source": "mcp",
+                        "event_type": tool,
+                        "bot": principal.identity,
+                        "requesting_user": (grant.admin_id if grant else None),
+                        "requesting_user_name": (grant.admin_name if grant else None),
+                        "tool": tool,
+                        "parameters": _redact(parameters),
+                        "result": _bounded_result(_redact(result)),
+                        "audit_id": audit_id,
+                    }
+                )
 
         try:
             if required_scope not in principal.scopes:
@@ -909,6 +947,270 @@ class MobileOpsMCP:
                 required_scope="operations:read",
                 action="read",
                 operation=operation,
+            )
+
+        @mcp.tool(
+            name="operational_activity",
+            description="Read recent MobileOps operational changes and bot/admin actions without scanning every collection.",
+            annotations=READ_ONLY,
+        )
+        async def operational_activity(limit: int = 50, since: str | None = None) -> dict[str, Any]:
+            params = {"limit": limit, "since": since}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                bounded_limit = max(1, min(limit, 200))
+                query: dict[str, Any] = {}
+                if since:
+                    try:
+                        parsed_since = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                    except ValueError as exc:
+                        raise ValueError("since must be an ISO-8601 timestamp") from exc
+                    query["timestamp"] = {"$gte": _aware(parsed_since)}
+                events = await self.db.operational_activity.find(query, {"_id": 0}).sort("timestamp", -1).to_list(bounded_limit)
+                audit = await self.db.mcp_audit_log.find(query, {"_id": 0, "parameters": 0, "result": 0}).sort("timestamp", -1).to_list(bounded_limit)
+                dashboard = await self.backend.dashboard_stats(self._domain_user())
+                return {
+                    "events": jsonable_encoder(events),
+                    "bot_audit": jsonable_encoder(audit),
+                    "application_activity": dashboard.get("activity", []),
+                    "count": len(events),
+                    "source_of_truth": "MobileOps database/API",
+                }
+
+            return await self.invoke(
+                tool="operational_activity",
+                parameters=params,
+                required_scope="operations:read",
+                action="read",
+                operation=operation,
+            )
+
+        @mcp.tool(
+            name="export_report",
+            description=(
+                "Generate a formatted report file and return a 10-minute download link to give the user. "
+                "format: xlsx (Excel), pdf or csv. dataset: equipment (inventory), tools, assignments (tools currently checked out), "
+                "damaged, rentals, returns (inbound), outbound, dispatches, maintenance (repair tickets), shop_tasks, consumables, block. "
+                "Optional filters (equality, unsupported ones are an error): status, category, condition, direction, location, "
+                "assigned_to (person a tool is checked out to, e.g. 'Nick'), or a `filters` object using any field the dataset allows "
+                "(task_type, priority, assignee, manufacturer, ...). The file is stored for 14 days under MobileOps > Files and honors "
+                "the same role-based money redaction as the app."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def export_report(
+            dataset: str, format: str = "pdf", status: str | None = None, category: str | None = None,
+            condition: str | None = None, direction: str | None = None, location: str | None = None,
+            assigned_to: str | None = None, filters: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            params = {
+                "dataset": dataset, "format": format, "status": status, "category": category, "condition": condition,
+                "direction": direction, "location": location, "assigned_to": assigned_to, "filters": filters,
+            }
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                if format not in self.backend.EXPORT_FORMATS:
+                    raise ValueError(f"format must be one of {list(self.backend.EXPORT_FORMATS)}")
+                raw = {"status": status, "category": category, "condition": condition, "direction": direction,
+                       "location": location, "checked_out_to": assigned_to, **(filters or {})}
+                requested = {k: v for k, v in raw.items() if v}
+                try:
+                    ds = self.backend.resolve_dataset(dataset)
+                    requested = self.backend.clean_filters(ds, requested)  # unsupported filters are an error, not ignored
+                except self.backend.ExportError as exc:
+                    raise ValueError(str(exc)) from exc
+                user = self._domain_user()
+                role = getattr(user.role, "value", user.role)
+                meta = await self.backend.generate_export_file(
+                    ds.name, format, requested, user_id=user.id, user_name=user.name, role=role, channel="mcp"
+                )
+                return self._file_result(meta, role)
+
+            return await self.invoke(
+                tool="export_report", parameters=params, required_scope="operations:read",
+                action="read", operation=operation,
+            )
+
+        @mcp.tool(
+            name="rental_agreement_pdf",
+            description=(
+                "Generate a professional PDF rental agreement / transaction record for one rental (customer, job, equipment out and back, "
+                "notes, signature lines) and return a 10-minute download link. Use for 'make a PDF of this rental'."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def rental_agreement_pdf(rental_id: str) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                user = self._domain_user()
+                role = getattr(user.role, "value", user.role)
+                meta = await self.backend.generate_rental_document(rental_id, user_id=user.id, user_name=user.name, role=role, channel="mcp")
+                return self._file_result(meta, role)
+
+            return await self.invoke(
+                tool="rental_agreement_pdf", parameters={"rental_id": rental_id}, required_scope="rentals:read",
+                action="read", operation=operation,
+            )
+
+        @mcp.tool(
+            name="dispatch_ticket_pdf",
+            description=(
+                "Generate a PDF ticket for one dispatch: an outbound delivery ticket or an inbound / return pickup ticket, with driver, "
+                "truck, equipment lines and signature lines. Returns a 10-minute download link."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def dispatch_ticket_pdf(dispatch_id: str) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                user = self._domain_user()
+                role = getattr(user.role, "value", user.role)
+                meta = await self.backend.generate_dispatch_document(dispatch_id, user_id=user.id, user_name=user.name, role=role, channel="mcp")
+                return self._file_result(meta, role)
+
+            return await self.invoke(
+                tool="dispatch_ticket_pdf", parameters={"dispatch_id": dispatch_id}, required_scope="dispatch:read",
+                action="read", operation=operation,
+            )
+
+        # ---- Imports: stage (dry run) -> review -> admin-confirmed commit. ----
+        # Staging never touches inventory. Only import_commit writes, and only with an admin grant.
+        @mcp.tool(
+            name="import_create_upload",
+            description=(
+                "Step 1 of an import when the user has attached a spreadsheet/PDF. Returns a single-use, 10-minute upload URL; POST the file "
+                "to it as multipart form field `file` (e.g. curl -F file=@inventory.xlsx '<upload_url>'). The response is the dry-run preview "
+                "(counts, per-row validation, duplicates, proposed changes, plan_hash) and NOTHING is written to MobileOps. "
+                "dataset: equipment (inventory), tools, consumables or block. on_duplicate: 'skip' (default) leaves existing records alone; "
+                "'update' proposes field-level updates for matches. mapping optionally overrides column detection as {file header: field}."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def import_create_upload(dataset: str, on_duplicate: str = "skip", mapping: dict[str, str] | None = None) -> dict[str, Any]:
+            params = {"dataset": dataset, "on_duplicate": on_duplicate, "mapping": mapping}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                if on_duplicate not in ("skip", "update"):
+                    raise ValueError("on_duplicate must be 'skip' or 'update'")
+                user = self._domain_user()
+                token = self.backend.mint_import_upload_token(dataset, on_duplicate, mapping, issued_by=user.name)
+                return {
+                    "upload_url": f"{self._public_url}/api/imports/upload/{token}", "method": "POST (multipart/form-data, field 'file')",
+                    "expires_in_seconds": 600, "single_use": True, "dataset": dataset, "on_duplicate": on_duplicate,
+                    "accepts": [".xlsx", "table-based .pdf"], "max_bytes": 5_000_000,
+                    "note": "Uploading only stages a preview; it changes no MobileOps data.",
+                }
+
+            return await self.invoke(
+                tool="import_create_upload", parameters=params, required_scope=self._import_write_scope(dataset),
+                action="read", operation=operation,
+            )
+
+        @mcp.tool(
+            name="import_preview",
+            description=(
+                "Dry-run an import from a small file passed inline as base64 (max 1 MB; for larger files use import_create_upload). "
+                "Returns the same preview as an upload: summary counts, column mapping, validation errors, duplicates, proposed "
+                "creates/updates and a plan_hash. Writes nothing to MobileOps data."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def import_preview(
+            dataset: str, filename: str, file_base64: str, on_duplicate: str = "skip", mapping: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            params = {"dataset": dataset, "filename": filename, "on_duplicate": on_duplicate, "mapping": mapping,
+                      "file_sha256": hashlib.sha256(file_base64.encode("ascii", "ignore")).hexdigest(), "file_base64_chars": len(file_base64)}
+
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                if len(file_base64) > 1_400_000:
+                    raise ValueError("Inline files are limited to 1 MB; use import_create_upload for larger files")
+                try:
+                    content = base64.b64decode(file_base64, validate=True)
+                except Exception as exc:
+                    raise ValueError("file_base64 is not valid base64") from exc
+                user = self._domain_user()
+                return await self.backend.stage_import_file(
+                    dataset, filename, content, actor_id=user.id, actor_name=user.name, mapping=mapping, on_duplicate=on_duplicate, channel="mcp-inline"
+                )
+
+            audit_params = {k: v for k, v in params.items()}
+            return await self.invoke(
+                tool="import_preview", parameters=audit_params, required_scope=self._import_write_scope(dataset),
+                action="read", operation=operation,
+            )
+
+        @mcp.tool(
+            name="import_status",
+            description="Re-read a staged or finished import: summary, errors and a page of rows. Optional action filter: create, update, unchanged, skip_duplicate, error.",
+            annotations=READ_ONLY,
+        )
+        async def import_status(import_id: str, offset: int = 0, limit: int = 25, action: str | None = None) -> dict[str, Any]:
+            return await self.invoke(
+                tool="import_status", parameters={"import_id": import_id, "offset": offset, "limit": limit, "action": action},
+                required_scope="inventory:read", action="read",
+                operation=lambda _p, _k: self.backend.get_import_preview(import_id, offset, limit, action),
+            )
+
+        @mcp.tool(
+            name="import_plan_report",
+            description="Export every row of a staged import (action, problems, old->new changes) as an Excel file and return a 10-minute download link, so the admin can review it outside chat.",
+            annotations=READ_ONLY,
+        )
+        async def import_plan_report(import_id: str) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                user = self._domain_user()
+                role = getattr(user.role, "value", user.role)
+                meta = await self.backend.import_plan_report_file(import_id, user_id=user.id, user_name=user.name, role=role, channel="mcp")
+                return self._file_result(meta, role)
+
+            return await self.invoke(
+                tool="import_plan_report", parameters={"import_id": import_id}, required_scope="inventory:read",
+                action="read", operation=operation,
+            )
+
+        @mcp.tool(
+            name="import_commit",
+            description=(
+                "Apply a reviewed import to MobileOps. ADMIN-ONLY: requires an admin grant, and plan_hash must be the one from the preview the "
+                "admin reviewed. All-or-nothing: any failure rolls every change back. Refuses if inventory changed since the preview, if the "
+                "import was already committed, or if rows are invalid (unless skip_invalid_rows=true). Never overwrites existing records "
+                "unless the preview was made with on_duplicate='update' and the changes were shown."
+            ),
+            annotations=MUTATING,
+        )
+        async def import_commit(
+            import_id: str, plan_hash: str, skip_invalid_rows: bool = False, confirmation_token: str | None = None,
+        ) -> dict[str, Any]:
+            params = {"import_id": import_id, "plan_hash": plan_hash, "skip_invalid_rows": skip_invalid_rows}
+
+            async def operation(principal: AgentPrincipal, __: str | None) -> Any:
+                preview = await self.backend.get_import_preview(import_id, 0, 1, None)
+                if self._import_write_scope(preview["dataset"]) not in principal.scopes:
+                    raise PermissionError(f"Missing required scope: {self._import_write_scope(preview['dataset'])}")
+                grant = _active_admin_grant.get()
+                user = self._domain_user()
+                return await self.backend.commit_import_job(
+                    import_id, plan_hash, actor_id=(grant.admin_id if grant else user.id),
+                    actor_name=user.name, skip_invalid_rows=skip_invalid_rows,
+                )
+
+            return await self.invoke(
+                tool="import_commit", parameters=params, required_scope="equipment:write", action="write", admin_only=True,
+                operation=operation, confirmation_token=confirmation_token,
+                confirmation_summary=f"Apply import {import_id}.",
+            )
+
+        @mcp.tool(
+            name="import_cancel",
+            description="Discard a staged import preview (nothing was written to MobileOps, so nothing is undone).",
+            annotations=READ_ONLY,
+        )
+        async def import_cancel(import_id: str) -> dict[str, Any]:
+            async def operation(_: AgentPrincipal, __: str | None) -> Any:
+                user = self._domain_user()
+                return await self.backend.cancel_import_job(import_id, actor_id=user.id, actor_name=user.name)
+
+            return await self.invoke(
+                tool="import_cancel", parameters={"import_id": import_id}, required_scope="equipment:write",
+                action="read", operation=operation,
             )
 
         # Nathan2's proactive rental-coordinator reads. These deliberately

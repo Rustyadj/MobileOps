@@ -207,6 +207,7 @@ async def test_registry_covers_requested_domains_and_marks_mutations_destructive
         "shop_task_set_status",
         "shop_task_add_update",
         "operational_status",
+        "operational_activity",
         "get_inventory_availability",
         "get_inventory_forecast",
         "get_inventory_timeline",
@@ -592,3 +593,55 @@ async def test_streamable_http_endpoint_requires_hermes_bearer_token(monkeypatch
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert authorized.json()["result"]["serverInfo"]["name"] == "MobileOps"
+
+
+class ExportBackend(FakeBackend):
+    """FakeBackend plus the real export helpers server.py re-exports and a recording file generator."""
+    from backend import exports as _x
+    EXPORT_FORMATS = _x.EXPORT_FORMATS
+    EXPORT_TOKEN_TTL_SECONDS = _x.EXPORT_TOKEN_TTL_SECONDS
+    ExportError = _x.ExportError
+    EXPORT_SECRET = b"unit-test-export-secret"
+    resolve_dataset = staticmethod(_x.resolve_dataset)
+    clean_filters = staticmethod(_x.clean_filters)
+    sign_export_token = staticmethod(_x.sign_export_token)
+
+    def __init__(self):
+        super().__init__()
+        self.generated = []
+
+    async def generate_export_file(self, dataset, fmt, filters, *, user_id, user_name, role, channel):
+        self.generated.append({"dataset": dataset, "fmt": fmt, "filters": filters, "role": role, "channel": channel})
+        return {"id": "file-1", "filename": f"{dataset}.{fmt}", "dataset": dataset, "format": fmt, "filters": filters,
+                "record_count": 3, "size_bytes": 10, "sha256": "ab"}
+
+    def signed_file_token(self, file_id, role):
+        return f"signed-{file_id}-{role}"
+
+
+@pytest.mark.anyio
+async def test_export_report_stores_a_file_and_returns_a_role_bound_link_without_confirmation():
+    backend = ExportBackend()
+    integration = make_integration(backend)
+    tool = integration.mcp._tool_manager._tools["export_report"]
+    assert tool.annotations.readOnlyHint is True
+
+    result = await integration.mcp._tool_manager.call_tool(
+        "export_report", {"dataset": "rentals", "format": "xlsx", "status": "active"}
+    )
+
+    assert "confirmation_required" not in result
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["download_url"] == "https://icfops.srv1427612.hstgr.cloud/api/files/shared/signed-file-1-foreman"
+    assert (data["dataset"], data["format"], data["filters"], data["record_count"]) == ("rentals", "xlsx", {"status": "active"}, 3)
+    assert backend.generated == [{"dataset": "rentals", "fmt": "xlsx", "filters": {"status": "active"}, "role": "foreman", "channel": "mcp"}]
+    assert backend.db.mcp_audit_log.docs[-1]["tool"] == "export_report"
+
+
+@pytest.mark.anyio
+async def test_export_report_rejects_unknown_dataset_and_unsupported_filter():
+    integration = make_integration(ExportBackend())
+    for args in ({"dataset": "users"}, {"dataset": "equipment", "status": "active"}, {"dataset": "rentals", "format": "docx"}):
+        with pytest.raises(ToolError):
+            await integration.mcp._tool_manager.call_tool("export_report", args)

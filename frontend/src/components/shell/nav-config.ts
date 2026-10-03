@@ -27,7 +27,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "inventory", label: "Inventory", route: "/(app)/inventory", icon: "cube-outline", testID: "nav-inventory", match: ["/inventory"] },
   { key: "shop", label: "Shop", route: "/(app)/shop", icon: "construct-outline", testID: "nav-shop", match: ["/shop"] },
   { key: "utilities", label: "Utilities", route: "/(app)/tools", icon: "calculator-outline", testID: "nav-utilities", match: ["/tools"] },
-  { key: "admin", label: "Admin", route: "/(app)/site-admin", icon: "settings-outline", testID: "nav-admin", match: ["/site-admin", "/contacts", "/vendors", "/sync-issues"] },
+  { key: "admin", label: "Admin", route: "/(app)/site-admin", icon: "settings-outline", testID: "nav-admin", match: ["/site-admin", "/contacts", "/vendors", "/files", "/sync-issues"] },
 ];
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_ITEMS;
@@ -61,6 +61,7 @@ export const SUB_NAV_ITEMS: SubNavItem[] = [
   { key: "utilities-calculator", label: "Utilities · Calculator", route: "/(app)/tools/calculator", icon: "calculator-outline", section: "utilities", testID: "sub-utilities-calculator" },
   { key: "utilities-tickets", label: "Utilities · Create Ticket", route: "/(app)/tools/tickets", icon: "receipt-outline", section: "utilities", testID: "sub-utilities-tickets" },
   { key: "admin-contacts", label: "Admin · Contacts", route: "/(app)/contacts", icon: "people-outline", section: "admin", testID: "sub-admin-contacts" },
+  { key: "admin-files", label: "Admin · Files & Imports", route: "/(app)/files", icon: "document-attach-outline", section: "admin", testID: "sub-admin-files" },
   { key: "admin-sync", label: "Admin · Sync Issues", route: "/(app)/sync-issues", icon: "cloud-offline-outline", section: "admin", testID: "sub-admin-sync" },
   { key: "admin-site", label: "Admin · Site Settings", route: "/(app)/site-admin", icon: "settings-outline", section: "admin", testID: "sub-admin-site" },
 ];

@@ -88,3 +88,57 @@ tickets keep working; the API accepts them on input. Only the final
 `returned_to_inventory` transition moves units `in_maintenance → available`,
 so availability changes after inspection rather than when someone marks the
 work done.
+
+---
+
+## ADR-005 — Mention notifications and exports extend existing services; Hermes stays MCP-only
+**Date:** 2026-10-02
+
+**Decision.** (1) Hermes/Nathan2 remains an external agent reaching MobileOps only
+through the scoped, audited MCP server; no second in-app agent or tool router was
+added. (2) @mention notifications live in a `notifications` collection written by
+the backend when a Live Feed post/comment is saved, keyed unique on
+`(type, message_id, user_id)`, and pushed only to the recipient's own sockets via
+`WhiteboardRealtimeHub.send_to_user`. (3) PDF/CSV export is one role-aware
+renderer (`backend/exports.py`) behind `/api/exports/{dataset}/{fmt}`; Hermes gets
+a 10-minute HMAC-signed link (`export_report` MCP tool) whose token binds the role.
+
+**Why.** MobileOps has no tickets/customers/tenants model and Nathan2 already has
+67 audited tools, so the real gaps were notifications and exports. Per-user
+delivery was needed because the hub previously broadcast every event to every
+socket. Notification failure must never fail the post, so processing is guarded
+and idempotent. Ambiguous @handles (two people, one name) resolve to nobody and
+autocomplete offers each person's unique email handle.
+
+**Rejected.** A second Hermes agent inside the API; user-admin tools for Hermes
+(privilege boundary stays: admins manage users in the app); exposing `users` as an
+export dataset; per-user notification preferences (none exist yet).
+
+---
+
+## ADR-006 — Excel/PDF import-export extends the export module; imports are staged, hash-confirmed and admin-only
+**Date:** 2026-10-03
+
+**Decision.** (1) XLSX is a third format of the existing role-aware export module, with new
+datasets (tools, assignments, damaged, returns, outbound, shop tasks, consumables, block) and
+single-record PDFs (rental agreement, dispatch ticket). (2) Generated files are stored as
+14-day snapshots in Mongo (`generated_files`, following the whiteboard-blob precedent) and
+served only to the owner/admins or via purpose-bound signed links. (3) Imports are a separate
+stage -> review -> commit pipeline for `equipment`, `tools`, `consumables`, `block` only. Commit
+needs the reviewed `plan_hash`, re-validates against live data, is all-or-nothing with
+compensating rollback, and is `admin_only` over MCP (admin grant). (4) Updates never touch stock
+buckets, quantity or location. (5) PDF import accepts one consistent table and only adds records.
+
+**Why.** The legacy `POST /equipment/import.csv` upserts straight into production with no
+preview, no ledger entry and no confirmation; that is exactly what must not be repeated.
+Rentals/dispatches/returns carry reservation and ledger state machines, so they are exportable
+but not importable. Mongo here is standalone (no transactions), hence undo-log rollback.
+
+**Rejected.** Extending the CSV importer; per-row "partial success" commits; letting an import
+change stock counts (use counts/transfers); free-form PDF text extraction; non-admin commits;
+regenerating files on download (a stored snapshot is also the audit artifact).
+
+**Open.** The legacy CSV import remains and still overwrites without a preview; it should be
+retired or routed through the new pipeline. Rental agreement PDFs carry no legal terms text, so
+add it to `pdf_documents.py` once the wording is supplied.
+
